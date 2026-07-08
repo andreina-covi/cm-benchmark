@@ -1,0 +1,150 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Spatial working memory  (Class 2: Spatial memory)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs invisible_displacement:
+#   - object is STATIC (no relocation); displacement_event is null
+# CONTRAST vs spatial_updating:
+#   - asks about a PAST pose/step ("k steps ago"), not updated current bearing
+# FoR note: taxonomy allows egocentric OR allocentric per item; Task Planner
+#   picks frame_of_reference per episode.
+# ============================================================
+
+construct_id: spatial_working_memory
+class: 2                       # parent class, for partial-order analysis
+frame_of_reference: [egocentric, allocentric]  # per-item; Task Planner selects
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can recall a previously
+  seen location, relation, or count under load and delay. The queried
+  object or relation is NOT in the final view, but object positions are
+  UNCHANGED across all shown frames — nothing relocates. The agent has
+  walked >= k steps since the encoding moment. The QUESTION TEXT asks
+  about the PAST ("k steps ago") — it must never state the answer, a
+  direction, or any move/event. All spatial facts come from frames +
+  metadata, never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions]   # pose = (x, y, heading)
+  from_object_csv: [object_id, object_type, position, parent_receptacle,
+                    visible_flag_per_frame, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - queried object/relation was visible at an EARLY frame (encoding step t-k)
+  - queried object/relation is NOT in the FINAL view
+  - object positions UNCHANGED across all shown frames (nothing relocates)
+  - agent executes >= k movement actions between encoding step and final step
+  - no PutObject / relocation / displacement_event occurs
+frame_selection:
+  include: [encoding_frame, final_frame]   # +optional intermediate frames
+  movement_type: executed
+  step_depth_k: >= 1                       # frames since object/relation last seen
+  note: never include a frame that plainly answers the recall question
+
+# ----- Question construction -----
+question_templates:
+  egocentric:
+    - "What was to your left {k} steps ago?"
+    - "Which direction was the {object_type} from you {k} steps ago?"
+  allocentric:
+    - "Where was the {object_type} {k} steps ago?"
+    - "How many {object_type_plural} did you pass?"
+answer_derivation:
+  egocentric:
+    rule: >
+      bearing or side-relation at agent_pose@(t-k) from agent_trajectory +
+      object_position; bucket into {left, right, ahead, behind} or named object.
+    answer_source_field: [agent_pose@(t-k), object_position]
+  allocentric:
+    rule: >
+      location/relation/count at step (t-k) from agent_trajectory + object
+      metadata (receptacle/landmark or count of passed objects).
+    answer_source_field: [agent_pose@(t-k), object_position, object_metadata]
+  count_variant:
+    rule: count of objects of type T visible at any step in [0, t-k]
+    answer_source_field: [agent_trajectory, object_metadata]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  distractors:
+    - current_view_answer         # what is visible NOW (not recalled)
+    - adjacent_step_answer        # answer at step t-k+1 or t-k-1
+    - off_by_one_count            # count variant: one too many or too few
+  distractor_rule: every option must be a real scene location/direction/count
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [step_depth_k, num_items_in_load, frames_since_object_last_visible]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - queried object/relation is NOT in the final view
+  - object positions UNCHANGED across shown frames (nothing relocates)
+  - displacement_event is absent (no relocation occurred)
+  - difficulty scales with load (num items) and step-depth (frames since seen)
+  - question text contains no answer, direction, or move/event description
+  - answer traces to metadata at step (t-k) (answer_source is non-null)
+  - NOT spatial_updating (does not ask for updated bearing at current pose)
+  - NOT invisible_displacement (no hidden relocation)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: spatial_working_memory
+  class: 2
+  frame_of_reference: <egocentric | allocentric>   # per item
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<selected frames, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: <per FoR variant above>
+  agent_trajectory: <pose per shown frame>          # REQUIRED here
+  agent_actions: <ordered actions between shown frames>  # REQUIRED here
+  queried_object_id: <object_id>                    # or null for count variant
+  object_state_track: null        # unused: object is static, no relocation track
+  displacement_event: null        # unused: no relocation
+  recall_step_k: <integer>          # steps back from final frame
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c2_0003
+  construct: spatial_working_memory
+  frame_of_reference: egocentric
+  environment: ai2thor
+  scene_id: FloorPlan7
+  image_paths: [f002.png, f008.png]
+  question: "Which direction was the floor lamp from you 3 steps ago?"
+  options: {A: "ahead of you", B: "to your right",
+            C: "behind you", D: "to your left"}
+  answer: A
+  answer_source: [agent_pose@f002, object_position]
+  queried_object_id: FloorLamp|-02.1|+00.0|+01.4
+  recall_step_k: 3
+  agent_trajectory:
+    - {frame: f002, pose: {x: 0.0, y: 0.0, heading: 0}}    # lamp ahead, visible
+    - {frame: f008, pose: {x: 1.2, y: 0.0, heading: 90}}   # lamp not visible
+  agent_actions: ["MoveAhead", "MoveAhead", "RotateRight"]
+  distractor_rationale:
+    B: "current_view_answer — bearing at final pose, not recalled"
+    C: "adjacent_step_answer — bearing at step t-k+1"
+    D: "orthogonal direction — plausible wrong axis"
+  difficulty: 2
+
+# ----- Notes for sibling constructs -----
+# invisible_displacement: object relocates while hidden (displacement_event required)
+# spatial_updating: asks updated bearing at CURRENT pose after real movement

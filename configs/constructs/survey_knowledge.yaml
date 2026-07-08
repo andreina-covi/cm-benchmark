@@ -1,0 +1,138 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Survey knowledge  (Class 4: Navigation / wayfinding)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs route_knowledge:
+#   - queried shortcut was NEVER traversed (novel path over observed space)
+#   - answer is configurational (global layout), not procedural recall
+#   - INVALID if item reduces to an experienced route (that is route_knowledge)
+# ============================================================
+
+construct_id: survey_knowledge
+class: 4                       # parent class, for partial-order analysis
+frame_of_reference: allocentric # configurational, map-like — global layout
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can infer a NOVEL path or
+  shortcut over observed but UNTRAVERSED space using a survey (map-like)
+  representation of the environment. The agent has observed multiple regions
+  (trajectory spans distinct areas) but the queried A-to-B shortcut was
+  never walked. A new passage may have opened (e.g. "the door is now
+  open"). The QUESTION TEXT names start and end landmarks — it must never
+  state the route or individual moves. All spatial facts come from frames +
+  metadata, never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions, path]
+  from_object_csv: [object_id, object_type, position, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - agent trajectory spans >=2 distinct regions (observed but not fully traversed)
+  - landmarks A and B are identifiable and their global positions known
+  - the queried A-to-B shortcut was NEVER traversed by the agent
+  - a novel feasible path exists derivable from global layout metadata
+  - optional: a new passage/door opens enabling a shortcut not previously walkable
+frame_selection:
+  include: [frames_from_distinct_observed_regions]   # prove observation coverage
+  movement_type: none_required     # inference over layout, not re-tracing
+  note: agent_trajectory proves which paths were NOT taken
+
+# ----- Question construction -----
+question_templates:
+  - "The door is now open. Trace a route from the {landmark_A} to the {landmark_B}."
+  - "What is the shortest way from the {landmark_A} to the {landmark_B}?"
+answer_derivation:
+  rule: >
+    novel shortest/feasible path from global layout (world positions +
+    connectivity graph); must NOT match any previously traversed route
+    segment in agent_trajectory.
+  answer_source_field: [agent_trajectory, world_layout, landmark_positions]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: novel_shortcut_path
+  distractors:
+    - known_route_answer           # a route the agent actually walked
+    - dead_end_path                # plausible but blocked / unreachable
+    - longer_traversed_detour      # valid but longer route agent did walk
+  distractor_rule: all options are plausible routes using real scene landmarks; exactly one is the novel shortcut
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [num_observed_regions, shortcut_length, num_plausible_alternatives]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - queried path/shortcut was NEVER traversed by the agent
+  - answer derivable only from global layout (survey representation)
+  - agent_trajectory spans multiple observed regions (proves coverage)
+  - INVALID if item reduces to an experienced route (that is route_knowledge)
+  - question text contains no route description and no move verb
+  - answer traces to metadata (agent_trajectory + world layout)
+  - NOT route_knowledge (shortcut must be novel, not recalled)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: survey_knowledge
+  class: 4
+  frame_of_reference: allocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<frames from distinct regions, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [agent_trajectory, world_layout, landmark_positions]
+  agent_trajectory: <pose per shown frame>          # REQUIRED here (proves paths NOT taken)
+  agent_actions: <optional; traversed segments only>
+  landmark_A_id: <landmark or location id>
+  landmark_B_id: <landmark or location id>
+  object_state_track: null        # unused
+  displacement_event: null        # unused
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c4_0012
+  construct: survey_knowledge
+  frame_of_reference: allocentric
+  environment: ai2thor
+  scene_id: FloorPlan21
+  image_paths: [f005.png, f015.png, f025.png]
+  question: "The door is now open. Trace a route from the kitchen to the bedroom."
+  options:
+    A: "through the living room, past the sofa, into the bedroom"
+    B: "through the hallway, turn left at the closet, into the bedroom"
+    C: "through the dining room, past the table, back through the kitchen"
+    D: "through the newly opened door, straight into the bedroom"
+  answer: D
+  answer_source: [agent_trajectory, world_layout, landmark_positions]
+  landmark_A_id: Kitchen|+00.0|+00.0|+00.0
+  landmark_B_id: Bedroom|+05.0|+00.0|+03.0
+  agent_trajectory:
+    - {frame: f005, pose: {x: 1.0, y: 0.0, heading: 0}}    # kitchen region
+    - {frame: f015, pose: {x: 3.0, y: 0.0, heading: 90}}   # living room (observed)
+    - {frame: f025, pose: {x: 2.0, y: 0.0, heading: 180}}  # dining room (observed)
+  agent_actions: ["MoveAhead", "RotateRight", "MoveAhead"]
+  distractor_rationale:
+    A: "known_route_answer — path agent actually walked through living room"
+    B: "dead_end_path — hallway closet route is blocked"
+    C: "longer_traversed_detour — valid but longer route agent did walk"
+  difficulty: 3
+
+# ----- Notes for sibling constructs -----
+# route_knowledge: retrace an EXPERIENCED path (procedural, egocentric)
+# allocentric_encoding: static object-to-object relation, not multi-region path inference

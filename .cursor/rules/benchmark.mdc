@@ -1,0 +1,108 @@
+---
+description: Spatial-cognition VLM benchmark — architecture and invariants
+alwaysApply: true
+---
+
+# Project Rules — Spatial-Cognition QA Benchmark for VLMs
+
+You are reviewing and helping write code for a research benchmark. Read
+this file fully before answering any request in this repo. When I ask for
+a review, first read the actual files, map them against the architecture
+and invariants below, then report deviations by severity and propose
+concrete diffs. Do not invent modules, fields, or features that aren't
+described here; if something is missing or ambiguous, say so and ask
+before making large changes.
+
+## Fill in before first use
+- Language / runtime: Python 3.12
+- Key libs: pydantic (schema + invariant enforcement), pyyaml (construct
+  configs), pytest (invariant tests), Pillow (multi-image frames),
+  litellm or provider SDK (agent + VLM calls), pandas + seaborn
+  (reporting), sqlite/sqlalchemy/json (Item Store)
+- Dev tools (not runtime deps): Cursor (editor)
+- Data source(s): AI2-THOR (collected), Matterport3D (planned)
+
+## What this project is
+A question-answering benchmark that probes spatial cognition in
+vision-language models (VLMs). Items are multi-image (frame sequences
+from 3D simulators) + a multiple-choice question. The benchmark must
+measure genuine visual-spatial reasoning, NOT language priors.
+
+## Taxonomy (the capability axis)
+Four classes, eight constructs, treated as a **partially-ordered
+pipeline** (later stages subsume earlier ones — not fully independent):
+1. Spatial encoding — egocentric; allocentric (object-to-object)
+2. Spatial memory — spatial working memory; invisible displacement
+3. Operation on the cognitive map — spatial updating; perspective-taking
+4. Navigation / wayfinding — route knowledge; survey knowledge
+Cross-cutting axis on every item: `frame_of_reference` ∈ {egocentric, allocentric}.
+Headline analyses are per-construct and per-(construct × frame_of_reference).
+
+## Architecture (respect this structure)
+Two pipelines under one Orchestrator, separated by an immutable FREEZE.
+Tag each node [AGENT] = LLM call, [CODE] = deterministic, no model.
+
+- Benchmark Orchestrator [CODE] — owns run order, versioning
+  - Config Registry — 8 construct configs (static YAML, single source of truth)
+  - Item Store / DB — shared state; what gets frozen
+  - Item Generation Pipeline
+    - Task Planner [AGENT] — pick scene + construct + FoR, apply episode filter
+    - Question Generator [AGENT] — write question + answer FROM metadata
+    - Distractor Generator [AGENT] — plausible, diagnostic options
+    - Ground-truth Validator [CODE] — recompute answer from CSV; must match
+    - Vision-necessity Verifier [CODE + model calls] — blind-LLM & caption baselines
+    - Judge / Filter [AGENT + CODE] — well-formed, FoR stated, dedup
+    - Set Balancer [CODE] — equalize counts per construct × ego/allo
+  - === FREEZE / version tag === (the wall; frozen set is immutable)
+  - Model Evaluation Pipeline (consumes frozen set ONLY)
+    - Model Runner [CODE] — fixed protocol, identical for every VLM
+    - Response Parser [CODE; AGENT only to map prose→option label]
+    - Deterministic Scorer [CODE] — exact-match; per-construct/FoR breakdown
+    - Error Analysis Agent [AGENT] — failure modes from structured logs
+    - Evaluation Reporter [CODE] — tables, baselines, gaps
+
+## Invariants — never violate; flag any code that does
+1. Generators never invent spatial facts. Every question/answer is
+   composed from CSV metadata only.
+2. Every item has a non-null `answer_source` pointing at the metadata
+   field(s) the answer derives from. No answer without traceability.
+3. Ground-truth Validator, Model Runner, and Deterministic Scorer are
+   pure [CODE]. An LLM must never judge answer correctness — results
+   must be reproducible.
+4. `vision_necessary == true` is required for an item to enter the
+   frozen set (both blind-LLM and caption→LLM baselines must FAIL it).
+5. The FREEZE wall is one-directional: nothing observed during
+   evaluation may edit, filter, or regenerate items. No tuning to models.
+6. Generator and Validator use different models/prompts, so the checker
+   isn't just agreeing with the writer.
+7. Distractors are spatially plausible AND diagnostic (each wrong option
+   maps to a specific failure mode, e.g. the pre-move bearing = the
+   non-updating error). All options must be real locations/directions
+   present in the scene.
+8. Construct isolation lives in each config's `must_hold` block — treat
+   those as hard rejects, enforced in code, not suggestions.
+
+## Item schema (fields on a finished item)
+Core: item_id, construct, class, frame_of_reference, environment,
+scene_id, image_paths[], question, options{}, answer, answer_source.
+Recommended: agent_trajectory (pose per frame), agent_actions (ordered),
+queried_object_id, distractor_rationale{}, difficulty.
+Temporal (required only for object-moves / observer-moves constructs):
+object_state_track[], displacement_event{}.
+Verification (set by pipeline, NOT the generator; start null):
+blind_llm_correct, caption_llm_correct, vision_necessary.
+
+## How to review / suggest
+- Start by mapping files → architecture nodes; name any node with no
+  code, or code that belongs to no node.
+- Check each invariant explicitly and cite the file/line that breaks it.
+- Prioritize: (1) invariant violations, (2) reproducibility risks in the
+  eval pipeline, (3) separation-of-concerns leaks between the two
+  pipelines, (4) correctness, (5) style.
+- Prefer small, reviewable diffs. Explain the "why" in one line each.
+- Reuse, don't duplicate: the Vision-necessity Verifier and Model Runner
+  share baseline-calling machinery — build it once and call from both.
+- Suggest tests that assert the invariants (e.g. a test that fails if any
+  frozen item has null answer_source or vision_necessary != true).
+- If a request would blur the FREEZE wall or make an [CODE] node call an
+  LLM for scoring, refuse and explain.

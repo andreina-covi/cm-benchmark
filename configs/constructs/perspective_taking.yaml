@@ -1,0 +1,136 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Perspective taking  (Class 3: Operation on the cognitive map)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs spatial_updating:
+#   - viewpoint is IMAGINED (reference entity's frame), not executed self-motion
+#   - answer is ALLOCENTRIC (reference entity's frame), not egocentric at new pose
+# CONTRAST vs allocentric_encoding:
+#   - requires mental viewpoint transform to reference entity, not direct visible relation
+# ============================================================
+
+construct_id: perspective_taking
+class: 3                       # parent class, for partial-order analysis
+frame_of_reference: allocentric # answer is in the reference entity's frame
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can compute a spatial
+  relation from an IMAGINED viewpoint — that of a reference entity (e.g.
+  a chair, cabinet) — without the agent actually moving to that pose. The
+  reference entity has a defined front/heading in metadata. The agent
+  observes the scene from its own camera but must adopt the reference
+  entity's frame mentally. The QUESTION TEXT names the reference entity
+  and the queried relation — it must never state the answer direction.
+  All spatial facts come from frames + metadata, never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose]
+  from_object_csv: [object_id, object_type, position, obj_rot,
+                    visible_flag_per_frame, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - a reference entity R has defined front/heading in metadata (obj_rot)
+  - target object(s) are STATIC (world positions unchanged)
+  - the agent does NOT execute movement to R's viewpoint (no real action)
+  - R and queried object(s) are observable in the shown frame(s)
+frame_selection:
+  include: [observation_frame]   # single or multi-frame observation only
+  movement_type: imagined         # viewpoint adopted mentally, NOT executed
+  note: agent_actions must be empty; no MoveAhead/Rotate* toward R's pose
+
+# ----- Question construction -----
+question_templates:
+  - "From where the {reference_entity_type} faces, which object is on its left?"
+  - "From the {reference_entity_type}'s point of view, where is the {object_type}?"
+answer_derivation:
+  rule: >
+    relation of target object(s) in R's intrinsic frame = compute bearing
+    of O relative to R's position and facing heading (obj_rot); bucket into
+    {left, right, in-front, behind} of R.
+  answer_source_field: [object_position@O, object_position@R, reference_entity_facing_heading]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: computed_relation_in_reference_frame
+  distractors:
+    - camera_frame_answer         # relation as seen from agent camera (ego error)
+    - mirrored_left_right         # left/right swap in reference frame
+    - wrong_facing_assumption     # as if R faced the opposite direction
+  distractor_rule: all options are real objects/directions in the scene; exactly one correct
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [reference_facing_ambiguity, num_competing_objects, camera_reference_misalignment]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - agent does NOT actually move to the reference viewpoint (no real action)
+  - answer is in the REFERENCE ENTITY's frame, not the camera's
+  - reference entity has a defined front/heading in metadata
+  - target objects are static (positions unchanged)
+  - question text contains no direction word and no move verb
+  - answer traces to metadata (object positions + reference_entity_facing_heading)
+  - NOT spatial_updating (no executed self-motion; not egocentric updated bearing)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: perspective_taking
+  class: 3
+  frame_of_reference: allocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<selected frames, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [object_position@O, object_position@R, reference_entity_facing_heading]
+  agent_trajectory: <pose per shown frame>          # optional: observation only
+  agent_actions: []                                 # no real move to viewpoint
+  queried_object_id: <object_id>
+  reference_object_id: <reference_entity_id>
+  reference_entity_facing_heading: <from obj_rot>   # REQUIRED here
+  object_state_track: null        # unused: objects are static
+  displacement_event: null        # unused: no relocation
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c3_0021
+  construct: perspective_taking
+  frame_of_reference: allocentric
+  environment: ai2thor
+  scene_id: FloorPlan21
+  image_paths: [f011.png]
+  question: "From where the armchair faces, which object is on its left?"
+  options: {A: "the floor lamp", B: "the side table",
+            C: "the houseplant", D: "the sofa"}
+  answer: B
+  answer_source: [object_position@SideTable, object_position@ArmChair, reference_entity_facing_heading]
+  queried_object_id: SideTable|-00.5|+00.0|+01.2
+  reference_object_id: ArmChair|+01.0|+00.0|+00.8
+  reference_entity_facing_heading: 90
+  agent_trajectory:
+    - {frame: f011, pose: {x: 3.0, y: 0.0, heading: 270}}
+  agent_actions: []
+  distractor_rationale:
+    A: "camera_frame_answer — left from agent camera, not armchair frame"
+    C: "mirrored_left_right — right-of instead of left-of in reference frame"
+    D: "wrong_facing_assumption — as if armchair faced opposite direction"
+  difficulty: 2
+
+# ----- Notes for sibling constructs -----
+# spatial_updating: REAL executed movement; egocentric bearing at NEW agent pose
+# allocentric_encoding: direct visible object-to-object relation, no imagined transform

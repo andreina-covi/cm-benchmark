@@ -1,0 +1,131 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Invisible displacement  (Class 2: Spatial memory)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields (blind_llm_correct / caption_llm_correct /
+# vision_necessary) — those are set later by the pipeline.
+# ============================================================
+
+construct_id: invisible_displacement
+class: 2                      # parent class, for partial-order analysis
+frame_of_reference: allocentric   # answer is a container/landmark ("in the drawer")
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model tracks an object's
+  location AFTER it becomes hidden and is relocated out of view. The
+  object starts visible, is occluded, and is moved (directly, or by
+  moving the container/occluder it is in). The final location must NOT
+  be visible in the last shown frame, so the model must remember/infer
+  it rather than read it off the image. The QUESTION TEXT names only the
+  object and asks "where is it now?" — it must never state the move or
+  the destination. All spatial facts come from the frames + metadata,
+  never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions]
+  from_object_csv: [object_id, object_type, position, parent_receptacle,
+                    visible_flag_per_frame, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - an object O is visible in an early frame
+  - O becomes hidden (visible_flag -> false) BEFORE it is relocated
+  - a relocation occurs: PutObject(O, ...) OR the receptacle/occluder
+    holding O is moved while O is hidden
+  - O is NOT visible at its true final location in the LAST shown frame
+frame_selection:
+  include: [initial_visible_frame, occlusion_frame, final_frame]
+  displacement_visibility: transfer_hidden   # or: transfer_shown_endpoint_hidden
+  note: never include a frame that plainly shows O sitting at its final spot
+
+# ----- Question construction -----
+question_templates:
+  - "Where is the {object_type} now?"
+  - "After everything you saw, where is the {object_type}?"
+answer_derivation:
+  rule: final location of queried object from object_state_track (last entry)
+  answer_source_field: object_state_track   # what the Ground-Truth Validator re-checks
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: final_location
+  distractors:
+    - original_location            # where O started (the classic error)
+    - a_nearby_receptacle          # plausible container O was near
+    - a_salient_decoy_location     # visible in scene but never held O
+  distractor_rule: every option must be a real location present in the scene
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [num_relocations, container_nesting_depth, frames_between_hide_and_query]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - object_state_track shows visible -> hidden BEFORE displacement_event
+  - displacement_event.hidden_during == true
+  - queried object not visible at true location in final frame
+  - question text contains no location word and no move verb
+  - answer traces to a metadata field (answer_source is non-null)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: invisible_displacement
+  class: 2
+  frame_of_reference: allocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<selected frames, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: object_state_track
+  agent_trajectory: <pose per shown frame>
+  agent_actions: <ordered actions between shown frames>
+  queried_object_id: <object_id>
+  object_state_track: [{frame, location, visible}, ...]   # required here
+  displacement_event: {action, at_frame, hidden_during: true}   # required here
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c2_0007
+  construct: invisible_displacement
+  frame_of_reference: allocentric
+  environment: ai2thor
+  scene_id: FloorPlan21
+  image_paths: [f012.png, f018.png, f025.png]
+  question: "Where is the tomato now?"
+  options: {A: "on the countertop", B: "in the fridge",
+            C: "in the sink", D: "in the garbage can"}
+  answer: B
+  answer_source: object_state_track
+  queried_object_id: Tomato|+01.2|+00.9|-00.3
+  object_state_track:
+    - {frame: f012, location: countertop, visible: true}
+    - {frame: f018, location: countertop, visible: false}   # agent occludes
+    - {frame: f025, location: fridge,     visible: false}   # moved while hidden
+  displacement_event: {action: "PutObject(Tomato, Fridge)", at_frame: f020,
+                       hidden_during: true}
+  distractor_rationale:
+    A: "original location — the persistence error"
+    C: "nearby receptacle the agent passed"
+    D: "salient decoy container, never held the object"
+  difficulty: 1
+
+# ----- To adapt this file for another construct -----
+# Change: construct_id, class, frame_of_reference, task_description,
+# select_episodes_where, question_templates, answer_derivation,
+# must_hold, and the two temporal fields (object_state_track /
+# displacement_event) — which are REQUIRED only here and in
+# object-permanence-style items; set them optional/null for static
+# constructs (egocentric/allocentric encoding, spatial working memory).
