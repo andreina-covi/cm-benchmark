@@ -1,0 +1,132 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Allocentric encoding  (Class 1: Spatial encoding)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs egocentric_encoding:
+#   - answer is OBJECT-anchored (A relative to B), not viewer-anchored
+# CONTRAST vs perspective_taking:
+#   - both objects visible NOW; no imagined viewpoint transform
+# ============================================================
+
+construct_id: allocentric_encoding
+class: 1                       # parent class, for partial-order analysis
+frame_of_reference: allocentric # answer is object-to-object, not viewer-anchored
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can encode the spatial
+  relation between TWO objects in an object-centered frame. Both the
+  queried object and the reference object are VISIBLE in the shown frame,
+  nothing moves, and the reference object's intrinsic front/heading is
+  defined in metadata. The QUESTION TEXT names only the two objects and
+  asks their relation — it must never state the answer relation. All
+  spatial facts come from frames + metadata, never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose]
+  from_object_csv: [object_id, object_type, position, obj_rot,
+                    visible_flag_per_frame, bounding_box, parent_receptacle]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - queried object O and reference object R are BOTH visible in the shown frame
+  - O and R are STATIC (world positions unchanged)
+  - reference object R has a defined intrinsic front/heading in metadata (obj_rot)
+  - exactly one frame is shown (no delay, no agent movement)
+frame_selection:
+  include: [current_visible_frame]
+  movement_type: none
+  note: both O and R must be clearly visible; R must have interpretable facing
+
+# ----- Question construction -----
+question_templates:
+  - "Relative to the {reference_object_type}, where is the {object_type}?"
+  - "What is the spatial relation of the {object_type} to the {reference_object_type}?"
+answer_derivation:
+  rule: >
+    object-to-object relation of O relative to R's intrinsic frame =
+    {left-of, right-of, in-front-of, behind, on, inside} computed from
+    world positions + R's facing heading (obj_rot).
+  answer_source_field: [object_position@O, object_position@R, reference_entity_facing_heading]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: computed_object_to_object_relation
+  distractors:
+    - opposite_relation           # left-of <-> right-of, in-front <-> behind
+    - wrong_reference_object      # relation computed against a different anchor
+    - viewer_frame_answer         # the ego-confusion error (camera-frame relation)
+  distractor_rule: every option must be a real spatial relation present in the scene
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [reference_facing_ambiguity, inter_object_distance, num_competing_objects]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - all referenced objects VISIBLE in the shown view
+  - answer is object-anchored, NOT viewer-anchored
+  - reference object's frame (intrinsic front) is defined in metadata
+  - no delay and no agent movement between frames
+  - question text contains no relation word and no move verb
+  - answer traces to metadata (object positions + reference facing)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: allocentric_encoding
+  class: 1
+  frame_of_reference: allocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<single frame>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [object_position@O, object_position@R, reference_entity_facing_heading]
+  agent_trajectory: <single pose only>
+  agent_actions: []
+  queried_object_id: <object_id>
+  reference_object_id: <reference_object_id>
+  object_state_track: null        # unused: static, no temporal tracking
+  displacement_event: null        # unused: no relocation
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c1_0003
+  construct: allocentric_encoding
+  frame_of_reference: allocentric
+  environment: ai2thor
+  scene_id: FloorPlan21
+  image_paths: [f007.png]
+  question: "Relative to the dining table, where is the tomato?"
+  options: {A: "to the left of the table", B: "on the table",
+            C: "to the right of the table", D: "behind the table"}
+  answer: B
+  answer_source: [object_position@Tomato, object_position@DiningTable, reference_entity_facing_heading]
+  queried_object_id: Tomato|+01.2|+00.9|-00.3
+  reference_object_id: DiningTable|-01.0|+00.0|+00.5
+  agent_trajectory:
+    - {frame: f007, pose: {x: 2.0, y: 0.0, heading: 180}}
+  agent_actions: []
+  distractor_rationale:
+    A: "opposite relation — left/right swap"
+    C: "viewer-frame answer — ego-confusion error"
+    D: "wrong reference object — relation to a different anchor"
+  difficulty: 1
+
+# ----- Notes for adapting to Class-2+ constructs -----
+# spatial_working_memory and invisible_displacement add temporal demand;
+# perspective_taking uses an IMAGINED reference frame rather than a
+# directly visible object-to-object relation in the current view.

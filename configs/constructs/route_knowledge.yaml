@@ -1,0 +1,135 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Route knowledge  (Class 4: Navigation / wayfinding)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs survey_knowledge:
+#   - path WAS actually traversed (experienced route), not a novel shortcut
+#   - answer is procedural/sequential (turn order), not configurational inference
+# ============================================================
+
+construct_id: route_knowledge
+class: 4                       # parent class, for partial-order analysis
+frame_of_reference: egocentric # procedural, sequential — viewer's traversed path
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can retrace or recall an
+  EXPERIENCED path as an ordered sequence of turns and landmarks. The agent
+  has actually walked from landmark A to landmark B along a route present in
+  the trajectory. The QUESTION TEXT names the start and end landmarks and
+  asks for the turn order — it must never state the answer sequence or
+  describe individual moves. All spatial facts come from frames + metadata,
+  never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions, path]
+  from_object_csv: [object_id, object_type, position, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - agent trajectory contains a walked path from landmark A to landmark B
+  - the path involves >=2 movement actions (turns and/or forward moves)
+  - the queried A-to-B segment WAS actually traversed (present in trajectory)
+  - landmarks A and B are identifiable in scene metadata
+frame_selection:
+  include: [frames_along_traversed_route]   # ordered frames covering A -> B
+  movement_type: executed
+  note: include enough frames to show the walked path without revealing answer in text
+
+# ----- Question construction -----
+question_templates:
+  - "Retrace the path from the {landmark_A} to the {landmark_B}: what is the correct order of turns?"
+  - "What sequence of turns did you take to get from the {landmark_A} to the {landmark_B}?"
+answer_derivation:
+  rule: >
+    ordered turn sequence extracted from agent_actions between the frames
+    where landmark A and landmark B were reached; bucket turns into
+    {left, right, straight, u-turn} labels in traversal order.
+  answer_source_field: [agent_trajectory, agent_actions]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: ordered_turn_sequence
+  distractors:
+    - reversed_sequence            # correct turns in reverse order
+    - swapped_two_turns            # two adjacent turns exchanged
+    - plausible_but_unwalked_route # route that was never traversed
+  distractor_rule: all options are valid turn sequences using scene landmarks; exactly one matches traversed path
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [num_turns_in_route, route_length_steps, num_similar_junctions]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - the queried path WAS actually traversed (present in trajectory)
+  - answer is sequential/procedural (turns or landmark order)
+  - agent_actions between A and B are non-empty (>=2 movement actions)
+  - question text contains no turn direction and no move description
+  - answer traces to metadata (agent_trajectory + agent_actions)
+  - NOT survey_knowledge (path must have been walked, not inferred novel shortcut)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: route_knowledge
+  class: 4
+  frame_of_reference: egocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<frames along route, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [agent_trajectory, agent_actions]
+  agent_trajectory: <pose per shown frame>          # REQUIRED here
+  agent_actions: <ordered actions along A->B route>  # REQUIRED here
+  landmark_A_id: <landmark or location id>
+  landmark_B_id: <landmark or location id>
+  object_state_track: null        # unused
+  displacement_event: null        # unused
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c4_0005
+  construct: route_knowledge
+  frame_of_reference: egocentric
+  environment: ai2thor
+  scene_id: FloorPlan7
+  image_paths: [f010.png, f014.png, f018.png, f022.png]
+  question: "Retrace the path from the kitchen doorway to the sofa: what is the correct order of turns?"
+  options:
+    A: "right, straight, left"
+    B: "left, straight, right"
+    C: "right, left, straight"
+    D: "left, right, straight"
+  answer: B
+  answer_source: [agent_trajectory, agent_actions]
+  landmark_A_id: KitchenDoorway|+00.0|+00.0|+00.0
+  landmark_B_id: Sofa|-02.0|+00.0|+03.5
+  agent_trajectory:
+    - {frame: f010, pose: {x: 1.0, y: 0.0, heading: 0}}    # at kitchen doorway
+    - {frame: f014, pose: {x: 1.0, y: 0.0, heading: 90}}
+    - {frame: f018, pose: {x: 2.0, y: 0.0, heading: 90}}
+    - {frame: f022, pose: {x: 2.0, y: 0.0, heading: 180}}  # at sofa
+  agent_actions: ["RotateLeft", "MoveAhead", "MoveAhead", "RotateRight", "MoveAhead"]
+  distractor_rationale:
+    A: "reversed_sequence — correct turns in reverse order"
+    C: "swapped_two_turns — adjacent turns exchanged"
+    D: "plausible_but_unwalked_route — never traversed"
+  difficulty: 2
+
+# ----- Notes for sibling constructs -----
+# survey_knowledge: novel shortcut over UNTRAVERSED space; allocentric layout inference
+# spatial_updating: single-object bearing update, not multi-step route recall

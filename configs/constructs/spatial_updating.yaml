@@ -1,0 +1,138 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Spatial updating   (Class 3: Operation on the cognitive map)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs invisible_displacement:
+#   - the OBSERVER moves (real, executed actions); the OBJECT is static
+#   - answer is EGOCENTRIC (bearing at the new pose), not a container
+#   - agent_trajectory/agent_actions REQUIRED; object temporal fields unused
+# ============================================================
+
+construct_id: spatial_updating
+class: 3                       # parent class, for partial-order analysis
+frame_of_reference: egocentric # answer is viewer-anchored at the NEW pose
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model updates its own
+  position/heading after REAL movement and can report where a static
+  object is RELATIVE TO ITSELF at the new pose. The object is seen
+  early, the agent then executes one or more movement/rotation actions,
+  and the object is NO LONGER VISIBLE at the final pose — so the model
+  must recompute the bearing from self-motion + memory, not read it off
+  the current frame. The QUESTION TEXT names only the object and asks
+  its direction "relative to you now" — it must never state the move or
+  the answer direction. All spatial facts come from frames + metadata.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions]   # pose = (x, y, heading)
+  from_object_csv: [object_id, object_type, position,
+                    visible_flag_per_frame, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - an object O is visible in an early frame (encoded from that pose)
+  - the agent then executes >=1 real movement action (MoveAhead / Rotate*)
+  - O's world position is UNCHANGED across all shown frames (static)
+  - O is NOT visible at the FINAL pose (out of current view)
+frame_selection:
+  include: [initial_visible_frame, post_move_final_frame]   # +optional mid-move frame
+  movement_type: executed          # real actions in trajectory (NOT imagined)
+  note: never include a final frame in which O is still visible
+
+# ----- Question construction -----
+question_templates:
+  - "Where is the {object_type} relative to you now?"
+  - "After moving, in which direction is the {object_type} from you?"
+answer_derivation:
+  rule: >
+    bearing of O from the agent's FINAL pose = angle(O.position -
+    agent_final.position) expressed relative to agent_final.heading;
+    bucket into {ahead, right, behind, left}.
+  answer_source_field: [agent_pose@final, object_position]  # Validator re-checks geometry
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  labels: [ahead, to your right, behind you, to your left]
+  correct: computed_bearing_at_final_pose
+  distractors:
+    - pre_move_bearing        # where O was BEFORE moving = the non-updating error
+    - opposite_turn_bearing   # as if the agent turned the wrong way
+    - over_rotation_bearing   # as if the agent rotated one step too far
+  distractor_rule: all four options are egocentric directions; exactly one correct
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [num_movement_actions, total_rotation_degrees,
+       frames_since_object_last_visible]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - object position identical in every shown frame (object does not move)
+  - agent executes >=1 real movement action between encode and query
+  - queried object NOT visible in the final frame
+  - question text contains no direction word and no description of the move
+  - answer traces to geometry (agent_pose@final + object_position)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: spatial_updating
+  class: 3
+  frame_of_reference: egocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<selected frames, ordered>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [agent_pose@final, object_position]
+  agent_trajectory: <pose per shown frame>          # REQUIRED here
+  agent_actions: <ordered actions between shown frames>  # REQUIRED here
+  queried_object_id: <object_id>
+  object_state_track: null        # unused: object is static
+  displacement_event: null        # unused: no relocation
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c3_0014
+  construct: spatial_updating
+  frame_of_reference: egocentric
+  environment: ai2thor
+  scene_id: FloorPlan7
+  image_paths: [f005.png, f009.png]
+  question: "Where is the floor lamp relative to you now?"
+  options: {A: "ahead of you", B: "to your right",
+            C: "behind you", D: "to your left"}
+  answer: D
+  answer_source: [agent_pose@f009, object_position]
+  queried_object_id: FloorLamp|-02.1|+00.0|+01.4
+  agent_trajectory:
+    - {frame: f005, pose: {x: 0.0, y: 0.0, heading: 0}}    # lamp ahead, visible
+    - {frame: f009, pose: {x: 0.0, y: 0.0, heading: 90}}   # rotated right 90 deg
+  agent_actions: ["RotateRight"]        # real, executed
+  distractor_rationale:
+    A: "pre-move bearing — the non-updating error (reports where it WAS)"
+    B: "opposite turn direction"
+    C: "over-rotation error"
+  difficulty: 1
+
+# ----- Notes for adapting to the OTHER Class-3 construct -----
+# Perspective-taking = the SAME transform but IMAGINED, not executed:
+#   - movement_type: imagined  (no real action in agent_actions)
+#   - the query adopts ANOTHER entity's viewpoint ("from where the chair
+#     faces..."), so you also need that entity's facing/heading in metadata
+#   - frame_of_reference: allocentric (another object's frame)
+# For static Class-1 constructs, drop agent movement entirely and set both
+# object_state_track and displacement_event to null (already the case here).

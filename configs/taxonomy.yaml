@@ -1,0 +1,192 @@
+# ============================================================
+# taxonomy.yaml  —  configs/taxonomy.yaml
+# Single source of truth for the capability axis of the benchmark.
+# Every per-construct generator config and every pipeline node reads
+# construct specifics FROM HERE. Do not redefine constructs elsewhere.
+# ============================================================
+
+version: 0.1
+description: >
+  Spatial-cognition QA benchmark for VLMs. Four classes, eight
+  constructs, treated as a PARTIALLY-ORDERED pipeline (later classes
+  subsume earlier ones; they are not fully independent). Frame of
+  reference is a CROSS-CUTTING axis, not a construct.
+
+axes:
+  capability: {classes: 4, constructs: 8}      # this file
+  frame_of_reference: [egocentric, allocentric] # tagged on every item
+analysis_breakdowns: [per_construct, "per_construct_x_frame_of_reference"]
+
+# Rules that hold for EVERY construct (enforced by the pipeline, not
+# restated in each construct below).
+shared_rules:
+  - question text names only the queried object(s) and asks the relation;
+    it must never state the answer, a direction, or any move/event
+  - all spatial facts come from frames + CSV metadata, never from text
+  - every item has a non-null answer_source tracing to metadata field(s)
+  - frame_of_reference must be unambiguous (stated or fixed by construct)
+  - options are real scene locations/directions; exactly one correct
+  - distractors are diagnostic: each wrong option = a specific failure mode
+  - item enters frozen set only if vision_necessary == true
+    (both blind-LLM and caption->LLM baselines FAIL it)
+
+# ============================================================
+# CLASS 1 — SPATIAL ENCODING  (all needed info in the current view;
+# no delay, no memory, no pose change)
+# ============================================================
+class_1:
+  name: Spatial encoding
+  summary: Encode positions/relations that are fully visible now.
+  constructs:
+
+    egocentric_encoding:
+      class: 1
+      frame_of_reference: egocentric
+      definition: Relation of a visible object to the VIEWER's current pose.
+      what_moves: none
+      answer_type: viewer-anchored direction (left/right/ahead/behind/above/below)
+      required_temporal_fields: []          # static
+      question_template: "From your current view, where is the {object} relative to you?"
+      distractor_pattern: [opposite_direction, orthogonal_direction, plausible_wrong_axis]
+      discriminators:
+        - queried object is VISIBLE in the shown view
+        - no delay and no agent movement
+        - answer computed from current agent pose + object position
+
+    allocentric_encoding:
+      class: 1
+      frame_of_reference: allocentric
+      definition: Relation between two objects in an object-centered frame.
+      what_moves: none
+      answer_type: object-to-object relation (A left-of/on/inside B)
+      required_temporal_fields: []
+      question_template: "Relative to the {reference_object}, where is the {object}?"
+      distractor_pattern: [opposite_relation, wrong_reference_object, viewer_frame_answer]
+      discriminators:
+        - all referenced objects VISIBLE in the shown view
+        - answer is object-anchored, NOT viewer-anchored
+        - reference object's frame (intrinsic front) is defined
+
+# ============================================================
+# CLASS 2 — SPATIAL MEMORY  (queried info NOT in current view; held
+# across time; the SELF pose is not the thing being transformed)
+# ============================================================
+class_2:
+  name: Spatial memory
+  summary: Maintain object identities/locations across time and occlusion.
+  constructs:
+
+    spatial_working_memory:
+      class: 2
+      frame_of_reference: [egocentric, allocentric]
+      definition: Recall a previously seen location/relation/count under load and delay.
+      what_moves: none            # object is STATIC; difficulty from load + step-depth
+      answer_type: recalled relation, location, or count of past-seen items
+      required_temporal_fields: [agent_trajectory, agent_actions]  # to define "N steps ago"
+      question_template: "What was to your left {k} steps ago?  /  How many {objects} did you pass?"
+      distractor_pattern: [current_view_answer, adjacent_step_answer, off_by_one_count]
+      discriminators:
+        - queried object/relation is NOT in the final view
+        - object positions UNCHANGED across shown frames (nothing relocates)
+        - difficulty scales with load (num items) and step-depth (frames since seen)
+
+    invisible_displacement:
+      class: 2
+      frame_of_reference: allocentric        # answer is a container/landmark
+      definition: Track an object's location after it is hidden AND relocated out of view.
+      what_moves: object (while hidden)
+      answer_type: final location / container of the object
+      required_temporal_fields: [object_state_track, displacement_event]
+      question_template: "Where is the {object} now?"
+      distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
+      discriminators:
+        - object goes VISIBLE -> HIDDEN before it is moved
+        - displacement_event.hidden_during == true
+        - object NOT visible at its true final location in the last frame
+
+# ============================================================
+# CLASS 3 — OPERATION ON THE COGNITIVE MAP  (answer requires a pose
+# DIFFERENT from the encoding pose: real move, or imagined viewpoint)
+# ============================================================
+class_3:
+  name: Operation on the cognitive map
+  summary: Transform the self/other viewpoint, then report relations.
+  constructs:
+
+    spatial_updating:
+      class: 3
+      frame_of_reference: egocentric         # bearing at the NEW pose
+      definition: Update own position/heading after REAL movement; report a static object's bearing.
+      what_moves: observer (real, executed actions)
+      answer_type: egocentric direction at the post-move pose
+      required_temporal_fields: [agent_trajectory, agent_actions]
+      question_template: "Where is the {object} relative to you now?"
+      distractor_pattern: [pre_move_bearing, opposite_turn_bearing, over_rotation_bearing]
+      discriminators:
+        - object position UNCHANGED (only the agent moves)
+        - agent executes >=1 real movement action between encode and query
+        - queried object NOT visible at the final pose
+        - answer computed from agent_pose@final + object_position
+
+    perspective_taking:
+      class: 3
+      frame_of_reference: allocentric         # another entity's frame
+      definition: Compute a relation from an IMAGINED viewpoint (another location or object).
+      what_moves: observer (imagined; viewpoint adopted, not executed)
+      answer_type: relation as seen from the reference entity's frame
+      required_temporal_fields: []            # needs reference-entity FACING metadata
+      requires_metadata: [reference_entity_facing_heading]
+      question_template: "From where the {reference_entity} faces, which object is on its left?"
+      distractor_pattern: [camera_frame_answer, mirrored_left_right, wrong_facing_assumption]
+      discriminators:
+        - agent does NOT actually move to that viewpoint (no real action)
+        - answer is in the REFERENCE ENTITY's frame, not the camera's
+        - reference entity has a defined front/heading in metadata
+
+# ============================================================
+# CLASS 4 — NAVIGATION / WAYFINDING  (answer is a multi-step path)
+# ============================================================
+class_4:
+  name: Navigation / wayfinding
+  summary: Use the map to describe or infer a path.
+  constructs:
+
+    route_knowledge:
+      class: 4
+      frame_of_reference: egocentric          # procedural, sequential
+      definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
+      what_moves: observer (along a traversed path)
+      answer_type: ordered turns/landmarks along a previously walked route
+      required_temporal_fields: [agent_trajectory, agent_actions]
+      question_template: "Retrace the path from the {A} to the {B}: what is the correct order of turns?"
+      distractor_pattern: [reversed_sequence, swapped_two_turns, plausible_but_unwalked_route]
+      discriminators:
+        - the queried path WAS actually traversed (present in trajectory)
+        - answer is sequential/procedural (turns or landmark order)
+
+    survey_knowledge:
+      class: 4
+      frame_of_reference: allocentric          # configurational, map-like
+      definition: Infer a NOVEL path/shortcut over observed but UNTRAVERSED space.
+      what_moves: none required (inference over global layout)
+      answer_type: a shortcut / novel route / direction never previously walked
+      required_temporal_fields: [agent_trajectory]   # to prove the path was NOT taken
+      question_template: "The door is now open. Trace a route from the {A} to the {B}."
+      distractor_pattern: [known_route_answer, dead_end_path, longer_traversed_detour]
+      discriminators:
+        - queried path/shortcut was NEVER traversed by the agent
+        - answer derivable only from global layout (survey representation)
+        - INVALID if it reduces to an experienced route (that is route_knowledge)
+
+# ============================================================
+# Cross-reference: how construct specifics map onto item schema fields
+# (Core fields are always present; these are the construct-dependent ones.)
+# ============================================================
+schema_hooks:
+  object_state_track:  required_for: [invisible_displacement]
+  displacement_event:  required_for: [invisible_displacement]
+  agent_trajectory:    required_for: [spatial_working_memory, spatial_updating,
+                                      route_knowledge, survey_knowledge]
+  agent_actions:       required_for: [spatial_working_memory, spatial_updating,
+                                      route_knowledge]
+  reference_entity_facing_heading: required_for: [perspective_taking]

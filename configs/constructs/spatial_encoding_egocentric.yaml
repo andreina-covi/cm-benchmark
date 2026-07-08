@@ -1,0 +1,132 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Egocentric encoding  (Class 1: Spatial encoding)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs allocentric_encoding:
+#   - answer is VIEWER-anchored (direction from agent), not object-to-object
+# CONTRAST vs spatial_updating / spatial_working_memory:
+#   - all needed info is in the CURRENT view; no delay, no movement, no memory
+# ============================================================
+
+construct_id: egocentric_encoding
+class: 1                       # parent class, for partial-order analysis
+frame_of_reference: egocentric # answer is viewer-anchored at the CURRENT pose
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can encode the spatial
+  relation of a VISIBLE object to the viewer's CURRENT pose. The object
+  is fully visible in the shown frame, the agent is static, and there is
+  no delay or movement — the model must read the relation from the
+  current view + metadata, not from memory or self-motion updating.
+  The QUESTION TEXT names only the object and asks its direction
+  "relative to you" — it must never state the answer direction. All
+  spatial facts come from frames + metadata, never from the text.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions]   # pose = (x, y, heading)
+  from_object_csv: [object_id, object_type, position,
+                    visible_flag_per_frame, bounding_box]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - an object O is VISIBLE in the shown frame (visible_flag -> true)
+  - the agent is STATIC (no movement actions between shown frames)
+  - O's world position is UNCHANGED (static object)
+  - exactly one frame is shown (no delay, no temporal gap)
+frame_selection:
+  include: [current_visible_frame]
+  movement_type: none            # agent does not move
+  note: object must be clearly visible in the query frame
+
+# ----- Question construction -----
+question_templates:
+  - "From your current view, where is the {object_type} relative to you?"
+  - "In which direction is the {object_type} from you?"
+answer_derivation:
+  rule: >
+    bearing of O from the agent's CURRENT pose = angle(O.position -
+    agent.position) expressed relative to agent.heading; bucket into
+    {ahead, right, behind, left, above, below}.
+  answer_source_field: [agent_pose@current, object_position]  # Validator re-checks geometry
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  labels: [ahead of you, to your right, behind you, to your left]
+  correct: computed_bearing_at_current_pose
+  distractors:
+    - opposite_direction          # left/right or ahead/behind swap
+    - orthogonal_direction        # 90-degree rotation error
+    - plausible_wrong_axis        # above/below confusion when lateral is correct
+  distractor_rule: all four options are egocentric directions; exactly one correct
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [object_distance, viewing_angle_ambiguity, num_visible_competitors]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - queried object is VISIBLE in the shown view
+  - no delay and no agent movement between frames
+  - answer computed from current agent pose + object position
+  - question text contains no direction word and no move verb
+  - answer traces to geometry (agent_pose@current + object_position)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: egocentric_encoding
+  class: 1
+  frame_of_reference: egocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<single frame>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [agent_pose@current, object_position]
+  agent_trajectory: <single pose only>              # one entry
+  agent_actions: []                                 # no movement
+  queried_object_id: <object_id>
+  object_state_track: null        # unused: static, no temporal tracking
+  displacement_event: null        # unused: no relocation
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c1_0001
+  construct: egocentric_encoding
+  frame_of_reference: egocentric
+  environment: ai2thor
+  scene_id: FloorPlan7
+  image_paths: [f003.png]
+  question: "From your current view, where is the floor lamp relative to you?"
+  options: {A: "ahead of you", B: "to your right",
+            C: "behind you", D: "to your left"}
+  answer: B
+  answer_source: [agent_pose@f003, object_position]
+  queried_object_id: FloorLamp|-02.1|+00.0|+01.4
+  agent_trajectory:
+    - {frame: f003, pose: {x: 0.0, y: 0.0, heading: 0}}    # lamp to the right, visible
+  agent_actions: []
+  distractor_rationale:
+    A: "opposite direction — ahead/behind confusion"
+    C: "orthogonal direction — 90-degree rotation error"
+    D: "plausible wrong axis — lateral vs behind confusion"
+  difficulty: 1
+
+# ----- Notes for adapting to the OTHER Class-1 construct -----
+# allocentric_encoding = object-to-object relation in a reference object's
+#   intrinsic frame; both objects visible; answer is NOT viewer-anchored.
+# For Class-2+ constructs, temporal fields and movement filters apply;
+# see spatial_working_memory.yaml and invisible_displacement.yaml.
