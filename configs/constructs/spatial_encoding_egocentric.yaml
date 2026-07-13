@@ -28,9 +28,13 @@ task_description: >
 
 # ----- Which CSV fields to read (source of truth) -----
 source_data:
-  from_agent_csv: [frame_id, agent_pose, agent_actions]   # pose = (x, y, heading)
-  from_object_csv: [object_id, object_type, position,
-                    visible_flag_per_frame, bounding_box]
+  from_agent_csv: [timestep, ag-action, degrees, ag-pos-x, ag-pos-y, ag-pos-z,
+                    ag-rot-x, ag-rot-y, ag-rot-z, cmin, cmax, rmin, rmax,
+                    camera-horizontial-angle, camera-position-x, camera-position-y, 
+                    camera-position-z, object-id, path]
+  from_object_csv: [obj-type, obj-id, obj-color, obj-pos-x, obj-pos-y, obj-pos-z, 
+                    obj-rot-x, obj-rot-y, obj-rot-z, receptable-object-ids, 
+                    obj-bbox-x, obj-bbox-y, obj-bbox-z]
 
 # ----- Episode / frame selection (hard filter before building) -----
 select_episodes_where:
@@ -47,6 +51,7 @@ frame_selection:
 question_templates:
   - "From your current view, where is the {object_type} relative to you?"
   - "In which direction is the {object_type} from you?"
+  - "Where is the {object_type} relative to you?"
 answer_derivation:
   rule: >
     bearing of O from the agent's CURRENT pose = angle(O.position -

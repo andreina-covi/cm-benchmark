@@ -1,0 +1,3 @@
+obj-id,obj-type,obj-pos-x,obj-pos-y,obj-pos-z,obj-rot-x,obj-rot-y,obj-rot-z,receptacleObjectIds,bBox-center-x,bBox-center-y,bBox-center-z,size-x,size-y,size-z
+Cup|1,Cup,0.0,1.0,0.8,0.0,0.0,0.0,[],0.0,1.0,0.8,0.1,0.1,0.1
+Plate|1,Plate,0.8,1.0,0.0,0.0,0.0,0.0,[],0.8,1.0,0.0,0.2,0.05,0.2
