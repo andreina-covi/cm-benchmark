@@ -117,3 +117,12 @@ def test_direction_angle_almost_on_axis_is_ambiguous_laterally():
     x, y, z = get_direction_angle((0.01, 0.0, 1.0), ANGLE_THR, VERT_THR)
     assert x == ""
     assert z == "front"
+
+
+def test_direction_angle_far_ahead_is_still_front():
+    # distance_label may be "beyond", but local +Z stays "front"
+    assert get_direction_angle((3.0, 0.0, 5.0), ANGLE_THR, VERT_THR)[2] == "front"
+
+
+def test_direction_angle_true_behind_uses_negative_z():
+    assert get_direction_angle((0.0, 0.0, -2.0), ANGLE_THR, VERT_THR) == ("", "", "behind")

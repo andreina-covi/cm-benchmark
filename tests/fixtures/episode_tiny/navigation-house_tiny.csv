@@ -1,0 +1,3 @@
+timestep,ag-action,action_success,held_obj-id,degrees,ag-pos-x,ag-pos-y,ag-pos-z,ag-rot-x,ag-rot-y,ag-rot-z,cmin,rmin,cmax,rmax,camera-horizon,camera-pos-x,camera-pos-y,camera-pos-z,current-room,current-room-type,obj-id,path
+0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,10,10,50,50,0.0,0.0,1.0,0.0,room|1,Kitchen,Cup|1,/img_0.png
+1,rotate_right,True,,90,0.0,1.0,0.0,0.0,90.0,0.0,20,20,60,60,0.0,0.0,1.0,0.0,room|1,Kitchen,Plate|1,/img_1.png

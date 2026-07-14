@@ -37,9 +37,9 @@ def get_x_direction_angle(angle_xz, angle_threshold_xz):
     return x_relation
 
 def get_z_direction_angle(angle_xz, angle_threshold_xz):
+    """Angle-plane front/behind (kept for tests / callers). Prefer get_z_direction for depth."""
     abs_angle = abs(angle_xz)
     if abs_angle < (90 - angle_threshold_xz):
-        # nearly straight ahead or straight behind → no above/below
         z_relation = "front"
     elif abs_angle > (90 + angle_threshold_xz):
         z_relation = "behind"
@@ -48,8 +48,8 @@ def get_z_direction_angle(angle_xz, angle_threshold_xz):
     return z_relation
 
 def get_distance_text(number, min_distance, med_distance, max_distance):
-    # this method can be improved by using the actual distribution of distances in the dataset 
-    # to define the thresholds for near, medium, and far. For now, we are using fixed thresholds for simplicity.
+    # Distance buckets are independent of front/behind.
+    # “beyond” means farther than max_distance, not “behind the agent”.
 
     if number <= min_distance:
         text = "within reach"
@@ -61,11 +61,18 @@ def get_distance_text(number, min_distance, med_distance, max_distance):
         text = "beyond"
     return text
 
-def get_direction_angle(diff, angle_threshold_xz, vertical_threshold):
+def get_direction_angle(diff, angle_threshold_xz, vertical_threshold, depth_threshold=0.0):
+    """
+    Egocentric relation from a local offset (dx, dy, dz).
+
+    - left/right: horizontal bearing atan2(x, z)
+    - above/below: y
+    - front/behind: sign of local z (camera forward). Independent of distance_label
+      (“beyond” can still be “front” = ahead of the agent but far away).
+    """
     x, y, z = diff
     angle_xz = math.atan2(x, z) * 180 / math.pi
-    # angle_yz = math.atan2(y, z) * 180 / math.pi
     x_dir = get_x_direction_angle(angle_xz, angle_threshold_xz)
-    z_dir = get_z_direction_angle(angle_xz, angle_threshold_xz)
     y_dir = get_y_direction(y, vertical_threshold)
+    z_dir = get_z_direction(z, depth_threshold)
     return (x_dir, y_dir, z_dir)
