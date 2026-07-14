@@ -1,0 +1,8 @@
+{
+  "episode_id": "house_tiny_test",
+  "episode_kind": "invisible_displacement",
+  "environment": "ai2thor",
+  "scene_id": "house_tiny",
+  "num_displacements": 1,
+  "num_tracked_objects": 2
+}

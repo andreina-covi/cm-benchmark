@@ -70,14 +70,18 @@ class NavSequenceGenerator(ABC):
             'agent_trajectory': [],
             'agent_actions': [],
             'route': {'landmarks': [], 'turns': []},
-            # Placeholders until manipulation CSV supports invisible displacement
             'object_state_track': None,
             'displacement_events': [],
+            'world_layout': None,
+            'passage_state': [],
+            'region_trajectory': [],
+            'episode_meta': {},
             'steps': [],
         }
 
         seen_objects_memory = {}
         for timestep, data in self.dict_navigation.items():
+            data = {**data, 'timestep': timestep}
             step_dict = {
                 'step': timestep,
                 'image_path': data['path'],
@@ -88,6 +92,9 @@ class NavSequenceGenerator(ABC):
                     'rotation': data['ag_rot'],
                 },
             }
+            if data.get('current_room') is not None:
+                step_dict['current_room'] = data.get('current_room')
+                step_dict['current_room_type'] = data.get('current_room_type')
 
             visible_objs = self.get_visible_objects(data)
             self.update_memory(seen_objects_memory, visible_objs, timestep)
@@ -129,7 +136,16 @@ class NavSequenceGenerator(ABC):
             })
 
         episode_dict['route'] = self.build_route(episode_dict['steps'])
+        self.enrich_episode_data(episode_dict)
         return episode_dict
+
+    def enrich_episode_data(self, episode_dict):
+        """Hook for subclass to attach displacement / survey fields."""
+        return episode_dict
+
+    def resolve_remembered_position(self, obj_id, timestep, memory_position):
+        """Override to prefer object_state pose after hidden relocation."""
+        return memory_position
 
     def create_edges_for_visible_objects(self, visible_objs, extra_data=None):
         """Split agent→object (egocentric) and object→object (allocentric) edges."""
@@ -157,8 +173,11 @@ class NavSequenceGenerator(ABC):
         edges = []
         ag_pos = data['ag_pos']
         ag_rot = data['ag_rot']
+        timestep = data.get('timestep')
         for obj_id, obj_memory in non_visible_objs.items():
-            obj_pos = obj_memory['position']
+            obj_pos = self.resolve_remembered_position(
+                obj_id, timestep, obj_memory['position']
+            )
             w_to_l, _, _, _ = transform_3d_to_2d_with_fov(
                 ag_pos, ag_rot, obj_pos, self.hyperparams
             )
@@ -292,10 +311,44 @@ class NavSequenceGenerator(ABC):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build navigation episode GT from CSV (DB + optional JSON)"
+        description="Build navigation episode GT from a collection folder (DB + optional JSON)"
     )
-    parser.add_argument("--csv_path_navigation", type=str, required=True)
-    parser.add_argument("--csv_path_objects", type=str, required=True)
+    parser.add_argument(
+        "--csv_path_folder",
+        type=str,
+        required=True,
+        help="Folder with navigation-*.csv, objects-*.csv, and optional displacement/survey files",
+    )
+    parser.add_argument(
+        "--scene_id",
+        type=str,
+        default=None,
+        help="Scene tag (e.g. house_001030). Auto-detected from episode_meta / filenames if omitted",
+    )
+    parser.add_argument(
+        "--file_navigation",
+        type=str,
+        default=None,
+        help="Override navigation CSV basename or path inside the folder",
+    )
+    parser.add_argument(
+        "--file_objects",
+        type=str,
+        default=None,
+        help="Override objects CSV basename or path inside the folder",
+    )
+    parser.add_argument(
+        "--file_object_state",
+        type=str,
+        default=None,
+        help="Override object_state CSV basename or path",
+    )
+    parser.add_argument(
+        "--file_displacement_events",
+        type=str,
+        default=None,
+        help="Override displacement_events CSV basename or path",
+    )
     parser.add_argument(
         "--output_path",
         type=str,
@@ -313,7 +366,7 @@ def parse_args():
         "--episode_id",
         type=str,
         default=None,
-        help="Episode id in the DB (default: derived from scene + filename)",
+        help="Episode id in the DB (default: from episode_meta or environment_scene)",
     )
     parser.add_argument(
         "--environment",

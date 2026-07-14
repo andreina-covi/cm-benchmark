@@ -1,0 +1,20 @@
+{
+  "regions": [
+    {
+      "region_id": "room|1",
+      "label": "Kitchen",
+      "center": {"x": 0.0, "y": 0.0, "z": 0.0},
+      "landmark_obj_ids": ["Cup|1"]
+    }
+  ],
+  "landmarks": [
+    {
+      "landmark_id": "Cup|1",
+      "obj-type": "Cup",
+      "position": {"x": 0.0, "y": 1.0, "z": 0.8},
+      "region_id": "room|1"
+    }
+  ],
+  "passages": [],
+  "connectivity": []
+}

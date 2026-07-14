@@ -92,6 +92,16 @@ object_state_track[], displacement_event{}.
 Verification (set by pipeline, NOT the generator; start null):
 blind_llm_correct, caption_llm_correct, vision_necessary.
 
+## Episode GT notes (pre-item ledger)
+- Built from SPOC collection folder via `--csv_path_folder` (see README).
+- System of record: SQLite EpisodeStore; JSON export is optional.
+- Sparse fields: object_state_track (displaced objects only),
+  region_trajectory, passage_state — carry-forward at query step t.
+- distance_label (how far) ≠ angle_relation front/behind (local +Z).
+  "beyond" + "front" means ahead of the agent but far.
+- Do not invent object facing from obj-rot unless a trusted source exists.
+- Collector field brief: prompts/ai2thor_collection_extension.md.
+
 ## How to review / suggest
 - Start by mapping files → architecture nodes; name any node with no
   code, or code that belongs to no node.

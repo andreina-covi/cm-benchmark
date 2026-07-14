@@ -1,0 +1,2 @@
+event_id,obj-id,at_timestep,action,from_receptacle,to_receptacle,from_pos-x,from_pos-y,from_pos-z,to_pos-x,to_pos-y,to_pos-z,hidden_during,visible_just_before,visible_just_after,in_fov_just_before,in_fov_just_after,moved_via,notes
+disp_0,Cup|1,1,PlaceObjectAtPoint,CounterTop|1,CounterTop|1,0.0,1.0,0.8,0.2,1.0,0.5,True,False,False,False,False,direct,same_receptacle_hidden_shift

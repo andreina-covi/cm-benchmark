@@ -1,4 +1,4 @@
-"""Simple end-to-end tests for Ai2ThorNavGenerator with tiny CSV fixtures."""
+"""End-to-end tests: tiny CSVs and folder-based SPOC-style episodes."""
 
 import json
 from pathlib import Path
@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from cm_benchmark.generator.ai2thor_nav_generator import Ai2ThorNavGenerator
+from cm_benchmark.generator.episode_paths import resolve_episode_paths
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 NAV_CSV = FIXTURES / 'navigation_tiny.csv'
 OBJ_CSV = FIXTURES / 'objects_tiny.csv'
+EPISODE_DIR = FIXTURES / 'episode_tiny'
 
 
 @pytest.fixture
@@ -47,7 +49,6 @@ def test_step0_cup_is_visible_and_egocentric_edge_exists(episode):
     assert 'Cup|1' in ego_targets
 
     cup_edge = next(e for e in step0['edges_egocentric'] if e['target'] == 'Cup|1')
-    # Cup is ahead on +Z → front, no left/right
     assert cup_edge['angle_relation'][2] == 'front'
     assert cup_edge['inferred'] is False
 
@@ -74,7 +75,6 @@ def test_route_turns_and_landmark_from_nearby_cup(episode):
     assert turns[1]['degrees'] == 90
 
     landmark_ids = [lm['object_id'] for lm in data['route']['landmarks']]
-    # Cup at 0.8m → nearby; should appear as a landmark
     assert 'Cup|1' in landmark_ids
 
 
@@ -83,3 +83,67 @@ def test_exported_json_is_readable(episode):
     loaded = json.loads(json_path.read_text())
     assert loaded['scene'] == 'TinyScene'
     assert len(loaded['steps']) == 2
+
+
+def test_resolve_episode_paths_from_folder():
+    paths = resolve_episode_paths(EPISODE_DIR)
+    assert paths['scene_id'] == 'house_tiny'
+    assert paths['navigation'].name == 'navigation-house_tiny.csv'
+    assert paths['displacement_events'].name.startswith('displacement_events')
+
+
+@pytest.fixture
+def folder_episode(tmp_path):
+    gen = Ai2ThorNavGenerator(
+        csv_path_folder=str(EPISODE_DIR),
+        output_path=str(tmp_path),
+        output_filename='folder_episode.json',
+    )
+    data = gen.collect_episode_data(extra_data={'scene': 'ignore', 'all_distances': []})
+    return gen, data
+
+
+def test_folder_loads_displacement_and_survey_fields(folder_episode):
+    _gen, data = folder_episode
+    assert data['scene'] == 'house_tiny'
+    assert len(data['displacement_events']) == 1
+    assert data['displacement_events'][0]['obj_id'] == 'Cup|1'
+    assert data['displacement_events'][0]['hidden_during'] is True
+
+    assert data['object_state_track'] is not None
+    assert 'Cup|1' in data['object_state_track']
+    entries = data['object_state_track']['Cup|1']['entries']
+    # Sparse: step 0 (first) + step 1 (pose/fov change) — no duplicate unchanged rows
+    assert [e['step'] for e in entries] == [0, 1]
+    assert entries[0]['in_camera_fov'] is True
+    assert entries[1]['in_camera_fov'] is False
+    assert entries[1]['position'] == [0.2, 1.0, 0.5]
+
+    from cm_benchmark.generator.ai2thor_nav_generator import state_at_step
+
+    # Carry-forward: querying step with no new entry uses the previous state
+    assert state_at_step(entries, 0)['in_camera_fov'] is True
+    mid = state_at_step(entries, 1)
+    assert mid['position'] == [0.2, 1.0, 0.5]
+    assert state_at_step(entries, 5)['position'] == [0.2, 1.0, 0.5]
+
+    assert data['world_layout']['regions'][0]['region_id'] == 'room|1'
+    assert data['region_trajectory'][0]['region_id'] == 'room|1'
+    # Sparse: fixture has same room on steps 0 and 1 → only first kept
+    assert len(data['region_trajectory']) == 1
+    assert data['passage_state'][0]['is_open'] is True
+    assert data['episode_meta']['episode_id'] == 'house_tiny_test'
+
+
+def test_folder_episode_exports_to_db(folder_episode, tmp_path):
+    gen, data = folder_episode
+    db_path = tmp_path / 'ep.db'
+    gen.export_to_db(data, db_path=str(db_path), episode_id='folder_1')
+
+    from cm_benchmark.storage import EpisodeStore
+
+    with EpisodeStore(db_path) as store:
+        loaded = store.load_episode('folder_1')
+    assert loaded['displacement_events'][0]['obj_id'] == 'Cup|1'
+    assert 'Cup|1' in loaded['object_state_track']
+    assert loaded['world_layout'] is not None
