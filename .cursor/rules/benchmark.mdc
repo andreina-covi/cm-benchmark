@@ -93,14 +93,27 @@ Verification (set by pipeline, NOT the generator; start null):
 blind_llm_correct, caption_llm_correct, vision_necessary.
 
 ## Episode GT notes (pre-item ledger)
-- Built from SPOC collection folder via `--csv_path_folder` (see README).
+- Built from SPOC collection via `--csv_path_folder` (episode root or
+  `annotations/`; see README). Sibling `images/` holds RGB frames.
 - System of record: SQLite EpisodeStore; JSON export is optional.
 - Sparse fields: object_state_track (displaced objects only),
   region_trajectory, passage_state — carry-forward at query step t.
+- Nav FOV / edges exclude structural meshes (Wall/Floor/Ceiling/Room/…).
 - distance_label (how far) ≠ angle_relation front/behind (local +Z).
   "beyond" + "front" means ahead of the agent but far.
 - Do not invent object facing from obj-rot unless a trusted source exists.
 - Collector field brief: prompts/ai2thor_collection_extension.md.
+
+## First-draft Q&A notes (`src/cm_benchmark/generation/`)
+- Answers and answer_source are [CODE]-only from episode GT; an LLM may
+  only paraphrase question text later (never change the answer).
+- Items may use concise or verbose question styles; verbose text must not
+  leak the answer.
+- Multi-image items must make temporal frame order unambiguous.
+- Class 4 asks source→goal route / layout planning, not full-trajectory
+  memorization.
+- Constructs that lack required metadata (e.g. object facing) stay
+  unsupported rather than inventing facts.
 
 ## How to review / suggest
 - Start by mapping files → architecture nodes; name any node with no
@@ -116,3 +129,5 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   frozen item has null answer_source or vision_necessary != true).
 - If a request would blur the FREEZE wall or make an [CODE] node call an
   LLM for scoring, refuse and explain.
+- Flag class-4 drafts that ask for full-episode turn recall, or multi-image
+  items whose question never situates “now” in the frame sequence.

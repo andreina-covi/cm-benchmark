@@ -63,32 +63,27 @@ CSV / simulator collection
 
 ## Where we are now
 
-Episode ground-truth is built from a **SPOC collection folder** (navigation + objects + displacement + survey logs). Downstream LLMs draft questions from that GT; a validator recomputes answers from the same geometry.
+Episode ground-truth is built from a **SPOC collection folder** (`images/` + `annotations/`). A **first-draft Item Generation** path then builds taxonomy MC candidates from that GT (deterministic templates; answers locked to metadata).
 
 ```
-collection folder (SPOC / AI2-THOR)
-  navigation, objects, object_state, displacement_events,
-  world_layout, passage_state, region_trajectory, episode_meta
+collection folder (SPOC episode root or annotations/)
+  images/ + annotations/
         │
         ▼
- NavSequenceGenerator  (abstract)
-        │
-        ├── Ai2ThorNavGenerator   ← implemented (folder input)
-        └── MatterportNavGenerator ← planned
+ Ai2ThorNavGenerator → EpisodeStore (SQLite) + optional JSON
         │
         ▼
- EpisodeStore (SQLite) + optional JSON export
+ generation.draft_items → candidate items JSON (concise + verbose)
 ```
 
-| In the GT today | Still upcoming |
-|-----------------|----------------|
-| Per-step visible / non-visible objects (cumulative memory) | `facing` / `edges_object_frame` (perspective taking) |
-| Egocentric + allocentric edges; inferred edges | Item Generation + Evaluation pipelines |
-| `agent_trajectory`, `agent_actions`, landmark-ordered `route` | Matterport3D generator |
-| Sparse `object_state_track` (displaced objects only) + `displacement_events` | |
-| Sparse `region_trajectory` / `passage_state` + `world_layout` | |
+| In place today | Still upcoming |
+|----------------|----------------|
+| Episode GT (edges, memory, displacement, layout, sparse tracks) | Trusted object facing → `edges_object_frame` |
+| First-draft Q&A per construct (see below) | GT Validator, vision-necessity, FREEZE |
+| Frame annotator for spatial review | Model Evaluation pipeline |
+| | Matterport3D generator |
 
-Collection upstream: [spoc-robot-navigation](https://github.com/andreina-covi/spoc-robot-navigation). Field brief for collectors: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collection_extension.md).
+Collection upstream: [spoc-robot-navigation](https://github.com/andreina-covi/spoc-robot-navigation) (local twin: `spoc-robot-training`). Field brief: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collection_extension.md).
 
 ---
 
@@ -107,22 +102,33 @@ cm-benchmark/
 │   │   ├── nav_sequence_generator.py
 │   │   ├── ai2thor_nav_generator.py
 │   │   └── episode_paths.py              # folder / filename discovery
+│   ├── generation/                       # first-draft taxonomy Q&A
+│   │   ├── draft_items.py                # CLI
+│   │   ├── pipeline.py                   # orchestrate plan → items
+│   │   ├── planner.py                    # construct filters on GT
+│   │   ├── constructs.py                 # templates + display names
+│   │   ├── templates.py                  # concise / verbose wording
+│   │   └── paraphrase.py                 # optional wording hook (off by default)
 │   ├── utils/
 │   │   ├── spatial_transformer.py
-│   │   └── spatial_relations.py
+│   │   ├── spatial_relations.py
+│   │   └── annotate_frames.py            # numbered points + legend
 │   ├── validation/
 │   └── storage/
 │       ├── episode_store.py
-│       └── ai2thor/
+│       └── ai2thor/                      # episodes.db, nav_data/, items/, annotated/
 ├── tests/
 │   ├── fixtures/
 │   │   ├── navigation_tiny.csv / objects_tiny.csv
-│   │   └── episode_tiny/                 # full folder-style episode
+│   │   └── episode_tiny/
 │   ├── test_spatial_transformer.py
 │   ├── test_spatial_relation.py
-│   ├── test_object_state_track.py        # sparse tracks + carry-forward
+│   ├── test_object_state_track.py
 │   ├── test_navigation_generation.py
-│   └── test_episode_store.py
+│   ├── test_episode_store.py
+│   ├── test_episode_paths.py
+│   ├── test_draft_items.py
+│   └── test_annotate_frames.py
 └── README.md
 ```
 
@@ -160,6 +166,7 @@ python -m src.cm_benchmark.generator.ai2thor_nav_generator \
 ```
 
 `scene_id` / `episode_id` come from `episode_meta-*.json` or filenames when present.  
+`--csv_path_folder` may be the **episode root** (`<timestamp>/`) or its **`annotations/`** subfolder.  
 Optional overrides: `--scene_id`, `--episode_id`, `--file_navigation`, `--file_objects`, `--file_object_state`, `--file_displacement_events`.
 
 ### Also export JSON
@@ -175,9 +182,21 @@ python -m src.cm_benchmark.generator.ai2thor_nav_generator \
 
 ### Example (local dataset)
 
+Either the episode root or `annotations/` works:
+
 ```bash
+# episode root (auto-finds annotations/ + images/)
 python -m src.cm_benchmark.generator.ai2thor_nav_generator \
-  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_13_2026_16_32_01_395596/nav_generator \
+  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_16_2026_12_39_28_297796 \
+  --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
+  --episode_id      ai2thor_house_001030 \
+  --export_json \
+  --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
+  --output_filename nav_data_house_001030.json
+
+# or annotations/ directly
+python -m src.cm_benchmark.generator.ai2thor_nav_generator \
+  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_16_2026_12_39_28_297796/annotations \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
   --episode_id      ai2thor_house_001030 \
   --export_json \
@@ -187,16 +206,28 @@ python -m src.cm_benchmark.generator.ai2thor_nav_generator \
 
 ### Inputs (collection folder)
 
+SPOC layout:
+
+```text
+<timestamp>/
+  images/img_<t>.png
+  annotations/
+    navigation-*.csv, objects-*.csv, object_state-*.csv, ...
+    episode_meta-*.json, world_layout-*.json
+```
+
 | File | Role |
 |------|------|
-| **navigation-*.csv** | Agent/camera pose, action, image path, visible dets + bboxes |
-| **objects-*.csv** | Object catalog (type, pose, size, receptacles) |
-| **object_state-*.csv** | Per-timestep pose / `visible` / `in_camera_fov` (dense in collection; may include hidden rows) |
+| **navigation-*.csv** | Agent/camera pose, action, image path, **non-structural** FOV dets + bboxes |
+| **objects-*.csv** | Object catalog (type, pose, size, receptacles, optional color) |
+| **object_state-*.csv** | Per-timestep pose / `visible` / `in_camera_fov` (pickupables; may include hidden rows) |
 | **displacement_events-*.csv** | Hidden relocations (`hidden_during`, from/to receptacle + pose) |
 | **world_layout-*.json** | Regions, landmarks, passages, connectivity |
 | **passage_state-*.csv** | Door/passage open state over time |
 | **region_trajectory-*.csv** | Agent region each step |
-| **episode_meta-*.json** | `episode_id`, `scene_id`, `episode_kind`, counts |
+| **episode_meta-*.json** | `episode_id`, `scene_id`, `episode_kind`, `images_dir`, `annotations_dir`, counts |
+
+Walls / floors / ceilings / rooms are excluded from nav FOV edges (room membership uses `current-room` / `region_trajectory`).
 
 **Visibility split**
 
@@ -283,11 +314,97 @@ episode
 
 ## How episode GT will be used
 
-1. **Question / answer drafting (LLM)** — compose items from DB/JSON fields; never invent geometry.
-2. **Ground-truth validation (code)** — recompute answers from poses / edges / tracks.
-3. **VLM evaluation** — images + question only; exact-match against frozen answers.
+1. **First-draft Q&A (code)** — deterministic templates compose items from DB/JSON; answer + `answer_source` locked to edges/tracks/layout.
+2. **Optional paraphrase (LLM later)** — may rewrite *question wording only*; never invent geometry or change the answer.
+3. **Ground-truth validation (code)** — recompute answers from poses / edges / tracks.
+4. **VLM evaluation** — images + question only; exact-match against frozen answers.
 
 Prefer the **DB** in pipeline code; use JSON as a portable snapshot.
+
+---
+
+## First-draft items (taxonomy Q&A)
+
+Hybrid design: **[CODE]** selects eligible facts and locks answer / options / `answer_source`; wording uses templates. Optional `--paraphrase` is a no-op until a provider is wired.
+
+```bash
+# from JSON export
+python -m cm_benchmark.generation.draft_items \
+  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_001030.json \
+  --output       src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json \
+  --max_per_construct 2
+
+# from SQLite
+python -m cm_benchmark.generation.draft_items \
+  --db_path     src/cm_benchmark/storage/ai2thor/episodes.db \
+  --episode_id  ai2thor_house_001030 \
+  --output      src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json \
+  --constructs  egocentric_encoding,invisible_displacement,route_knowledge
+```
+
+### Question styles
+
+| Style | Form |
+|-------|------|
+| `concise` | Short construct template |
+| `verbose` | GT-grounded scene preamble (other objects first), then the same query — **must not leak the answer** |
+
+Paired items share `answer` / `answer_source` and link via `paired_item_id`.
+
+### Multi-image wording (classes 2–4)
+
+When an item has **more than one** `image_path`, the question states **time order** and which frame the answer uses (e.g. “now = last image”). Ambiguous “now” without that cue is treated as a bug.
+
+### Class 4 — route / survey (important)
+
+These are **source → goal planning**, not memorizing every action from step 0 to the end of the episode.
+
+| Construct | What the draft asks | Evidence |
+|-----------|---------------------|----------|
+| `route_knowledge` | Short walked segment (e.g. Kitchen → LivingRoom); compressed action plan | `region_trajectory` change points + turns between those steps; images near start/goal |
+| `survey_knowledge` | Layout-based connection (which passage / next region) | `world_layout.connectivity` (BFS); views in source/goal regions when available |
+
+Do **not** emit a single question that expects recall of the full egomotion list across hundreds of steps.
+
+### Construct coverage (v0)
+
+| Construct | Draft status |
+|-----------|--------------|
+| `egocentric_encoding` | full |
+| `spatial_working_memory` | full |
+| `invisible_displacement` | full |
+| `spatial_updating` | thin (multi-frame “now = last image”) |
+| `allocentric_encoding` | thin (object–object edges; no intrinsic facing) |
+| `route_knowledge` | short source→goal segments |
+| `survey_knowledge` | thin layout planning |
+| `perspective_taking` | `status: unsupported` until trusted facing exists |
+
+### Display names
+
+Some Objaverse assets log `category: "Undefined"`. Questions fall back to the **object-id stem** (`ObjaScooter|4|5` → `ObjaScooter`), never the placeholder string.
+
+### Item fields (draft)
+
+Core: `item_id`, `construct`, `class`, `frame_of_reference`, `scene_id`, `image_paths`, `question`, `options`, `answer`, `answer_source`, `distractor_rationale`.  
+Draft extras: `status` (`ok` \| `thin` \| `unsupported`), `question_style`, `paired_item_id`, `query_step`, `encoding_step`.  
+Verification fields stay `null`.
+
+---
+
+## Annotate frames (spatial review)
+
+Mark each visible object with a **numbered colored circle** (not long text overlays). The right-side **legend** maps `N → object id` and shows **egocentric** relations (`agent → object` from `edges_egocentric`).
+
+```bash
+python -m cm_benchmark.utils.annotate_frames \
+  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_001030.json \
+  --output_dir   src/cm_benchmark/storage/ai2thor/annotated/house_001030 \
+  --start 0 --end 10 \
+  --navigation_csv /path/to/annotations/navigation-house_XXXXXX.csv
+```
+
+Useful flags: `--step`, `--show_local_xyz`, `--no_relations`.  
+Pass `--navigation_csv` when the episode JSON lacks `visible_objects[*].bbox` (older exports).
 
 ---
 
@@ -304,6 +421,9 @@ pytest tests/ -q
 | `test_object_state_track.py` | Sparse tracks + carry-forward |
 | `test_navigation_generation.py` | Tiny CSVs + folder episode (displacement / survey) |
 | `test_episode_store.py` | SQLite save / load / query |
+| `test_episode_paths.py` | Episode root vs `annotations/` discovery |
+| `test_draft_items.py` | First-draft Q&A (styles, multi-frame, route segments) |
+| `test_annotate_frames.py` | Numbered points + legend |
 
 ---
 
@@ -323,8 +443,10 @@ pytest tests/ -q
 - [x] Folder input from SPOC collection (displacement + survey)
 - [x] Sparse `object_state_track` / `region_trajectory` / `passage_state`
 - [x] Front/behind from local-z; distance labels independent
+- [x] First-draft Item Generation (templates + concise/verbose styles)
+- [x] Multi-image temporal cues; class-4 source→goal planning (not full-traj recall)
 - [ ] Object facing → `edges_object_frame` (perspective taking)
-- [ ] Item Generation pipeline
+- [ ] LLM paraphrase + GT Validator / vision-necessity
 - [ ] FREEZE + Model Evaluation pipeline
 - [ ] Matterport3D generator
 
