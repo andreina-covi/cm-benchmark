@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.cm_benchmark.generator.episode_paths import resolve_episode_paths
+from src.cm_benchmark.generator.episode_paths import (
+    is_structural_object,
+    resolve_episode_paths,
+    resolve_image_path,
+)
 from src.cm_benchmark.generator.nav_sequence_generator import NavSequenceGenerator, parse_args
 from src.cm_benchmark.utils.spatial_transformer import transform_text2list, transform_3d_to_2d_with_fov
 
@@ -154,6 +158,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.state_lookup = {}
         self.displaced_obj_ids = set()
         self.scene_id = scene_id
+        self.images_dir = None
 
         if csv_path_folder is not None:
             paths = resolve_episode_paths(
@@ -163,6 +168,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             path_objects = str(paths['objects'])
             self.scene_id = paths['scene_id']
             self.episode_meta = paths.get('episode_meta_data') or {}
+            self.images_dir = paths.get('images_dir')
             self._paths = paths
             self._load_optional_logs(paths)
         else:
@@ -318,6 +324,13 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             timestep = row.get('timestep')
             obj = row.get('obj-id')
             if timestep not in dict_navigation:
+                held = (
+                    row.get('held_obj-id')
+                    if 'held_obj-id' in row.index and pd.notna(row.get('held_obj-id'))
+                    else None
+                )
+                if isinstance(held, str) and held.strip() == '':
+                    held = None
                 dict_navigation[timestep] = {
                     'action': row.get('ag-action'),
                     'degrees': row.get('degrees'),
@@ -326,11 +339,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                         if 'action_success' in row.index and pd.notna(row.get('action_success'))
                         else None
                     ),
-                    'held_obj_id': (
-                        row.get('held_obj-id')
-                        if 'held_obj-id' in row.index and pd.notna(row.get('held_obj-id'))
-                        else None
-                    ),
+                    'held_obj_id': held,
                     'ag_pos': (
                         row.get('camera-pos-x'),
                         row.get('camera-pos-y'),
@@ -341,7 +350,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                         row.get('ag-rot-y'),
                         row.get('ag-rot-z'),
                     ),
-                    'path': row.get('path'),
+                    'path': resolve_image_path(
+                        row.get('path'),
+                        images_dir=self.images_dir,
+                        timestep=int(timestep) if pd.notna(timestep) else None,
+                    ),
                     'current_room': (
                         row.get('current-room')
                         if 'current-room' in row.index and pd.notna(row.get('current-room'))
@@ -356,7 +369,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     'objects': [],
                     'bboxes': [],
                 }
-            if _is_valid_obj_id(obj):
+            if _is_valid_obj_id(obj) and not is_structural_object(object_id=obj):
                 dict_navigation[timestep]['objects'].append(obj)
                 dict_navigation[timestep]['bboxes'].append(
                     (row.get('cmin'), row.get('rmin'), row.get('cmax'), row.get('rmax'))
@@ -367,14 +380,20 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         df = pd.read_csv(self.path_objects)
         dict_objects = {}
         for _, row in df.iterrows():
+            obj_id = row.get('obj-id')
+            obj_type = row.get('obj-type')
+            if not _is_valid_obj_id(obj_id) or is_structural_object(
+                obj_type=obj_type, object_id=obj_id
+            ):
+                continue
             receptacle = row.get('receptacleObjectIds')
             try:
                 receptacle_ids = transform_text2list(receptacle) if pd.notna(receptacle) else []
             except (ValueError, SyntaxError):
                 receptacle_ids = []
 
-            dict_objects[row.get('obj-id')] = {
-                'obj-type': row.get('obj-type'),
+            entry = {
+                'obj-type': obj_type,
                 'obj-pos': (
                     row.get('obj-pos-x'),
                     row.get('obj-pos-y'),
@@ -397,6 +416,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     row.get('size-z'),
                 ),
             }
+            if 'obj-color' in row.index and pd.notna(row.get('obj-color')):
+                entry['obj-color'] = row.get('obj-color')
+            dict_objects[obj_id] = entry
         return dict_objects
 
     def _pose_for_object(self, obj_id, timestep):
@@ -414,7 +436,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         ag_pos = data['ag_pos']
         ag_rot = data['ag_rot']
         timestep = data.get('timestep')
-        for obj in data['objects']:
+        bboxes = data.get('bboxes') or []
+        for idx, obj in enumerate(data['objects']):
             obj_pos, obj_rot, state = self._pose_for_object(obj, timestep)
             if obj_pos is None:
                 continue
@@ -426,11 +449,23 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             w_to_l, p_l, alpha, betha = transform_3d_to_2d_with_fov(
                 ag_pos, ag_rot, obj_pos, self.hyperparams
             )
+            bbox = bboxes[idx] if idx < len(bboxes) else None
+            if bbox is not None and any(
+                v is None
+                or (isinstance(v, float) and (np.isnan(v) or math.isinf(v)))
+                for v in bbox
+            ):
+                bbox = None
             visible_objs[obj] = {
                 'category': category,
                 'position': obj_pos,
                 'rotation': obj_rot,
                 'facing': None,
+                'bbox': (
+                    tuple(int(round(float(v))) for v in bbox)
+                    if bbox is not None
+                    else None
+                ),
                 'local_position': tuple(np.round(w_to_l, 3)),
                 'local_point': (
                     tuple(np.round(p_l, 3))

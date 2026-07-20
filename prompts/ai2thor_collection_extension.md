@@ -1,8 +1,20 @@
 # AI2-THOR collection — additional fields
 
-Keep existing navigation and object-catalog CSVs unchanged. Add the logs below for manipulation and layout episodes.
+Keep existing navigation and object-catalog CSVs. Add the logs below for manipulation and layout episodes.
+
+**Episode folder layout (current SPOC export):**
+
+```text
+<timestamp>/
+  images/img_<t>.png
+  annotations/          # all CSV + JSON (pass this or the parent as --csv_path_folder)
+```
 
 Collection CSVs may be **dense** (one row per timestep). Downstream cm-benchmark **sparsifies** `object_state` tracks (displaced objects), `region_trajectory`, and `passage_state` to change-points only; query step `t` uses the latest prior entry.
+
+Navigation FOV rows are **non-structural** only (no Wall/Floor/Ceiling/Room/Window). Agent–room membership uses `current-room` / `region_trajectory`, not floor mesh ids.
+
+Prefer real semantic `obj-type` / category strings when the simulator provides them. Placeholder labels such as `Undefined` force downstream questions to fall back to the object-id stem (e.g. `ObjaScooter|4|5` → `ObjaScooter`).
 
 ---
 
@@ -24,10 +36,12 @@ Object is visible → becomes not visible → relocated while not visible → st
 | `in_camera_fov` | yes | In nav camera detections |
 | `parent_receptacle` | yes | Canonical parent id, or null |
 | `parent_receptacles` | recommended | Full list (JSON/string) |
+| `is_inside_receptacle` | recommended | |
 | `receptacle_is_open` | if applicable | Open/closed of container |
+| `distance_from_agent` | optional | |
 | `held_obj-id` on agent rows | recommended | What agent holds, if any |
 
-Episode identity (`episode_id`, `scene_id`) lives in `episode_meta-*.json` / the run folder — do not repeat on every CSV row.
+Episode identity (`episode_id`, `scene_id`, `images_dir`, `annotations_dir`) lives in `episode_meta-*.json` / the run folder — do not repeat on every CSV row.
 
 ### `displacement_events.csv` (one row per relocation)
 
@@ -78,15 +92,17 @@ Trajectory covers ≥2 regions. Landmarks A and B exist. A feasible A→B path w
 
 ### `episode_meta-*.json`
 
-`episode_id`, `scene_id`, `episode_kind`, `environment`, counts (e.g. `num_displacements`).
+`episode_id`, `scene_id`, `episode_kind`, `environment`, `images_dir`, `annotations_dir`, counts (e.g. `num_displacements`).
 
 ---
 
 ## C. Files per run
 
+Under `<timestamp>/annotations/` (images under `<timestamp>/images/`):
+
 | File | Invisible displacement | Survey |
 |------|:----------------------:|:------:|
-| `navigation-*.csv` + `objects-*.csv` + images | ✓ | ✓ |
+| `navigation-*.csv` + `objects-*.csv` + `images/` | ✓ | ✓ |
 | `object_state-*.csv` | ✓ | |
 | `displacement_events-*.csv` | ✓ | |
 | `world_layout-*.json` | | ✓ |

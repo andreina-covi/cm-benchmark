@@ -4,5 +4,7 @@
   "environment": "ai2thor",
   "scene_id": "house_tiny",
   "num_displacements": 1,
-  "num_tracked_objects": 2
+  "num_tracked_objects": 2,
+  "images_dir": "images",
+  "annotations_dir": "annotations"
 }

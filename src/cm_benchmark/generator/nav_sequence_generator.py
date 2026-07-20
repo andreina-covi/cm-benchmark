@@ -317,7 +317,10 @@ def parse_args():
         "--csv_path_folder",
         type=str,
         required=True,
-        help="Folder with navigation-*.csv, objects-*.csv, and optional displacement/survey files",
+        help=(
+            "SPOC episode root (<timestamp>/) or its annotations/ folder "
+            "(navigation-*.csv, objects-*.csv, optional displacement/survey files)"
+        ),
     )
     parser.add_argument(
         "--scene_id",

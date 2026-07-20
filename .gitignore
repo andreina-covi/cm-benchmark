@@ -1,0 +1,55 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# --- Virtual environments ---
+.venv/
+.venv-*/
+venv/
+env/
+
+# --- Test / type / coverage caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Local episode / draft outputs (regenerate from collection) ---
+# Keep package code under storage/; ignore simulator artifacts.
+src/cm_benchmark/storage/ai2thor/episodes.db
+src/cm_benchmark/storage/ai2thor/episodes.db-*
+src/cm_benchmark/storage/ai2thor/nav_data/
+src/cm_benchmark/storage/ai2thor/annotated/
+src/cm_benchmark/storage/ai2thor/items/
+
+# --- Presentation build helper (optional local venv) ---
+.venv-pptx/
