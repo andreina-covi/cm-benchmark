@@ -150,6 +150,15 @@ pip install -e .
 Tests expect `src` on the path (see `pyproject.toml` → `pythonpath = ["src"]`).
 
 ---
+## Filter data
+
+### Command
+
+```bash
+python -m src.cm_benchmark.utils.sample_for_calibration \
+    --csv_input_path /path/to/csv_output_spoc.csv \
+    --csv_output_path /path/to/csv_output_calibration.csv
+```
 
 ## Build episode ground-truth
 
@@ -187,21 +196,21 @@ Either the episode root or `annotations/` works:
 ```bash
 # episode root (auto-finds annotations/ + images/)
 python -m src.cm_benchmark.generator.ai2thor_nav_generator \
-  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_16_2026_12_39_28_297796 \
+  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_20_2026_17_43_24_824674 \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
-  --episode_id      ai2thor_house_001030 \
+  --episode_id      ai2thor_house_006068 \
   --export_json \
   --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
-  --output_filename nav_data_house_001030.json
+  --output_filename nav_data_house_006068.json
 
 # or annotations/ directly
 python -m src.cm_benchmark.generator.ai2thor_nav_generator \
-  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_16_2026_12_39_28_297796/annotations \
+  --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_20_2026_17_43_24_824674/annotations \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
-  --episode_id      ai2thor_house_001030 \
+  --episode_id      ai2thor_house_006068 \
   --export_json \
   --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
-  --output_filename nav_data_house_001030.json
+  --output_filename nav_data_house_006068.json
 ```
 
 ### Inputs (collection folder)
@@ -218,20 +227,32 @@ SPOC layout:
 
 | File | Role |
 |------|------|
-| **navigation-*.csv** | Agent/camera pose, action, image path, **non-structural** FOV dets + bboxes |
+| **navigation-*.csv** | Agent/camera pose, action, image path, **non-structural** FOV dets + bboxes + `obj-distance` / `bbox-area` / `min-side` / `occupancy-ratio` / `visible-pixels` |
 | **objects-*.csv** | Object catalog (type, pose, size, receptacles, optional color) |
 | **object_state-*.csv** | Per-timestep pose / `visible` / `in_camera_fov` (pickupables; may include hidden rows) |
 | **displacement_events-*.csv** | Hidden relocations (`hidden_during`, from/to receptacle + pose) |
 | **world_layout-*.json** | Regions, landmarks, passages, connectivity |
 | **passage_state-*.csv** | Door/passage open state over time |
 | **region_trajectory-*.csv** | Agent region each step |
-| **episode_meta-*.json** | `episode_id`, `scene_id`, `episode_kind`, `images_dir`, `annotations_dir`, counts |
+| **episode_meta-*.json** | `episode_id`, `scene_id`, `camera` (W/H/FOV), `agent` (step sizes), paths, counts |
 
 Walls / floors / ceilings / rooms are excluded from nav FOV edges (room membership uses `current-room` / `region_trajectory`).
 
 **Visibility split**
 
-- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame).
+- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame). Collection may include tiny/occluded blobs; Q&A FOV filtering uses tunable `question_visibility` on `Ai2ThorNavGenerator`. Calibrate thresholds with:
+
+```bash
+python -m cm_benchmark.analysis.visibility_threshold_analysis \
+  --navigation_csv /path/to/annotations/navigation-house_XXXXXX.csv \
+  --objects_csv    /path/to/annotations/objects-house_XXXXXX.csv \
+  --episode_meta   /path/to/annotations/episode_meta-house_XXXXXX.json \
+  --output_dir     analysis/visibility_house_XXXXXX
+```
+
+  Outputs under ``timestep_XXXX/`` (one folder per frame): feature table, bar charts
+  per object, histograms, correlations, scatters, keep-rate sweeps, clusters.
+  Root only keeps episode overview (`detections_per_timestep.png`) + full `features.csv`.
 - **`object_state.in_camera_fov` + pose** → displacement tracks and true pose after moves (catalog poses can be stale).
 
 ---

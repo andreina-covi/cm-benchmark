@@ -51,5 +51,8 @@ src/cm_benchmark/storage/ai2thor/nav_data/
 src/cm_benchmark/storage/ai2thor/annotated/
 src/cm_benchmark/storage/ai2thor/items/
 
+# --- Local analysis plot outputs ---
+/analysis/
+
 # --- Presentation build helper (optional local venv) ---
 .venv-pptx/

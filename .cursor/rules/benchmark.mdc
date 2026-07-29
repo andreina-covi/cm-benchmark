@@ -99,6 +99,10 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - Sparse fields: object_state_track (displaced objects only),
   region_trajectory, passage_state — carry-forward at query step t.
 - Nav FOV / edges exclude structural meshes (Wall/Floor/Ceiling/Room/…).
+- Camera size / FOV / step size come from episode_meta when present.
+- Q&A FOV may further drop tiny or barely-shown detections via tunable
+  visibility thresholds (calibrate with detection stats; do not invent
+  objects). Catalog / displacement logs stay unfiltered.
 - distance_label (how far) ≠ angle_relation front/behind (local +Z).
   "beyond" + "front" means ahead of the agent but far.
 - Do not invent object facing from obj-rot unless a trusted source exists.

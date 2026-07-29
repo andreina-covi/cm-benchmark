@@ -15,7 +15,7 @@ from cm_benchmark.generator.episode_paths import (
 def test_is_structural_object():
     assert is_structural_object(obj_type='Floor')
     assert is_structural_object(object_id='Wall|2|1')
-    assert is_structural_object(object_id='Window|0')
+    assert not is_structural_object(object_id='Window|0')
     assert not is_structural_object(obj_type='Cup', object_id='Cup|1')
 
 
