@@ -49,16 +49,13 @@ REQUIRED_KEYS = {'navigation', 'objects'}
 
 # Match SPOC structural exclusions (walls/floors are not spatial targets).
 STRUCTURAL_OBJECT_TYPES = frozenset(
-    {'Wall', 'Floor', 'Ceiling', 'Doorway', 'Doorframe', 'Room', 'Window'}
+    {'Wall', 'Floor', 'Ceiling', 'Room'}
 )
 _STRUCTURAL_OID_PREFIXES = (
     'Wall|',
     'Floor|',
     'Ceiling|',
-    'Doorway|',
-    'Doorframe|',
     'Room|',
-    'Window|',
 )
 
 

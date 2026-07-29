@@ -12,6 +12,14 @@ from src.cm_benchmark.generator.episode_paths import (
     resolve_image_path,
 )
 from src.cm_benchmark.generator.nav_sequence_generator import NavSequenceGenerator, parse_args
+from src.cm_benchmark.generator.visibility_filters import (
+    metrics_from_nav_row,
+    normalize_question_visibility_thresholds,
+    passes_question_visibility_filter,
+    question_visibility_active,
+    resolve_hyperparams_from_episode_meta,
+    threshold_sweep_keep_rates,
+)
 from src.cm_benchmark.utils.spatial_transformer import transform_text2list, transform_3d_to_2d_with_fov
 
 
@@ -129,26 +137,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         csv_path_folder=None,
         scene_id=None,
         file_overrides=None,
+        question_visibility=None,
     ):
-        if hyperparams is None:
-            hyperparams = {
-                'w': 396,
-                'h': 224,
-                'fov_v': 59,
-                'epsilon': 1 / 3,
-                'k_neighbors': 3,
-                'radius': 1.5,
-                'fraction_threshold': 0.15,
-                'ex': 0.1,
-                'ey': 0.1,
-                'ez': 0.15,
-                'angle_threshold_xz': 15,
-                'min_distance': 0.5,
-                'med_distance': 1.0,
-                'max_distance': 1.5,
-                'mov_constant': 0.2,
-            }
-
         self.episode_meta = {}
         self.displacement_events = []
         self.world_layout = None
@@ -159,6 +149,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.displaced_obj_ids = set()
         self.scene_id = scene_id
         self.images_dir = None
+        # Unfiltered FOV detections (for threshold stats); filled in get_records_navigation
+        self._raw_fov_detections = []
 
         if csv_path_folder is not None:
             paths = resolve_episode_paths(
@@ -180,7 +172,23 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 'scene_id': scene_id,
             }
 
-        super().__init__(path_navigation, path_objects, output_path, output_filename, hyperparams)
+        merged = resolve_hyperparams_from_episode_meta(self.episode_meta, hyperparams)
+        if question_visibility is not None:
+            merged['question_visibility'] = normalize_question_visibility_thresholds(
+                question_visibility
+            )
+        self.question_visibility = merged['question_visibility']
+
+        super().__init__(path_navigation, path_objects, output_path, output_filename, merged)
+
+    def set_question_visibility(self, thresholds: dict | None) -> None:
+        """Update Q&A FOV filter thresholds and rebuild navigation records."""
+        self.question_visibility = normalize_question_visibility_thresholds(thresholds)
+        self.hyperparams['question_visibility'] = self.question_visibility
+        self.dict_navigation = self.get_records_navigation()
+
+    def frame_size(self) -> tuple[int, int]:
+        return int(self.hyperparams['w']), int(self.hyperparams['h'])
 
     def _load_optional_logs(self, paths):
         if 'displacement_events' in paths:
@@ -318,7 +326,20 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return sparsify_timestep_series(rows, key_fields=('region_id', 'region_type'))
 
     def get_records_navigation(self):
+        """
+        Build per-timestep agent state + FOV objects for Q&A.
+
+        Structural ids are always dropped. Optional question_visibility thresholds
+        drop tiny / mostly occluded detections from FOV lists used for edges and
+        questions (object catalog is unchanged). All non-structural detections are
+        retained in ``self._raw_fov_detections`` for threshold statistics.
+        """
         df = pd.read_csv(self.path_navigation)
+        frame_w, frame_h = self.frame_size()
+        thr = self.question_visibility
+        filter_on = question_visibility_active(thr)
+        self._raw_fov_detections = []
+
         dict_navigation = {}
         for _, row in df.iterrows():
             timestep = row.get('timestep')
@@ -368,13 +389,59 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     ),
                     'objects': [],
                     'bboxes': [],
+                    'visibility_metrics': [],
                 }
-            if _is_valid_obj_id(obj) and not is_structural_object(object_id=obj):
-                dict_navigation[timestep]['objects'].append(obj)
-                dict_navigation[timestep]['bboxes'].append(
-                    (row.get('cmin'), row.get('rmin'), row.get('cmax'), row.get('rmax'))
-                )
+            if not _is_valid_obj_id(obj) or is_structural_object(object_id=obj):
+                continue
+
+            metrics = metrics_from_nav_row(row, frame_w=frame_w, frame_h=frame_h)
+            bbox = (row.get('cmin'), row.get('rmin'), row.get('cmax'), row.get('rmax'))
+            raw = {
+                'timestep': int(timestep) if pd.notna(timestep) else None,
+                'obj_id': obj,
+                'bbox': bbox,
+                **metrics,
+                'passes_question_filter': passes_question_visibility_filter(metrics, thr),
+            }
+            self._raw_fov_detections.append(raw)
+
+            if filter_on and not raw['passes_question_filter']:
+                continue
+
+            dict_navigation[timestep]['objects'].append(obj)
+            dict_navigation[timestep]['bboxes'].append(bbox)
+            dict_navigation[timestep]['visibility_metrics'].append(metrics)
         return dict_navigation
+
+    def detection_visibility_table(self) -> pd.DataFrame:
+        """
+        All non-structural FOV detections with visibility metrics (unfiltered).
+
+        Use for histograms / keep-rate sweeps before setting question_visibility.
+        """
+        if not self._raw_fov_detections:
+            # Ensure raw list is populated even if called after construction quirks
+            _ = self.dict_navigation
+        return pd.DataFrame(self._raw_fov_detections)
+
+    def visibility_threshold_sweep(
+        self,
+        *,
+        bbox_area_values=None,
+        side_values=None,
+        occupancy_values=None,
+        visible_pixels_values=None,
+        distance_values=None,
+    ) -> pd.DataFrame:
+        """Keep-rate table for candidate thresholds (for plots / calibration)."""
+        return threshold_sweep_keep_rates(
+            self.detection_visibility_table(),
+            bbox_area_values=bbox_area_values,
+            side_values=side_values,
+            occupancy_values=occupancy_values,
+            visible_pixels_values=visible_pixels_values,
+            distance_values=distance_values,
+        )
 
     def get_records_objects(self):
         df = pd.read_csv(self.path_objects)
@@ -456,6 +523,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 for v in bbox
             ):
                 bbox = None
+            vis_list = data.get('visibility_metrics') or []
+            vis_m = vis_list[idx] if idx < len(vis_list) else None
             visible_objs[obj] = {
                 'category': category,
                 'position': obj_pos,
@@ -474,6 +543,12 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 ),
                 'angles': (float(np.round(alpha, 3)), float(np.round(betha, 3))),
             }
+            if vis_m is not None:
+                visible_objs[obj]['bbox_area'] = vis_m.get('bbox_area')
+                visible_objs[obj]['min_side'] = vis_m.get('min_side')
+                visible_objs[obj]['occupancy_ratio'] = vis_m.get('occupancy_ratio')
+                visible_objs[obj]['visible_pixels'] = vis_m.get('visible_pixels')
+                visible_objs[obj]['obj_distance'] = vis_m.get('obj_distance')
             if state is not None:
                 visible_objs[obj]['in_camera_fov'] = state['in_camera_fov']
                 visible_objs[obj]['parent_receptacle'] = state['parent_receptacle']
@@ -550,6 +625,12 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         episode_dict['passage_state'] = self.passage_state
         episode_dict['region_trajectory'] = self.region_trajectory
         episode_dict['episode_meta'] = self.episode_meta
+        episode_dict['question_visibility'] = dict(self.question_visibility)
+        episode_dict['camera'] = {
+            'width': self.hyperparams['w'],
+            'height': self.hyperparams['h'],
+            'fov_vertical_deg': self.hyperparams['fov_v'],
+        }
         if self.scene_id:
             episode_dict['scene'] = self.scene_id
         return episode_dict

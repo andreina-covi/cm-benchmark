@@ -6,5 +6,17 @@
   "num_displacements": 1,
   "num_tracked_objects": 2,
   "images_dir": "images",
-  "annotations_dir": "annotations"
+  "annotations_dir": "annotations",
+  "camera": {
+    "width": 396,
+    "height": 224,
+    "frame_size_px": 88704,
+    "fov_vertical_deg": 59,
+    "source": "nav (INTEL) camera"
+  },
+  "agent": {
+    "movement_constant": 0.2,
+    "rotation_deg": 45,
+    "horizon_deg": 0
+  }
 }

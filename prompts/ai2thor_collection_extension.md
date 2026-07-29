@@ -12,9 +12,12 @@ Keep existing navigation and object-catalog CSVs. Add the logs below for manipul
 
 Collection CSVs may be **dense** (one row per timestep). Downstream cm-benchmark **sparsifies** `object_state` tracks (displaced objects), `region_trajectory`, and `passage_state` to change-points only; query step `t` uses the latest prior entry.
 
-Navigation FOV rows are **non-structural** only (no Wall/Floor/Ceiling/Room/Window). Agent–room membership uses `current-room` / `region_trajectory`, not floor mesh ids.
+Navigation FOV rows are **non-structural** only (no Wall/Floor/Ceiling/Room). Agent–room membership uses `current-room` / `region_trajectory`, not floor mesh ids.
 
 Prefer real semantic `obj-type` / category strings when the simulator provides them. Placeholder labels such as `Undefined` force downstream questions to fall back to the object-id stem (e.g. `ObjaScooter|4|5` → `ObjaScooter`).
+
+**Visibility metrics on `navigation-*.csv`** (for post-process Q&A filtering in cm-benchmark):
+`obj-distance`, `visible-pixels`, `bbox-area`, `min-side`, `occupancy-ratio` (plus bbox `cmin..rmax`). Collection may export tiny/occluded blobs; the generator filters FOV objects used for questions via tunable `question_visibility` thresholds (`min_bbox_area`, `min_side`, `min_occupancy_ratio`, `min_visible_pixels`, `max_obj_distance`). Camera size / FOV / step size come from `episode_meta.camera` / `episode_meta.agent`.
 
 ---
 
