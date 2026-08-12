@@ -1,22 +1,23 @@
 """Question-eligible FOV detection filters (post-process; not collection).
 
-SPOC navigation rows now export simple visibility fields:
+SPOC navigation rows export visibility metrics. Q&A FOV filtering can use:
 
-- ``obj-distance`` — agent→object distance (m)
-- ``bbox-area`` — detection bbox area (px²)
-- ``min-side`` — shorter bbox side (px)
-- ``occupancy-ratio`` — mask pixels / bbox area (how full the box is)
-- ``visible-pixels`` — instance-mask pixel count (optional criterion)
+1. Optional hard thresholds (``question_visibility``) — all default off.
+2. A trained DecisionTree bundle (``visibility_filter.joblib``) via
+   ``predict_proba`` + probability bands (preferred when a model exists).
 
-Tiny / barely filled detections may still be exported; Q&A FOV filtering uses
-tunable thresholds (default: all off) so you can calibrate from stats/plots.
+The model path is configuration, not code: replace the ``.joblib`` file to
+update filtering without changing this module.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence, Union
 
+import numpy as np
 import pandas as pd
 
 # Threshold keys ↔ CSV / derived metrics. None = do not enforce that criterion.
@@ -36,6 +37,25 @@ VISIBILITY_METRIC_COLUMNS = (
     'occupancy-ratio',
     'visible-pixels',
 )
+
+# metrics_from_nav_row keys ↔ hyphenated CSV / training feature names
+FEATURE_TO_METRIC_KEY = {
+    'obj-distance': 'obj_distance',
+    'bbox-area': 'bbox_area',
+    'min-side': 'min_side',
+    'occupancy-ratio': 'occupancy_ratio',
+    'visible-pixels': 'visible_pixels',
+    'ang-width-deg': 'ang_width_deg',
+    'ang-height-deg': 'ang_height_deg',
+    'expected-bbox-area': 'expected_bbox_area',
+}
+
+LABEL_DISTINGUISHABLE = 'distinguible'
+LABEL_NOT_DISTINGUISHABLE = 'no_distinguible'
+LABEL_AMBIGUOUS = 'ambiguo'
+
+DEFAULT_PROBA_LOW = 0.3
+DEFAULT_PROBA_HIGH = 0.7
 
 DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
     'min_bbox_area': None,
@@ -110,7 +130,7 @@ def metrics_from_nav_row(row: Mapping[str, Any], *, frame_w: int = 396, frame_h:
     )
 
     frame_area = max(int(frame_w) * int(frame_h), 1)
-    return {
+    out = {
         'bbox_w': bw,
         'bbox_h': bh,
         'bbox_area': bbox_area,
@@ -122,6 +142,15 @@ def metrics_from_nav_row(row: Mapping[str, Any], *, frame_w: int = 396, frame_h:
         'frame_h': int(frame_h),
         'frame_area': frame_area,
     }
+    # Optional angular / expected columns when present in CSV (model features).
+    for csv_key, metric_key in (
+        ('ang-width-deg', 'ang_width_deg'),
+        ('ang-height-deg', 'ang_height_deg'),
+        ('expected-bbox-area', 'expected_bbox_area'),
+    ):
+        val = _row_get(row, csv_key)
+        out[metric_key] = float(val) if _finite(val) else None
+    return out
 
 
 def normalize_question_visibility_thresholds(
@@ -130,12 +159,11 @@ def normalize_question_visibility_thresholds(
     out = dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
     if not thresholds:
         return out
-    # Accept a few aliases from earlier drafts
     aliases = {
         'min_bbox_side': 'min_side',
         'min_unoccluded_ratio': 'min_occupancy_ratio',
         'min_visible_area_px': 'min_visible_pixels',
-        'min_visible_frac': None,  # dropped; ignore if passed
+        'min_visible_frac': None,
     }
     remapped = {}
     for k, v in thresholds.items():
@@ -201,6 +229,171 @@ def passes_question_visibility_filter(
     return True
 
 
+def classify_visibility_proba(
+    proba: float,
+    low: float = DEFAULT_PROBA_LOW,
+    high: float = DEFAULT_PROBA_HIGH,
+) -> str:
+    """
+    Map P(distinguishable) to a ternary label.
+
+    - ``proba >= high`` → distinguible
+    - ``proba <= low`` → no_distinguible
+    - otherwise → ambiguo
+    """
+    p = float(proba)
+    if p >= high:
+        return LABEL_DISTINGUISHABLE
+    if p <= low:
+        return LABEL_NOT_DISTINGUISHABLE
+    return LABEL_AMBIGUOUS
+
+
+def feature_vector_from_metrics(
+    metrics: Mapping[str, Any],
+    features: Sequence[str],
+) -> Optional[np.ndarray]:
+    """Build a 1×F float vector in training column order. None if any feature missing."""
+    values = []
+    for feat in features:
+        metric_key = FEATURE_TO_METRIC_KEY.get(feat, feat.replace('-', '_'))
+        val = metrics.get(metric_key)
+        if val is None and feat in metrics:
+            val = metrics.get(feat)
+        if not _finite(val):
+            return None
+        values.append(float(val))
+    return np.asarray(values, dtype=float).reshape(1, -1)
+
+
+def positive_class_proba(clf: Any, X: np.ndarray) -> np.ndarray:
+    """P(class==1) from ``predict_proba`` (never uses ``predict``)."""
+    proba = clf.predict_proba(X)
+    classes = list(getattr(clf, 'classes_', range(proba.shape[1])))
+    if 1 in classes:
+        return proba[:, classes.index(1)]
+    if proba.shape[1] == 1:
+        return proba[:, 0]
+    return proba[:, -1]
+
+
+@dataclass
+class VisibilityFilterModel:
+    """Trained visibility classifier + probability bands for ternary labels."""
+
+    model: Any
+    features: list[str]
+    low: float = DEFAULT_PROBA_LOW
+    high: float = DEFAULT_PROBA_HIGH
+    ambiguous_proba_stats: Optional[dict[str, float]] = None
+    source_path: Optional[str] = None
+
+    def predict_proba_distinguishable(self, metrics: Mapping[str, Any]) -> Optional[float]:
+        X = feature_vector_from_metrics(metrics, self.features)
+        if X is None:
+            return None
+        return float(positive_class_proba(self.model, X)[0])
+
+    def classify_metrics(self, metrics: Mapping[str, Any]) -> str:
+        proba = self.predict_proba_distinguishable(metrics)
+        if proba is None:
+            return LABEL_AMBIGUOUS
+        return classify_visibility_proba(proba, low=self.low, high=self.high)
+
+    def passes_for_questions(self, metrics: Mapping[str, Any]) -> bool:
+        """Keep only clearly distinguishable detections for Q&A FOV."""
+        return self.classify_metrics(metrics) == LABEL_DISTINGUISHABLE
+
+
+def load_visibility_filter_model(
+    path: Union[str, Path],
+    *,
+    low: Optional[float] = None,
+    high: Optional[float] = None,
+) -> VisibilityFilterModel:
+    """
+    Load a filter bundle written by ``fit_thresholds.export_visibility_filter_bundle``.
+
+    Accepts either:
+    - a dict ``{model, features, low, high, ...}`` (preferred), or
+    - a bare sklearn estimator (features default to ``VISIBILITY_METRIC_COLUMNS``).
+    """
+    import joblib
+
+    path = Path(path)
+    obj = joblib.load(path)
+
+    if isinstance(obj, dict) and 'model' in obj:
+        features = list(obj.get('features') or VISIBILITY_METRIC_COLUMNS)
+        band_low = float(obj['low']) if obj.get('low') is not None else DEFAULT_PROBA_LOW
+        band_high = float(obj['high']) if obj.get('high') is not None else DEFAULT_PROBA_HIGH
+        stats = obj.get('ambiguous_proba_stats')
+        model = obj['model']
+    else:
+        features = list(VISIBILITY_METRIC_COLUMNS)
+        band_low, band_high = DEFAULT_PROBA_LOW, DEFAULT_PROBA_HIGH
+        stats = None
+        model = obj
+
+    if low is not None:
+        band_low = float(low)
+    if high is not None:
+        band_high = float(high)
+    if band_low > band_high:
+        raise ValueError(f'low ({band_low}) must be <= high ({band_high})')
+
+    return VisibilityFilterModel(
+        model=model,
+        features=features,
+        low=band_low,
+        high=band_high,
+        ambiguous_proba_stats=stats,
+        source_path=str(path.resolve()),
+    )
+
+
+def calibrate_proba_bands_from_ambiguous(
+    clf: Any,
+    df_ambiguous: pd.DataFrame,
+    features: Sequence[str],
+    *,
+    default_low: float = DEFAULT_PROBA_LOW,
+    default_high: float = DEFAULT_PROBA_HIGH,
+) -> tuple[float, float, dict[str, float]]:
+    """
+    Set (low, high) from P(class=1) on human-labeled ambiguous rows (y=2).
+
+    Uses min/max of those probabilities as the ambiguous band so new samples
+    inside that range stay ``ambiguo``. Falls back to defaults if empty.
+    """
+    if df_ambiguous is None or df_ambiguous.empty:
+        stats = {'n': 0.0, 'min': float('nan'), 'max': float('nan'), 'mean': float('nan')}
+        return default_low, default_high, stats
+
+    missing = [c for c in features if c not in df_ambiguous.columns]
+    if missing:
+        raise KeyError(f'Ambiguous frame missing feature columns: {missing}')
+
+    X = df_ambiguous[list(features)].to_numpy(dtype=float)
+    proba = positive_class_proba(clf, X)
+    stats = {
+        'n': float(len(proba)),
+        'min': float(np.min(proba)),
+        'max': float(np.max(proba)),
+        'mean': float(np.mean(proba)),
+    }
+    low = stats['min']
+    high = stats['max']
+    if low > high:
+        low, high = default_low, default_high
+    # Degenerate band (all amb at one proba) → keep a small margin around it
+    if abs(high - low) < 1e-9:
+        mid = low
+        low = max(0.0, mid - 0.05)
+        high = min(1.0, mid + 0.05)
+    return float(low), float(high), stats
+
+
 def threshold_sweep_keep_rates(
     df: pd.DataFrame,
     *,
@@ -222,7 +415,6 @@ def threshold_sweep_keep_rates(
         if not values or series is None:
             return
         for t in values:
-            # Missing metric → keep (same as filter policy)
             keep = int(((series.isna()) | (series >= t)).sum())
             rows.append({
                 'criterion': criterion,
@@ -285,6 +477,7 @@ def resolve_hyperparams_from_episode_meta(
         'max_distance': 1.5,
         'mov_constant': 0.2,
         'question_visibility': dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS),
+        'visibility_model_path': None,
     }
 
     meta = episode_meta or {}

@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import joblib
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -39,7 +40,10 @@ from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.tree import DecisionTreeClassifier, export_text
 
-from cm_benchmark.generator.visibility_filters import VISIBILITY_METRIC_COLUMNS
+from cm_benchmark.generator.visibility_filters import (
+    VISIBILITY_METRIC_COLUMNS,
+    calibrate_proba_bands_from_ambiguous,
+)
 
 # Align with question_visibility / visibility_filters (not angular proxies).
 FEATURES = list(VISIBILITY_METRIC_COLUMNS)
@@ -235,9 +239,91 @@ def fit_tree(
         random_state=random_state,
     )
     clf.fit(X, y)
-    print(export_text(clf, feature_names=list(features)))
+    print(export_text(clf, feature_names=list(features), show_weights=True))
     return clf
 
+
+def export_visibility_filter_bundle(
+    clf,
+    path: str | Path,
+    *,
+    features: list[str] = FEATURES,
+    df_all: Optional[pd.DataFrame] = None,
+    low: Optional[float] = None,
+    high: Optional[float] = None,
+) -> dict[str, Any]:
+    """
+    Persist model + feature list + probability bands for ``visibility_filters``.
+
+    If ``low``/``high`` are omitted and ``df_all`` has ambiguous labels (y==2),
+    bands are calibrated from ``predict_proba`` on those rows.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    stats: dict[str, float] | None = None
+    if low is None or high is None:
+        if df_all is not None and 'y' in df_all.columns and (df_all['y'] == 2).any():
+            amb = df_all[df_all['y'] == 2]
+            cal_low, cal_high, stats = calibrate_proba_bands_from_ambiguous(
+                clf, amb, features
+            )
+            print(
+                'Ambiguous (y=2) proba stats: '
+                f"n={int(stats['n'])} min={stats['min']:.4f} "
+                f"max={stats['max']:.4f} mean={stats['mean']:.4f}"
+            )
+            if low is None:
+                low = cal_low
+            if high is None:
+                high = cal_high
+        else:
+            from cm_benchmark.generator.visibility_filters import (
+                DEFAULT_PROBA_HIGH,
+                DEFAULT_PROBA_LOW,
+            )
+
+            if low is None:
+                low = DEFAULT_PROBA_LOW
+            if high is None:
+                high = DEFAULT_PROBA_HIGH
+            print(
+                f'No ambiguous labels for band calibration; '
+                f'using low={low}, high={high}'
+            )
+
+    bundle = {
+        'model': clf,
+        'features': list(features),
+        'low': float(low),
+        'high': float(high),
+        'ambiguous_proba_stats': stats,
+    }
+    joblib.dump(bundle, path)
+    abs_path = path.resolve()
+    print(f'Wrote visibility filter bundle → {abs_path}')
+    print(f'  features={features}')
+    print(f'  low={low:.4f} high={high:.4f}')
+    return bundle
+
+
+def summarize_leaves(clf, features, min_gap: float = 0.15) -> None:
+    t = clf.tree_
+    for node in range(t.node_count):
+        l, r = t.children_left[node], t.children_right[node]
+        if l == -1 or r == -1:
+            continue
+        if t.children_left[l] != -1 or t.children_left[r] != -1:
+            continue
+        vl, vr = t.value[l][0], t.value[r][0]
+        pl, pr = vl[1] / vl.sum(), vr[1] / vr.sum()
+        nl, nr = t.n_node_samples[l], t.n_node_samples[r]  # <- fix: conteo real, no ponderado
+        same_class = (pl >= 0.5) == (pr >= 0.5)
+        gap = abs(pl - pr)
+        flag = "noise?" if (same_class and gap < min_gap) else "ok"
+        feat = features[t.feature[node]]
+        print(f"[{flag}] split={feat}<= {t.threshold[node]:.2f} | "
+              f"left n={nl} p1={pl:.2f} | right n={nr} p1={pr:.2f}")
 
 def loso_fold_metrics(
     df: pd.DataFrame,
@@ -674,6 +760,13 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         action='store_true',
         help='Skip writing tune graphics under --tune_out',
     )
+    p.add_argument(
+        '--export_model',
+        type=str,
+        default='visibility_filter.joblib',
+        help='Path for joblib bundle {model, features, low, high} '
+        '(default: visibility_filter.joblib). Empty string skips export.',
+    )
     return p.parse_args(argv)
 
 
@@ -682,9 +775,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     if args.folder:
         print(f'Loading scenes from folder: {args.folder}')
-        df = load_data_from_folder(args.folder)
+        df_all = load_data_from_folder(args.folder)
     elif args.manifest_csv and args.labels_json:
-        df = load_data(args.manifest_csv, args.labels_json)
+        df_all = load_data(args.manifest_csv, args.labels_json)
     else:
         raise SystemExit(
             'Provide --folder DIR  or  MANIFEST.csv LABELS.json\n'
@@ -693,6 +786,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             '--folder path/to/calibration_scenes --tune'
         )
 
+    df = df_all
     if 'y' in df.columns and (df['y'] == 2).any():
         n_amb = int((df['y'] == 2).sum())
         print(f'Excluding {n_amb} ambiguous (y=2) items from tree fit / LOSO')
@@ -759,7 +853,21 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 print(f'  {p.name}')
 
     print('\n=== Decision tree (rules / thresholds) ===')
-    fit_tree(df, **tree_kwargs)
+    clf = fit_tree(df, **tree_kwargs)
+
+    if args.export_model:
+        export_path = Path(args.export_model)
+        if args.tune and args.tune_out and export_path.name == 'visibility_filter.joblib':
+            export_path = Path(args.tune_out) / 'visibility_filter.joblib'
+        print('\n=== Export visibility filter bundle ===')
+        export_visibility_filter_bundle(
+            clf,
+            export_path,
+            features=FEATURES,
+            df_all=df_all,
+        )
+
+    summarize_leaves(clf, FEATURES, min_gap=0.15)
 
     print('\n=== Leave-one-scene-out validation ===')
     validate_leave_one_scene_out(df, **tree_kwargs)

@@ -154,7 +154,23 @@ Tiny or barely filled blobs may still appear. For Q&A, `Ai2ThorNavGenerator`
 can drop them via tunable `question_visibility` (defaults **off** until you set them).
 
 This path is **optional tooling** around the main product (exported CSVs → GT → questions).
-You can set thresholds by hand, or calibrate with human labels + a DecisionTree.
+You can set hard thresholds by hand, or train a DecisionTree and filter with
+``predict_proba`` + calibrated low/high bands (preferred).
+
+```text
+navigation-*.csv
+      │
+      ├─► labeling HTML + manifest             build_labeling_set
+      │         │
+      │         ▼ human labels (*.json)
+      │
+      └─► multi-scene DecisionTree + LOSO      fit_thresholds (--tune)
+                │
+                ▼ visibility_filter.joblib  (model + features + low/high)
+           Ai2ThorNavGenerator(visibility_model_path=...)
+```
+
+Hard AND thresholds (``question_visibility``) remain available when no model is set.
 
 ```text
 navigation-*.csv
@@ -228,8 +244,18 @@ python -m cm_benchmark.utils.fit_thresholds \
 | `plots/heatmap_depth_x_leaf_*.png` | `max_depth` × `min_samples_leaf` |
 | `plots/metric_by_max_depth.png` | Metric distributions vs depth |
 | `plots/best_loso_per_scene.png` | Best config’s F1/AUC per held-out scene |
+| `visibility_filter.joblib` | Bundle: model + features + low/high bands |
 
-Then apply chosen thresholds (or tree rules) via generator kwargs, e.g.:
+Then filter with the trained model (preferred — no hardcoded mins):
+
+```python
+Ai2ThorNavGenerator(
+    csv_path_folder=...,
+    visibility_model_path="analysis/dt_tune/visibility_filter.joblib",
+)
+```
+
+Or hard AND thresholds when no model is set:
 
 ```python
 Ai2ThorNavGenerator(
@@ -238,8 +264,6 @@ Ai2ThorNavGenerator(
         "min_side": 12,
         "min_occupancy_ratio": 0.3,
         "min_bbox_area": 100,
-        # "min_visible_pixels": 100,
-        # "max_obj_distance": 3.0,
     },
 )
 ```

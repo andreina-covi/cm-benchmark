@@ -2,8 +2,17 @@
 
 from pathlib import Path
 
+import joblib
+import numpy as np
+from sklearn.tree import DecisionTreeClassifier
+
 from cm_benchmark.generator.ai2thor_nav_generator import Ai2ThorNavGenerator
 from cm_benchmark.generator.visibility_filters import (
+    LABEL_AMBIGUOUS,
+    LABEL_DISTINGUISHABLE,
+    LABEL_NOT_DISTINGUISHABLE,
+    classify_visibility_proba,
+    load_visibility_filter_model,
     metrics_from_nav_row,
     passes_question_visibility_filter,
     resolve_hyperparams_from_episode_meta,
@@ -123,6 +132,80 @@ def test_alias_min_bbox_side_maps_to_min_side():
         {'cmin': 0, 'rmin': 0, 'cmax': 5, 'rmax': 5, 'min-side': 5, 'bbox-area': 25}
     )
     assert passes_question_visibility_filter(m, {'min_bbox_side': 12}) is False
+
+
+def test_classify_visibility_proba_bands():
+    assert classify_visibility_proba(0.9, low=0.3, high=0.7) == LABEL_DISTINGUISHABLE
+    assert classify_visibility_proba(0.1, low=0.3, high=0.7) == LABEL_NOT_DISTINGUISHABLE
+    assert classify_visibility_proba(0.5, low=0.3, high=0.7) == LABEL_AMBIGUOUS
+
+
+def _toy_model_bundle(tmp_path: Path) -> Path:
+    """Tree on bbox-area + min-side (derivable from fixtures that only have bboxes)."""
+    rng = np.random.default_rng(0)
+    n = 40
+    min_side = np.concatenate([rng.uniform(1, 8, n // 2), rng.uniform(20, 40, n // 2)])
+    y = (min_side >= 15).astype(int)
+    X = np.column_stack([min_side * min_side, min_side])
+    features = ['bbox-area', 'min-side']
+    clf = DecisionTreeClassifier(max_depth=3, random_state=0)
+    clf.fit(X, y)
+    path = tmp_path / 'visibility_filter.joblib'
+    joblib.dump(
+        {
+            'model': clf,
+            'features': features,
+            'low': 0.3,
+            'high': 0.7,
+            'ambiguous_proba_stats': {'n': 0, 'min': 0.3, 'max': 0.7, 'mean': 0.5},
+        },
+        path,
+    )
+    return path
+
+
+def test_load_and_classify_with_model(tmp_path):
+    path = _toy_model_bundle(tmp_path)
+    model = load_visibility_filter_model(path)
+    clear = metrics_from_nav_row(
+        {
+            'cmin': 0,
+            'rmin': 0,
+            'cmax': 40,
+            'rmax': 40,
+            'bbox-area': 1600,
+            'min-side': 40,
+        }
+    )
+    tiny = metrics_from_nav_row(
+        {
+            'cmin': 0,
+            'rmin': 0,
+            'cmax': 4,
+            'rmax': 4,
+            'bbox-area': 16,
+            'min-side': 4,
+        }
+    )
+    assert model.passes_for_questions(clear) is True
+    assert model.passes_for_questions(tiny) is False
+    assert model.classify_metrics(clear) == LABEL_DISTINGUISHABLE
+
+
+def test_generator_uses_visibility_model(tmp_path):
+    path = _toy_model_bundle(tmp_path)
+    gen = Ai2ThorNavGenerator(
+        path_navigation=str(NAV_CSV),
+        path_objects=str(OBJ_CSV),
+        output_path=str(tmp_path / 'out'),
+        visibility_model_path=str(path),
+    )
+    assert gen.visibility_model is not None
+    raw = gen._raw_fov_detections
+    assert raw
+    assert any(r.get('visibility_proba') is not None for r in raw)
+    kept = sum(len(v['objects']) for v in gen.dict_navigation.values())
+    assert kept <= len(raw)
 
 
 def test_generator_reads_meta_and_filters_fov(tmp_path):
