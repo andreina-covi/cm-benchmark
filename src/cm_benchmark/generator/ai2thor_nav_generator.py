@@ -4,15 +4,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
-from src.cm_benchmark.generator.episode_paths import (
+from cm_benchmark.generator.episode_paths import (
     is_structural_object,
     resolve_episode_paths,
     resolve_image_path,
 )
-from src.cm_benchmark.generator.nav_sequence_generator import NavSequenceGenerator, parse_args
-from src.cm_benchmark.generator.visibility_filters import (
+from cm_benchmark.generator.nav_sequence_generator import NavSequenceGenerator, parse_args
+from cm_benchmark.generator.visibility_filters import (
     metrics_from_nav_row,
     normalize_question_visibility_thresholds,
     passes_question_visibility_filter,
@@ -20,7 +19,7 @@ from src.cm_benchmark.generator.visibility_filters import (
     resolve_hyperparams_from_episode_meta,
     threshold_sweep_keep_rates,
 )
-from src.cm_benchmark.utils.spatial_transformer import transform_text2list, transform_3d_to_2d_with_fov
+from cm_benchmark.utils.spatial_transformer import transform_text2list, transform_3d_to_2d_with_fov
 
 
 def _is_valid_obj_id(obj):
@@ -647,11 +646,7 @@ def main(args):
         hyperparams=None,
     )
     scene_name = generator.scene_id or 'unknown'
-    extra_data = {
-        'palette': sns.color_palette('Set2', n_colors=10),
-        'scene': scene_name,
-        'all_distances': [],
-    }
+    extra_data = {'scene': scene_name}
     episode_dict = generator.collect_episode_data(extra_data=extra_data)
 
     meta = generator.episode_meta or {}

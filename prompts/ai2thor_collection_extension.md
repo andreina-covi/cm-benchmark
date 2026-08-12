@@ -19,6 +19,8 @@ Prefer real semantic `obj-type` / category strings when the simulator provides t
 **Visibility metrics on `navigation-*.csv`** (for post-process Q&A filtering in cm-benchmark):
 `obj-distance`, `visible-pixels`, `bbox-area`, `min-side`, `occupancy-ratio` (plus bbox `cmin..rmax`). Collection may export tiny/occluded blobs; the generator filters FOV objects used for questions via tunable `question_visibility` thresholds (`min_bbox_area`, `min_side`, `min_occupancy_ratio`, `min_visible_pixels`, `max_obj_distance`). Camera size / FOV / step size come from `episode_meta.camera` / `episode_meta.agent`.
 
+**Choosing thresholds (cm-benchmark side, optional):** human labeling (`utils.build_labeling_set`) and multi-scene DecisionTree + leave-one-scene-out tune (`utils.fit_thresholds --folder … --tune`). See README § *Visibility filtering & threshold calibration*. Defaults leave all criteria off.
+
 ---
 
 ## A. Invisible displacement

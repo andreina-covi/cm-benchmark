@@ -54,5 +54,12 @@ src/cm_benchmark/storage/ai2thor/items/
 # --- Local analysis plot outputs ---
 /analysis/
 
+# --- Regenerable labeling / calibration artifacts (root) ---
+/labeling_tool.html
+/calibration_manifest.csv
+
 # --- Presentation build helper (optional local venv) ---
 .venv-pptx/
+
+# --- Local path processing / labeling tool outputs ---
+src/cm_benchmark/storage/ai2thor/output/

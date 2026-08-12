@@ -22,7 +22,7 @@ def episode(tmp_path):
         output_path=str(tmp_path),
         output_filename='episode.json',
     )
-    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene', 'all_distances': []})
+    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene'})
     gen.export_to_json(data, 'episode.json')
     return data, tmp_path / 'episode.json'
 
@@ -99,7 +99,7 @@ def folder_episode(tmp_path):
         output_path=str(tmp_path),
         output_filename='folder_episode.json',
     )
-    data = gen.collect_episode_data(extra_data={'scene': 'ignore', 'all_distances': []})
+    data = gen.collect_episode_data(extra_data={'scene': 'ignore'})
     return gen, data
 
 

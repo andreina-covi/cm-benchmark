@@ -4,9 +4,10 @@ import argparse
 import numpy as np
 
 from abc import ABC, abstractmethod
-from src.cm_benchmark.utils.spatial_transformer import transform_3d_to_2d_with_fov
-from src.cm_benchmark.utils.spatial_relations import get_distance_text, get_direction_angle
-from src.cm_benchmark.storage.episode_store import EpisodeStore
+
+from cm_benchmark.utils.spatial_transformer import transform_3d_to_2d_with_fov
+from cm_benchmark.utils.spatial_relations import get_distance_text, get_direction_angle
+from cm_benchmark.storage.episode_store import EpisodeStore
 
 
 def _json_default(obj):
@@ -47,13 +48,11 @@ class NavSequenceGenerator(ABC):
 
     def collect_episode_data(self, extra_data=None):
         if extra_data is None:
-            extra_data = {'scene': 'unknown', 'all_distances': []}
-        if 'all_distances' not in extra_data:
-            extra_data['all_distances'] = []
+            extra_data = {}
+        scene = extra_data.get('scene', 'unknown')
 
         episode_dict = {
-            'scene': extra_data['scene'],
-            'thresholds': {
+            'scene': scene,            'thresholds': {
                 'distance_label': {
                     'within_reach': [0.0, self.hyperparams['min_distance']],
                     'nearby': [self.hyperparams['min_distance'], self.hyperparams['med_distance']],
@@ -108,7 +107,7 @@ class NavSequenceGenerator(ABC):
             }
 
             edges_egocentric, edges_allocentric = self.create_edges_for_visible_objects(
-                visible_objs, extra_data=extra_data
+                visible_objs
             )
             edges_inferred = self.create_edges_for_inferred_objects(
                 non_visible_objs, seen_objects_memory, data
@@ -147,7 +146,7 @@ class NavSequenceGenerator(ABC):
         """Override to prefer object_state pose after hidden relocation."""
         return memory_position
 
-    def create_edges_for_visible_objects(self, visible_objs, extra_data=None):
+    def create_edges_for_visible_objects(self, visible_objs):
         """Split agent→object (egocentric) and object→object (allocentric) edges."""
         edges_egocentric = []
         edges_allocentric = []
@@ -155,17 +154,13 @@ class NavSequenceGenerator(ABC):
         agent_data = {'agent': {'local_position': (0.0, 0.0, 0.0)}}
         visible_with_agent = {**visible_objs, **agent_data}
         edges_egocentric.extend(
-            self.edges_btw_neighbors(
-                'agent', visible_objs.keys(), visible_with_agent, extra_data=extra_data
-            )
+            self.edges_btw_neighbors('agent', visible_objs.keys(), visible_with_agent)
         )
 
         for obj_id in visible_objs:
             neighbors = self.get_knn(obj_id, visible_objs)
             edges_allocentric.extend(
-                self.edges_btw_neighbors(
-                    obj_id, neighbors, visible_objs, extra_data=extra_data
-                )
+                self.edges_btw_neighbors(obj_id, neighbors, visible_objs)
             )
         return edges_egocentric, edges_allocentric
 
@@ -195,7 +190,7 @@ class NavSequenceGenerator(ABC):
             )
         return edges
 
-    def edges_btw_neighbors(self, obj_id, neighbors, data, last_seen=-1, extra_data=None):
+    def edges_btw_neighbors(self, obj_id, neighbors, data, last_seen=-1):
         edges = []
         local_position_object = np.array(data[obj_id]['local_position'], dtype=float)
         angle_thr = self.hyperparams['angle_threshold_xz']
@@ -223,8 +218,6 @@ class NavSequenceGenerator(ABC):
             }
             if last_seen >= 0:
                 edge['last_seen'] = last_seen
-            if extra_data is not None:
-                extra_data['all_distances'].append(dist)
             edges.append(edge)
         return edges
 

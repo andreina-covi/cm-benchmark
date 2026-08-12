@@ -63,7 +63,9 @@ CSV / simulator collection
 
 ## Where we are now
 
-Episode ground-truth is built from a **SPOC collection folder** (`images/` + `annotations/`). A **first-draft Item Generation** path then builds taxonomy MC candidates from that GT (deterministic templates; answers locked to metadata).
+Core loop: **exported collection folders → episode GT → draft taxonomy questions**.
+AI2-THOR / SPOC is the first environment; new collectors plug in by implementing
+the same export contract (or a new `NavSequenceGenerator` subclass).
 
 ```
 collection folder (SPOC episode root or annotations/)
@@ -81,7 +83,7 @@ collection folder (SPOC episode root or annotations/)
 | Episode GT (edges, memory, displacement, layout, sparse tracks) | Trusted object facing → `edges_object_frame` |
 | First-draft Q&A per construct (see below) | GT Validator, vision-necessity, FREEZE |
 | Frame annotator for spatial review | Model Evaluation pipeline |
-| | Matterport3D generator |
+| Tunable Q&A FOV visibility filter (+ optional labeling / DT tune) | Generators for other environments (e.g. Matterport3D) |
 
 Collection upstream: [spoc-robot-navigation](https://github.com/andreina-covi/spoc-robot-navigation) (local twin: `spoc-robot-training`). Field brief: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collection_extension.md).
 
@@ -97,38 +99,31 @@ cm-benchmark/
 ├── prompts/
 │   └── ai2thor_collection_extension.md   # fields for the collector repo
 ├── src/cm_benchmark/
-│   ├── collection/
-│   ├── generator/
+│   ├── generator/                        # episode GT from exported CSVs
 │   │   ├── nav_sequence_generator.py
 │   │   ├── ai2thor_nav_generator.py
-│   │   └── episode_paths.py              # folder / filename discovery
+│   │   ├── episode_paths.py              # folder / filename discovery
+│   │   └── visibility_filters.py         # Q&A FOV keep/drop (tunable)
 │   ├── generation/                       # first-draft taxonomy Q&A
 │   │   ├── draft_items.py                # CLI
-│   │   ├── pipeline.py                   # orchestrate plan → items
-│   │   ├── planner.py                    # construct filters on GT
-│   │   ├── constructs.py                 # templates + display names
-│   │   ├── templates.py                  # concise / verbose wording
-│   │   └── paraphrase.py                 # optional wording hook (off by default)
+│   │   ├── pipeline.py
+│   │   ├── planner.py
+│   │   ├── constructs.py
+│   │   ├── templates.py
+│   │   └── paraphrase.py
 │   ├── utils/
 │   │   ├── spatial_transformer.py
 │   │   ├── spatial_relations.py
-│   │   └── annotate_frames.py            # numbered points + legend
-│   ├── validation/
+│   │   ├── annotate_frames.py            # numbered points + legend
+│   │   ├── build_labeling_set.py          # HTML labeling tool + manifest
+│   │   └── fit_thresholds.py             # multi-scene LOSO / DT tune + plots
 │   └── storage/
 │       ├── episode_store.py
 │       └── ai2thor/                      # episodes.db, nav_data/, items/, annotated/
+├── scripts/                              # one-off helpers (not pipeline)
 ├── tests/
 │   ├── fixtures/
-│   │   ├── navigation_tiny.csv / objects_tiny.csv
-│   │   └── episode_tiny/
-│   ├── test_spatial_transformer.py
-│   ├── test_spatial_relation.py
-│   ├── test_object_state_track.py
-│   ├── test_navigation_generation.py
-│   ├── test_episode_store.py
-│   ├── test_episode_paths.py
-│   ├── test_draft_items.py
-│   └── test_annotate_frames.py
+│   └── test_*.py
 └── README.md
 ```
 
@@ -142,7 +137,7 @@ cm-benchmark/
 # from repo root — use your cm-benchmark environment
 pyenv activate cm-benchmark   # or: source path/to/venv/bin/activate
 
-pip install pandas numpy seaborn pytest
+pip install pandas numpy seaborn scikit-learn matplotlib pytest
 # optional: install the package editable so imports resolve cleanly
 pip install -e .
 ```
@@ -150,15 +145,109 @@ pip install -e .
 Tests expect `src` on the path (see `pyproject.toml` → `pythonpath = ["src"]`).
 
 ---
-## Filter data
 
-### Command
+## Visibility filtering & threshold calibration
+
+SPOC exports **named non-structural** FOV detections with visibility metrics
+(`obj-distance`, `visible-pixels`, `bbox-area`, `min-side`, `occupancy-ratio`).
+Tiny or barely filled blobs may still appear. For Q&A, `Ai2ThorNavGenerator`
+can drop them via tunable `question_visibility` (defaults **off** until you set them).
+
+This path is **optional tooling** around the main product (exported CSVs → GT → questions).
+You can set thresholds by hand, or calibrate with human labels + a DecisionTree.
+
+```text
+navigation-*.csv
+      │
+      ├─► labeling HTML + manifest             build_labeling_set
+      │         │
+      │         ▼ human labels (*.json)
+      │
+      └─► multi-scene DecisionTree + LOSO      fit_thresholds (--tune)
+                │
+                ▼ best hyperparameters / rules
+           apply as question_visibility (or tree rules)
+```
+
+### 1. Human labeling set (per scene)
+
+Builds an HTML tool + `{scene_id}_calibration_manifest.csv` (features for fitting):
 
 ```bash
-python -m src.cm_benchmark.utils.sample_for_calibration \
-    --csv_input_path /path/to/csv_output_spoc.csv \
-    --csv_output_path /path/to/csv_output_calibration.csv
+python -m cm_benchmark.utils.build_labeling_set \
+  --nav_csv     /path/to/annotations/navigation-house_XXXXXX.csv \
+  --images_dir  /path/to/episode/images \
+  --scene_id    house_XXXXXX \
+  --output_path src/cm_benchmark/storage/ai2thor/output/labeling
 ```
+
+Open the HTML, label distinguishable / indistinguishable / ambiguous, download
+`labels.json`, and **rename** it to match the scene, e.g.
+`house_XXXXXX_labels.json`.
+
+### 2. Fit / tune thresholds across scenes (LOSO + plots)
+
+Put all scene pairs in **one folder**:
+
+```text
+calibration_scenes/
+  house_007514_calibration_manifest.csv
+  house_007514_labels.json
+  house_001030_calibration_manifest.csv
+  house_001030_labels.json
+```
+
+```bash
+# Fit a tree + leave-one-scene-out with fixed hyperparameters
+python -m cm_benchmark.utils.fit_thresholds \
+  --folder path/to/calibration_scenes
+
+# Grid-search DecisionTree hyperparameters for LOSO robustness + graphics
+python -m cm_benchmark.utils.fit_thresholds \
+  --folder path/to/calibration_scenes \
+  --tune \
+  --tune_out analysis/dt_tune \
+  --primary_metric f1 \
+  --lambda_std 1.0
+```
+
+**Robustness** ranking (default):
+
+\[
+\text{robustness} = \mathrm{mean}(\text{F1 or AUC}) - \lambda \cdot \mathrm{std}(\text{across held-out scenes})
+\]
+
+`--tune` writes:
+
+| Output | Meaning |
+|--------|---------|
+| `dt_tune_results.csv` | All grid configs + mean/std/min AUC/F1 + robustness |
+| `dt_best_params.json` | Best hyperparameters under that score |
+| `plots/top_k_robustness.png` | Top configs by robustness |
+| `plots/mean_vs_std_*.png` | Stability frontier (mean vs cross-scene std) |
+| `plots/heatmap_depth_x_leaf_*.png` | `max_depth` × `min_samples_leaf` |
+| `plots/metric_by_max_depth.png` | Metric distributions vs depth |
+| `plots/best_loso_per_scene.png` | Best config’s F1/AUC per held-out scene |
+
+Then apply chosen thresholds (or tree rules) via generator kwargs, e.g.:
+
+```python
+Ai2ThorNavGenerator(
+    csv_path_folder=...,
+    question_visibility={
+        "min_side": 12,
+        "min_occupancy_ratio": 0.3,
+        "min_bbox_area": 100,
+        # "min_visible_pixels": 100,
+        # "max_obj_distance": 3.0,
+    },
+)
+```
+
+Legacy single-scene fit still works:  
+`python -m cm_benchmark.utils.fit_thresholds manifest.csv labels.json`
+
+---
 
 ## Build episode ground-truth
 
@@ -169,7 +258,7 @@ Episode GT is stored in **SQLite** (system of record). JSON is an **optional** e
 ```bash
 cd /path/to/cm-benchmark
 
-python -m src.cm_benchmark.generator.ai2thor_nav_generator \
+python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /path/to/collection_run_folder \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db
 ```
@@ -181,7 +270,7 @@ Optional overrides: `--scene_id`, `--episode_id`, `--file_navigation`, `--file_o
 ### Also export JSON
 
 ```bash
-python -m src.cm_benchmark.generator.ai2thor_nav_generator \
+python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /path/to/collection_run_folder \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
   --export_json \
@@ -195,7 +284,7 @@ Either the episode root or `annotations/` works:
 
 ```bash
 # episode root (auto-finds annotations/ + images/)
-python -m src.cm_benchmark.generator.ai2thor_nav_generator \
+python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_20_2026_17_43_24_824674 \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
   --episode_id      ai2thor_house_006068 \
@@ -204,7 +293,7 @@ python -m src.cm_benchmark.generator.ai2thor_nav_generator \
   --output_filename nav_data_house_006068.json
 
 # or annotations/ directly
-python -m src.cm_benchmark.generator.ai2thor_nav_generator \
+python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /home/andreina/Documents/Programs/Dataset/Generated/navigation/07_20_2026_17_43_24_824674/annotations \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
   --episode_id      ai2thor_house_006068 \
@@ -240,19 +329,7 @@ Walls / floors / ceilings / rooms are excluded from nav FOV edges (room membersh
 
 **Visibility split**
 
-- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame). Collection may include tiny/occluded blobs; Q&A FOV filtering uses tunable `question_visibility` on `Ai2ThorNavGenerator`. Calibrate thresholds with:
-
-```bash
-python -m cm_benchmark.analysis.visibility_threshold_analysis \
-  --navigation_csv /path/to/annotations/navigation-house_XXXXXX.csv \
-  --objects_csv    /path/to/annotations/objects-house_XXXXXX.csv \
-  --episode_meta   /path/to/annotations/episode_meta-house_XXXXXX.json \
-  --output_dir     analysis/visibility_house_XXXXXX
-```
-
-  Outputs under ``timestep_XXXX/`` (one folder per frame): feature table, bar charts
-  per object, histograms, correlations, scatters, keep-rate sweeps, clusters.
-  Root only keeps episode overview (`detections_per_timestep.png`) + full `features.csv`.
+- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame). Collection may include tiny/occluded blobs; Q&A FOV filtering uses tunable `question_visibility` on `Ai2ThorNavGenerator` (see [Visibility filtering & threshold calibration](#visibility-filtering--threshold-calibration)).
 - **`object_state.in_camera_fov` + pose** → displacement tracks and true pose after moves (catalog poses can be stale).
 
 ---
@@ -445,6 +522,7 @@ pytest tests/ -q
 | `test_episode_paths.py` | Episode root vs `annotations/` discovery |
 | `test_draft_items.py` | First-draft Q&A (styles, multi-frame, route segments) |
 | `test_annotate_frames.py` | Numbered points + legend |
+| `test_visibility_filters.py` | Q&A FOV keep/drop metrics |
 
 ---
 
@@ -466,6 +544,8 @@ pytest tests/ -q
 - [x] Front/behind from local-z; distance labels independent
 - [x] First-draft Item Generation (templates + concise/verbose styles)
 - [x] Multi-image temporal cues; class-4 source→goal planning (not full-traj recall)
+- [x] Tunable Q&A FOV visibility filter (`question_visibility`)
+- [x] Optional labeling + multi-scene DT/LOSO threshold tune
 - [ ] Object facing → `edges_object_frame` (perspective taking)
 - [ ] LLM paraphrase + GT Validator / vision-necessity
 - [ ] FREEZE + Model Evaluation pipeline
