@@ -23,7 +23,7 @@ def tiny_episode(tmp_path):
         output_path=str(tmp_path),
         output_filename='episode.json',
     )
-    return gen.collect_episode_data(extra_data={'scene': 'TinyScene', 'all_distances': []})
+    return gen.collect_episode_data(extra_data={'scene': 'TinyScene'})
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def folder_episode(tmp_path):
         output_path=str(tmp_path),
         output_filename='folder_episode.json',
     )
-    return gen.collect_episode_data(extra_data={'scene': 'ignore', 'all_distances': []})
+    return gen.collect_episode_data(extra_data={'scene': 'ignore'})
 
 
 def test_egocentric_item_has_answer_source(tiny_episode):

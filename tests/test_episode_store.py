@@ -20,7 +20,7 @@ def tiny_episode(tmp_path):
         output_path=str(tmp_path),
         output_filename='unused.json',
     )
-    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene', 'all_distances': []})
+    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene'})
     return gen, data, tmp_path / 'episodes.db'
 
 

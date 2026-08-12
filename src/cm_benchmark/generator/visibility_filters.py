@@ -28,6 +28,15 @@ QUESTION_VISIBILITY_KEYS = (
     'max_obj_distance',
 )
 
+# CSV column names used for Q&A FOV filtering and threshold calibration.
+VISIBILITY_METRIC_COLUMNS = (
+    'obj-distance',
+    'bbox-area',
+    'min-side',
+    'occupancy-ratio',
+    'visible-pixels',
+)
+
 DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
     'min_bbox_area': None,
     'min_side': None,
@@ -265,10 +274,8 @@ def resolve_hyperparams_from_episode_meta(
         'w': 396,
         'h': 224,
         'fov_v': 59,
-        'epsilon': 1 / 3,
         'k_neighbors': 3,
         'radius': 1.5,
-        'fraction_threshold': 0.15,
         'ex': 0.1,
         'ey': 0.1,
         'ez': 0.15,
