@@ -12,6 +12,7 @@ from cm_benchmark.generator.episode_paths import (
 )
 from cm_benchmark.generator.nav_sequence_generator import NavSequenceGenerator, parse_args
 from cm_benchmark.generator.visibility_filters import (
+    load_visibility_filter_model,
     metrics_from_nav_row,
     normalize_question_visibility_thresholds,
     passes_question_visibility_filter,
@@ -137,6 +138,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         scene_id=None,
         file_overrides=None,
         question_visibility=None,
+        visibility_model_path=None,
     ):
         self.episode_meta = {}
         self.displacement_events = []
@@ -150,6 +152,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.images_dir = None
         # Unfiltered FOV detections (for threshold stats); filled in get_records_navigation
         self._raw_fov_detections = []
+        self.visibility_model = None
 
         if csv_path_folder is not None:
             paths = resolve_episode_paths(
@@ -176,14 +179,27 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             merged['question_visibility'] = normalize_question_visibility_thresholds(
                 question_visibility
             )
+        if visibility_model_path is not None:
+            merged['visibility_model_path'] = visibility_model_path
         self.question_visibility = merged['question_visibility']
+        model_path = merged.get('visibility_model_path')
+        if model_path:
+            self.visibility_model = load_visibility_filter_model(model_path)
 
         super().__init__(path_navigation, path_objects, output_path, output_filename, merged)
 
     def set_question_visibility(self, thresholds: dict | None) -> None:
-        """Update Q&A FOV filter thresholds and rebuild navigation records."""
+        """Update Q&A FOV hard thresholds and rebuild navigation records."""
         self.question_visibility = normalize_question_visibility_thresholds(thresholds)
         self.hyperparams['question_visibility'] = self.question_visibility
+        self.dict_navigation = self.get_records_navigation()
+
+    def set_visibility_model(self, path: str | None) -> None:
+        """Load / clear the DecisionTree visibility bundle and rebuild FOV."""
+        self.hyperparams['visibility_model_path'] = path
+        self.visibility_model = (
+            load_visibility_filter_model(path) if path else None
+        )
         self.dict_navigation = self.get_records_navigation()
 
     def frame_size(self) -> tuple[int, int]:
@@ -328,15 +344,21 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         """
         Build per-timestep agent state + FOV objects for Q&A.
 
-        Structural ids are always dropped. Optional question_visibility thresholds
-        drop tiny / mostly occluded detections from FOV lists used for edges and
-        questions (object catalog is unchanged). All non-structural detections are
-        retained in ``self._raw_fov_detections`` for threshold statistics.
+        Structural ids are always dropped. Optional filters drop detections from
+        FOV lists used for edges and questions (object catalog is unchanged):
+
+        - ``visibility_model`` (DecisionTree bundle): keep only ``distinguible``
+          via ``predict_proba`` + low/high bands.
+        - else ``question_visibility`` hard thresholds when any are set.
+
+        All non-structural detections are retained in ``self._raw_fov_detections``
+        for statistics.
         """
         df = pd.read_csv(self.path_navigation)
         frame_w, frame_h = self.frame_size()
         thr = self.question_visibility
-        filter_on = question_visibility_active(thr)
+        model = self.visibility_model
+        filter_on = model is not None or question_visibility_active(thr)
         self._raw_fov_detections = []
 
         dict_navigation = {}
@@ -395,12 +417,22 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
 
             metrics = metrics_from_nav_row(row, frame_w=frame_w, frame_h=frame_h)
             bbox = (row.get('cmin'), row.get('rmin'), row.get('cmax'), row.get('rmax'))
+            if model is not None:
+                proba = model.predict_proba_distinguishable(metrics)
+                label = model.classify_metrics(metrics)
+                passes = model.passes_for_questions(metrics)
+            else:
+                proba = None
+                label = None
+                passes = passes_question_visibility_filter(metrics, thr)
             raw = {
                 'timestep': int(timestep) if pd.notna(timestep) else None,
                 'obj_id': obj,
                 'bbox': bbox,
                 **metrics,
-                'passes_question_filter': passes_question_visibility_filter(metrics, thr),
+                'visibility_proba': proba,
+                'visibility_label': label,
+                'passes_question_filter': passes,
             }
             self._raw_fov_detections.append(raw)
 
@@ -625,6 +657,16 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         episode_dict['region_trajectory'] = self.region_trajectory
         episode_dict['episode_meta'] = self.episode_meta
         episode_dict['question_visibility'] = dict(self.question_visibility)
+        if self.visibility_model is not None:
+            episode_dict['visibility_filter_model'] = {
+                'path': self.visibility_model.source_path,
+                'features': list(self.visibility_model.features),
+                'low': self.visibility_model.low,
+                'high': self.visibility_model.high,
+                'ambiguous_proba_stats': self.visibility_model.ambiguous_proba_stats,
+            }
+        else:
+            episode_dict['visibility_filter_model'] = None
         episode_dict['camera'] = {
             'width': self.hyperparams['w'],
             'height': self.hyperparams['h'],
@@ -644,6 +686,7 @@ def main(args):
         output_path=args.output_path,
         output_filename=args.output_filename,
         hyperparams=None,
+        visibility_model_path=getattr(args, 'visibility_model_path', None),
     )
     scene_name = generator.scene_id or 'unknown'
     extra_data = {'scene': scene_name}

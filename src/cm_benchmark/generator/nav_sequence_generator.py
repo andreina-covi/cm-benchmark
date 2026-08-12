@@ -375,4 +375,10 @@ def parse_args():
         action="store_true",
         help="Also write a JSON artifact for inspection / LLM drafting",
     )
+    parser.add_argument(
+        "--visibility_model_path",
+        type=str,
+        default=None,
+        help="Path to visibility_filter.joblib bundle (predict_proba + low/high bands)",
+    )
     return parser.parse_args()
