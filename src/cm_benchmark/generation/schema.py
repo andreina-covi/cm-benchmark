@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 
 CONSTRUCT_CLASS = {
@@ -17,16 +17,26 @@ CONSTRUCT_CLASS = {
     'survey_knowledge': 4,
 }
 
-CONSTRUCT_FOR = {
+# Default FoR per construct. SWM allows egocentric or allocentric per item;
+# planner sets fact.extra['frame_of_reference'] when non-default.
+CONSTRUCT_FOR: dict[str, Union[str, list[str]]] = {
     'egocentric_encoding': 'egocentric',
     'allocentric_encoding': 'allocentric',
-    'spatial_working_memory': 'egocentric',
+    'spatial_working_memory': ['egocentric', 'allocentric'],
     'invisible_displacement': 'allocentric',
     'spatial_updating': 'egocentric',
     'perspective_taking': 'allocentric',
     'route_knowledge': 'egocentric',
     'survey_knowledge': 'allocentric',
 }
+
+
+def default_frame_of_reference(construct: str) -> str:
+    """Single default FoR string for a construct (first if taxonomy lists both)."""
+    val = CONSTRUCT_FOR[construct]
+    if isinstance(val, list):
+        return val[0]
+    return val
 
 
 @dataclass
@@ -78,7 +88,7 @@ class CandidateItem:
             item_id=item_id,
             construct=construct,
             class_=CONSTRUCT_CLASS[construct],
-            frame_of_reference=CONSTRUCT_FOR[construct],
+            frame_of_reference=default_frame_of_reference(construct),
             environment=environment,
             scene_id=scene_id,
             image_paths=[],

@@ -454,7 +454,11 @@ Hybrid design: **[CODE]** selects eligible facts and locks answer / options / `a
 python -m cm_benchmark.generation.draft_items \
   --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_001030.json \
   --output       src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json \
-  --max_per_construct 2
+  --max_per_construct 2 \
+  --swm_min_delay 2 \
+  --swm_max_delay 12 \
+  --su_min_delay 2 \
+  --su_max_delay 12
 
 # from SQLite
 python -m cm_benchmark.generation.draft_items \
@@ -477,29 +481,37 @@ Paired items share `answer` / `answer_source` and link via `paired_item_id`.
 
 When an item has **more than one** `image_path`, the question states **time order** and which frame the answer uses (e.g. “now = last image”). Ambiguous “now” without that cue is treated as a bug.
 
-### Class 4 — route / survey (important)
+Spatial-working-memory and spatial-updating items include every available
+navigation frame from `encoding_step` through `query_step` (inclusive), so a
+delay of `k` normally produces `k + 1` images.
+`--swm_min_delay` / `--su_min_delay` default to `2`; the matching
+`--*_max_delay` flags are optional and otherwise extend through the episode end.
+Generation is deterministic rather than randomly choosing a delay. Set both
+min and max to the same value to request an exact delay.
 
-These are **source → goal planning**, not memorizing every action from step 0 to the end of the episode.
+### Class 4 — route / survey (important)
 
 | Construct | What the draft asks | Evidence |
 |-----------|---------------------|----------|
-| `route_knowledge` | Short walked segment (e.g. Kitchen → LivingRoom); compressed action plan | `region_trajectory` change points + turns between those steps; images near start/goal |
-| `survey_knowledge` | Layout-based connection (which passage / next region) | `world_layout.connectivity` (BFS); views in source/goal regions when available |
+| `route_knowledge` | **Retrace** a short walked segment A→B (not invent a plan) | `region_trajectory` change points + turns between those steps; images near start/goal |
+| `survey_knowledge` | Novel path never walked (layout / BFS shortcut) | `world_layout.connectivity` + proof the path was not traversed; else `unsupported` |
 
 Do **not** emit a single question that expects recall of the full egomotion list across hundreds of steps.
 
-### Construct coverage (v0)
+### Construct coverage (v0, strict)
+
+If a discriminator cannot be proven from episode GT, the draft is `status: unsupported` (no thin approximations).
 
 | Construct | Draft status |
 |-----------|--------------|
 | `egocentric_encoding` | full |
-| `spatial_working_memory` | full |
-| `invisible_displacement` | full |
-| `spatial_updating` | thin (multi-frame “now = last image”) |
-| `allocentric_encoding` | thin (object–object edges; no intrinsic facing) |
-| `route_knowledge` | short source→goal segments |
-| `survey_knowledge` | thin layout planning |
-| `perspective_taking` | `status: unsupported` until trusted facing exists |
+| `spatial_working_memory` | full (explicit delay `k`; ego edge at encoding step; optional count mode) |
+| `invisible_displacement` | full (visible→hidden before move; real receptacle distractors) |
+| `spatial_updating` | full when agent moved, object static, not visible at final; else unsupported |
+| `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
+| `route_knowledge` | full (retrace walked A→B) |
+| `survey_knowledge` | full only for novel unwalked path; else unsupported |
+| `perspective_taking` | `unsupported` until trusted facing exists |
 
 ### Display names
 
@@ -510,6 +522,38 @@ Some Objaverse assets log `category: "Undefined"`. Questions fall back to the **
 Core: `item_id`, `construct`, `class`, `frame_of_reference`, `scene_id`, `image_paths`, `question`, `options`, `answer`, `answer_source`, `distractor_rationale`.  
 Draft extras: `status` (`ok` \| `thin` \| `unsupported`), `question_style`, `paired_item_id`, `query_step`, `encoding_step`.  
 Verification fields stay `null`.
+
+`agent_trajectory` / `agent_actions` are **item-scoped, never an episode dump**:
+
+| Field | Scope |
+|-------|-------|
+| `agent_trajectory` | One pose per frame in `image_paths`, in image order (`null` if unavailable) |
+| `agent_actions` | Only actions in `(encoding_step, query_step]` — the delay / motion the item tests |
+
+`route_knowledge` items carry **no** `agent_actions`: the answer *is* the collapsed action sequence, so the raw list would leak it. The full episode trajectory stays in episode GT, referenced via `answer_source`.
+
+### Build example slides
+
+The presentation builder selects strict (`status: ok`) concise examples
+automatically for all eight constructs. A construct without sufficient GT gets
+an explicit blocker slide instead of a fabricated example. Temporal items with
+more than two images receive ordered sequence slides (six frames per slide)
+before their Q&A slide.
+
+```bash
+.venv-pptx/bin/python scripts/build_avance_presentation.py \
+  --template "/home/andreina/Documents/Programs/Benchmark - avance.pptx" \
+  --draft-json src/cm_benchmark/storage/ai2thor/items/draft_house_007514.json \
+  --draft-json src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json \
+  --output "/home/andreina/Documents/Programs/Benchmark - avance examples.pptx" \
+  --examples-per-construct 2
+```
+
+`--draft-json` may be repeated to combine episodes. Input order is preference
+order. Drafts must reference raw image files that still exist; regenerate a
+draft from the current episode export if its original collection folder moved
+or was deleted. The slide builder never substitutes images from another
+episode because that would break GT traceability.
 
 ---
 

@@ -30,6 +30,30 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument('--max_per_construct', type=int, default=3)
     parser.add_argument(
+        '--swm_min_delay',
+        type=int,
+        default=2,
+        help='Minimum navigation-step delay for spatial working-memory items (default: 2)',
+    )
+    parser.add_argument(
+        '--swm_max_delay',
+        type=int,
+        default=None,
+        help='Maximum SWM delay; omit to allow any delay through the episode end',
+    )
+    parser.add_argument(
+        '--su_min_delay',
+        type=int,
+        default=2,
+        help='Minimum navigation-step delay for spatial-updating items (default: 2)',
+    )
+    parser.add_argument(
+        '--su_max_delay',
+        type=int,
+        default=None,
+        help='Maximum spatial-updating delay; omit to allow any delay through the episode end',
+    )
+    parser.add_argument(
         '--styles',
         type=str,
         default='concise,verbose',
@@ -41,6 +65,14 @@ def main(argv: Optional[list[str]] = None) -> None:
         help='Optional LLM paraphrase of question text only (no-op without provider)',
     )
     args = parser.parse_args(argv)
+    if args.swm_min_delay < 1:
+        parser.error('--swm_min_delay must be at least 1')
+    if args.swm_max_delay is not None and args.swm_max_delay < args.swm_min_delay:
+        parser.error('--swm_max_delay must be greater than or equal to --swm_min_delay')
+    if args.su_min_delay < 1:
+        parser.error('--su_min_delay must be at least 1')
+    if args.su_max_delay is not None and args.su_max_delay < args.su_min_delay:
+        parser.error('--su_max_delay must be greater than or equal to --su_min_delay')
 
     episode = load_episode(
         db_path=args.db_path,
@@ -54,6 +86,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         episode,
         constructs=constructs,
         max_per_construct=args.max_per_construct,
+        swm_min_delay=args.swm_min_delay,
+        swm_max_delay=args.swm_max_delay,
+        su_min_delay=args.su_min_delay,
+        su_max_delay=args.su_max_delay,
         styles=styles,
         paraphrase=args.paraphrase,
     )

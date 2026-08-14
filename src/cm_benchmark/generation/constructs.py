@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from cm_benchmark.generation.schema import CONSTRUCT_CLASS, CONSTRUCT_FOR
-
 # Horizontal option bank used by egocentric / SWM / updating drafts
 EGO_DIRECTION_OPTIONS = [
     'ahead of you',
@@ -28,40 +26,63 @@ ORTHOGONAL = {
     'to your right': 'behind you',
 }
 
+# Template banks keyed by construct; modes selected via fact.extra['template_mode'].
 CONSTRUCT_TEMPLATES = {
     'egocentric_encoding': [
         'From your current view, where is the {object_type} relative to you?',
-        'In which direction is the {object_type} from you?',
-        'Where is the {object_type} relative to you?',
     ],
     'allocentric_encoding': [
         'Relative to the {reference_object}, where is the {object_type}?',
     ],
-    # Multi-image constructs: wording must situate "now" / "earlier" in the frame sequence
-    'spatial_working_memory': [
-        'Looking at these images in order, where was the {object_type} relative to you when you last saw it (an earlier image, not the last)?',
-        'Across these views in time order, where was the {object_type} relative to you when it was last visible?',
-    ],
+    'spatial_working_memory': {
+        'recall_relation': [
+            (
+                'It has been {k} steps since you last saw the {object_type}. '
+                'At that time, where was it relative to you?'
+            ),
+            (
+                'You last saw the {object_type} {k} steps ago. '
+                'Where was it relative to you then?'
+            ),
+        ],
+        'recall_count': [
+            'How many {object_category} have you seen so far?',
+        ],
+    },
     'invisible_displacement': [
-        'Looking at these images in order, where is the {object_type} now (after the last image)?',
-        'After the sequence of views (earliest to latest), where is the {object_type}?',
+        'Where is the {object_type} now?',
     ],
     'spatial_updating': [
-        'Looking at these images in order, where is the {object_type} relative to you now (in the last image)?',
-        'After these views in time order, from your pose in the last image, where is the {object_type} relative to you?',
+        'Where is the {object_type} relative to you now?',
     ],
     'perspective_taking': [
         'From where the {reference_entity} faces, which object is on its left?',
     ],
     'route_knowledge': [
-        'You need to go from {source} to {goal}. Which action sequence matches the route between these places in the views shown?',
-        'Plan a route from {source} to {goal} along the path you walked. Which sequence is correct?',
+        (
+            'Retrace the path from {source} to {goal}: '
+            'what is the correct order of turns?'
+        ),
     ],
     'survey_knowledge': [
-        'Using the layout of the space, to go from {source} to {goal}, which connection should you use?',
-        'Plan a route from {source} to {goal}. Which passage or room link is correct?',
+        (
+            'Using the layout of the space, to go from {source} to {goal}, '
+            'which connection should you use?'
+        ),
     ],
 }
+
+
+def select_template(construct: str, template_mode: Optional[str] = None, index: int = 0) -> str:
+    """Pick a question template for a construct / mode."""
+    bank = CONSTRUCT_TEMPLATES.get(construct)
+    if bank is None:
+        return '(no template)'
+    if isinstance(bank, dict):
+        mode = template_mode or 'recall_relation'
+        templates = bank.get(mode) or bank.get('recall_relation') or ['(no template)']
+        return templates[index % len(templates)]
+    return bank[index % len(bank)]
 
 
 def frame_sequence_cue(n_images: int) -> str:
@@ -118,10 +139,14 @@ def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -
 
 
 def angle_relation_to_ego_label(angle_relation) -> Optional[str]:
-    """Map GT angle_relation (x, y, z) to a multiple-choice ego direction label."""
+    """Map GT angle_relation (x, y, z) to a multiple-choice ego direction label.
+
+    Only horizontal labels are used in MC pools (left/right/ahead/behind).
+    Vertical-only relations return None so the planner can skip them.
+    """
     if not angle_relation or len(angle_relation) < 3:
         return None
-    x_dir, y_dir, z_dir = angle_relation[0], angle_relation[1], angle_relation[2]
+    x_dir, _y_dir, z_dir = angle_relation[0], angle_relation[1], angle_relation[2]
     if x_dir == 'left':
         return 'to your left'
     if x_dir == 'right':
@@ -130,10 +155,6 @@ def angle_relation_to_ego_label(angle_relation) -> Optional[str]:
         return 'ahead of you'
     if z_dir == 'behind':
         return 'behind you'
-    if y_dir == 'above':
-        return 'above you'
-    if y_dir == 'below':
-        return 'below you'
     return None
 
 

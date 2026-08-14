@@ -6,6 +6,7 @@ Uses raw episode images (what a VLM would see), not annotated GT frames.
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 from pathlib import Path
@@ -21,7 +22,10 @@ from PIL import Image
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATE = Path("/home/andreina/Documents/Programs/Benchmark - avance.pptx")
 OUTPUT = Path("/home/andreina/Documents/Programs/Benchmark - avance examples.pptx")
-DRAFT_JSON = REPO / "src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json"
+DEFAULT_DRAFT_JSONS = [
+    REPO / "src/cm_benchmark/storage/ai2thor/items/draft_house_007514.json",
+    REPO / "src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json",
+]
 
 # --- palette (from template theme) ---
 NAVY = RGBColor(0x00, 0x2F, 0x4A)
@@ -36,70 +40,43 @@ CONSTRUCT_DEFS = {
     "egocentric_encoding": (
         "Egocentric encoding",
         "Relation of a visible object to the viewer's current pose.",
-        False,
+        "Read the direction from the camera/viewer frame in the single current image.",
     ),
     "allocentric_encoding": (
         "Allocentric encoding",
-        "Object-to-object relation (draft / thin — answers still mix viewer-frame options).",
-        True,
+        "Relation between two visible objects in a trusted object-centered frame.",
+        "Requires intrinsic object facing (object-frame edges); viewer-relative approximations are rejected.",
     ),
     "spatial_working_memory": (
         "Spatial working memory",
-        "Recall a previously seen location after the object leaves the final view.",
-        False,
+        "Recall an encoded relation after the object leaves view and navigation continues.",
+        "Encode the object in the first frame, follow the ordered navigation frames, then recall the earlier relation.",
     ),
     "invisible_displacement": (
         "Invisible displacement",
         "Track an object's location after it is hidden and relocated out of view.",
-        False,
+        "The object is visible before occlusion, moves while hidden, and remains absent in the final view.",
     ),
     "spatial_updating": (
         "Spatial updating",
-        "Update own pose after real movement; report bearing of a static object (draft / thin).",
-        True,
+        "Update the bearing of a static object after the viewer moves.",
+        "Read the ordered navigation sequence: encode the object early, track your own motion through the intermediate frames, then report the updated bearing at the final pose.",
+    ),
+    "perspective_taking": (
+        "Perspective-taking",
+        "Compute a relation from another entity's viewpoint rather than the camera frame.",
+        "Requires trusted reference-entity facing; without it the construct remains unsupported.",
     ),
     "route_knowledge": (
         "Route knowledge",
-        "Source→goal planning on a short experienced segment (draft / thin).",
-        True,
+        "Retrace a short source→goal route that was actually experienced.",
+        "Use the start/goal views to identify the walked action sequence; this is not full-episode recall.",
     ),
     "survey_knowledge": (
         "Survey knowledge",
-        "Infer a layout connection / novel path (one unique GT scenario so far).",
-        True,
+        "Infer a novel source→goal path from the learned layout.",
+        "The correct path must be provably unwalked; otherwise the item is unsupported.",
     ),
-}
-
-# Locked item_ids (concise unless noted)
-EXAMPLES: dict[str, list[str]] = {
-    "egocentric_encoding": [
-        "house_001030_000_egocentric_encoding_0_ObjaScooter_4_5_concise",
-        "house_001030_001_egocentric_encoding_0_ObjaTable_4_3_concise",
-    ],
-    "allocentric_encoding": [
-        "house_001030_003_allocentric_encoding_0_television-sofa_4_0_1_concise",
-        "house_001030_004_allocentric_encoding_1_television-sofa_4_0_1_concise",
-    ],
-    "spatial_working_memory": [
-        "house_001030_006_spatial_working_memory_1_chair-diningtable_4_1_1_concise",
-        "house_001030_007_spatial_working_memory_1_HousePlant_4_39_concise",
-    ],
-    "invisible_displacement": [
-        "house_001030_009_invisible_displacement_184_Pencil_4_38_concise",
-        "house_001030_010_invisible_displacement_184_Candle_4_36_concise",
-    ],
-    "spatial_updating": [
-        "house_001030_012_spatial_updating_1_chair-diningtable_4_1_1_concise",
-        "house_001030_013_spatial_updating_1_HousePlant_4_39_concise",
-    ],
-    "route_knowledge": [
-        "house_001030_016_route_knowledge_5_None_concise",
-        "house_001030_017_route_knowledge_23_None_concise",
-    ],
-    "survey_knowledge": [
-        "house_001030_019_survey_knowledge_157_None_concise",
-        "house_001030_019_survey_knowledge_157_None_verbose",
-    ],
 }
 
 
@@ -173,9 +150,64 @@ def blank_layout(prs: Presentation):
     return prs.slide_layouts[10]  # BLANK
 
 
-def load_items() -> dict[str, dict]:
-    data = json.loads(DRAFT_JSON.read_text())
-    return {it["item_id"]: it for it in data["items"]}
+def load_items(paths: list[Path]) -> list[dict]:
+    items = []
+    for path in paths:
+        if not path.exists():
+            continue
+        data = json.loads(path.read_text())
+        for item in data.get("items", []):
+            enriched = dict(item)
+            enriched["_draft_source"] = path.stem
+            items.append(enriched)
+    if not items:
+        joined = ", ".join(str(path) for path in paths)
+        raise FileNotFoundError(f"No draft item JSON found: {joined}")
+    return items
+
+
+def select_examples(items: list[dict], construct: str, limit: int) -> list[dict]:
+    """Choose distinct, valid concise examples in input-file order."""
+    candidates = [
+        item
+        for item in items
+        if item.get("construct") == construct
+        and item.get("status") == "ok"
+        and item.get("question")
+        and item.get("question_style") == "concise"
+        and all(Path(path).is_file() for path in (item.get("image_paths") or []))
+    ]
+    selected = []
+    seen_pairs = set()
+    for item in candidates:
+        pair_key = item.get("paired_item_id") or item.get("item_id")
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def unsupported_reason(items: list[dict], construct: str) -> str:
+    valid_without_images = [
+        item
+        for item in items
+        if item.get("construct") == construct
+        and item.get("status") == "ok"
+        and item.get("question_style") == "concise"
+    ]
+    if valid_without_images:
+        return (
+            "raw image files referenced by the draft are unavailable; regenerate "
+            "the draft from a current episode export"
+        )
+    for item in items:
+        if item.get("construct") == construct and item.get("status") == "unsupported":
+            rationale = item.get("distractor_rationale") or {}
+            return str(rationale.get("reason") or "insufficient metadata")
+    return "No strict, GT-provable example is available in the supplied drafts."
 
 
 def refresh_progress_slide(slide) -> None:
@@ -243,16 +275,23 @@ def add_divider(prs: Presentation, title: str, subtitle: str) -> None:
     )
 
 
-def add_construct_header(prs: Presentation, name: str, definition: str, thin: bool) -> None:
+def add_construct_header(
+    prs: Presentation,
+    name: str,
+    definition: str,
+    how_to_read: str,
+    *,
+    n_examples: int,
+) -> None:
     slide = prs.slides.add_slide(blank_layout(prs))
-    add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.7), TEAL if not thin else TERRACOTTA)
+    add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.7), TEAL)
     add_textbox(
         slide,
         Inches(0.4),
         Inches(0.15),
         Inches(9),
         Inches(0.45),
-        text=name + ("  ·  first-draft / thin" if thin else ""),
+        text=name,
         size=22,
         bold=True,
         color=WHITE,
@@ -260,7 +299,7 @@ def add_construct_header(prs: Presentation, name: str, definition: str, thin: bo
     add_textbox(
         slide,
         Inches(0.5),
-        Inches(1.2),
+        Inches(0.8),
         Inches(9),
         Inches(1.2),
         text=definition,
@@ -270,11 +309,18 @@ def add_construct_header(prs: Presentation, name: str, definition: str, thin: bo
     add_textbox(
         slide,
         Inches(0.5),
-        Inches(2.6),
+        Inches(2.25),
         Inches(9),
-        Inches(1.5),
+        Inches(2.0),
         lines=[
-            ("Next two slides: real draft Q&A with the raw frames a VLM would see.", {"size": 14, "color": GRAY}),
+            ("How to read the example", {"size": 14, "bold": True, "color": TEAL}),
+            (how_to_read, {"size": 15, "color": DARK, "space_after": 12}),
+            (
+                f"{n_examples} strict GT-backed example(s) selected automatically from the supplied drafts."
+                if n_examples
+                else "No strict GT-backed example is available; the next slide explains the blocker.",
+                {"size": 13, "color": GRAY},
+            ),
             ("Answers are locked by code from episode GT — not invented by an LLM.", {"size": 14, "color": GRAY}),
         ],
     )
@@ -291,7 +337,7 @@ def _fit_images(slide, image_paths: list[str], left, top, max_w, max_h) -> None:
         slide.shapes.add_picture(image_paths[0], left, top, width=w, height=h)
         return
     each_w = Emu(int((max_w - gap) / 2))
-    labels = ["earlier", "later"]
+    labels = ["encoding / earlier", "query / final"]
     for i, path in enumerate(image_paths[:2]):
         x = left + i * (each_w + gap)
         add_textbox(
@@ -310,17 +356,127 @@ def _fit_images(slide, image_paths: list[str], left, top, max_w, max_h) -> None:
         slide.shapes.add_picture(path, x, top + label_h, width=w, height=h)
 
 
-def add_example_slide(prs: Presentation, item: dict, construct_title: str, example_n: int, thin: bool) -> None:
+def _frame_labels(item: dict) -> list[str]:
+    paths = item.get("image_paths") or []
+    trajectory = item.get("agent_trajectory") or []
+    labels = []
+    for index, path in enumerate(paths):
+        step = None
+        if index < len(trajectory) and trajectory[index].get("image_path") == path:
+            step = trajectory[index].get("step")
+        role = ""
+        if index == 0:
+            role = " · encode"
+        elif index == len(paths) - 1:
+            role = " · query"
+        labels.append(f"t={step if step is not None else index}{role}")
+    return labels
+
+
+def add_sequence_slides(
+    prs: Presentation,
+    item: dict,
+    construct_title: str,
+    example_n: int,
+    *,
+    frames_per_slide: int = 6,
+) -> None:
+    paths = list(item.get("image_paths") or [])
+    if len(paths) <= 2:
+        return
+    labels = _frame_labels(item)
+    total = (len(paths) + frames_per_slide - 1) // frames_per_slide
+    for page, offset in enumerate(range(0, len(paths), frames_per_slide), start=1):
+        slide = prs.slides.add_slide(blank_layout(prs))
+        add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.55), NAVY)
+        add_textbox(
+            slide,
+            Inches(0.3),
+            Inches(0.1),
+            Inches(9.4),
+            Inches(0.4),
+            text=(
+                f"{construct_title} · Example {example_n} · ordered sequence "
+                f"{page}/{total}"
+            ),
+            size=16,
+            bold=True,
+            color=WHITE,
+        )
+        add_textbox(
+            slide,
+            Inches(0.35),
+            Inches(0.63),
+            Inches(9.3),
+            Inches(0.35),
+            text=(
+                "Read left→right, top→bottom. The first frame encodes the fact; "
+                "intermediate frames create the navigation delay; the last frame is the query."
+            ),
+            size=11,
+            color=GRAY,
+            align=PP_ALIGN.CENTER,
+        )
+
+        chunk = paths[offset : offset + frames_per_slide]
+        for local_index, path in enumerate(chunk):
+            if not Path(path).exists():
+                raise FileNotFoundError(path)
+            row, col = divmod(local_index, 3)
+            x = Inches(0.3 + col * 3.25)
+            y = Inches(1.08 + row * 2.15)
+            cell_w, cell_h = Inches(3.05), Inches(1.72)
+            add_textbox(
+                slide,
+                x,
+                y,
+                cell_w,
+                Inches(0.25),
+                text=labels[offset + local_index],
+                size=10,
+                bold=offset + local_index in (0, len(paths) - 1),
+                color=TEAL,
+                align=PP_ALIGN.CENTER,
+            )
+            w, h = _picture_size(path, int(cell_w), int(cell_h - Inches(0.25)))
+            slide.shapes.add_picture(
+                path,
+                x + Emu(int((cell_w - w) / 2)),
+                y + Inches(0.27),
+                width=w,
+                height=h,
+            )
+
+        k = item.get("difficulty")
+        add_textbox(
+            slide,
+            Inches(0.35),
+            Inches(5.28),
+            Inches(9.3),
+            Inches(0.22),
+            text=(
+                f"Sequence: {len(paths)} frames"
+                + (f" · delay k={k} navigation steps" if k is not None else "")
+                + " · raw images shown to the model"
+            ),
+            size=9,
+            color=GRAY,
+            align=PP_ALIGN.CENTER,
+        )
+
+
+def add_example_slide(
+    prs: Presentation, item: dict, construct_title: str, example_n: int
+) -> None:
     slide = prs.slides.add_slide(blank_layout(prs))
-    bar = TERRACOTTA if thin else NAVY
-    add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.55), bar)
+    add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.55), NAVY)
     add_textbox(
         slide,
         Inches(0.3),
         Inches(0.1),
         Inches(9.4),
         Inches(0.4),
-        text=f"{construct_title}  ·  Example {example_n}",
+        text=f"{construct_title}  ·  Example {example_n} · question and answer",
         size=16,
         bold=True,
         color=WHITE,
@@ -331,8 +487,22 @@ def add_example_slide(prs: Presentation, item: dict, construct_title: str, examp
         if not Path(p).exists():
             raise FileNotFoundError(p)
 
-    # images left
-    _fit_images(slide, paths, Inches(0.25), Inches(0.7), Inches(5.0), Inches(4.2))
+    # Long sequences receive one or more preceding timeline slides. The Q&A
+    # slide repeats only the encoding and query endpoints as a compact recap.
+    display_paths = paths if len(paths) <= 2 else [paths[0], paths[-1]]
+    _fit_images(slide, display_paths, Inches(0.25), Inches(0.7), Inches(5.0), Inches(4.0))
+    if len(paths) > 2:
+        add_textbox(
+            slide,
+            Inches(0.35),
+            Inches(4.72),
+            Inches(4.8),
+            Inches(0.35),
+            text=f"Endpoint recap · full {len(paths)}-frame sequence on preceding slide(s)",
+            size=9,
+            color=GRAY,
+            align=PP_ALIGN.CENTER,
+        )
 
     # Q&A right
     rx, rw = Inches(5.4), Inches(4.3)
@@ -371,20 +541,31 @@ def add_example_slide(prs: Presentation, item: dict, construct_title: str, examp
     for_ = item.get("frame_of_reference", "")
     style = item.get("question_style", "")
     iid = item.get("item_id", "")
-    short_id = iid.replace("house_001030_", "")[:55]
+    short_id = iid[:60]
+    scene = item.get("scene_id", "")
+    encoding = item.get("encoding_step")
+    query = item.get("query_step")
     add_textbox(
         slide,
         Inches(0.25),
         Inches(5.2),
         Inches(9.5),
         Inches(0.3),
-        text=f"house_001030  ·  FoR={for_}  ·  style={style}  ·  {short_id}",
+        text=(
+            f"{scene} · FoR={for_} · steps={encoding}→{query} · "
+            f"style={style} · {short_id}"
+        ),
         size=9,
         color=GRAY,
     )
 
 
-def add_perspective_slide(prs: Presentation) -> None:
+def add_unsupported_slide(
+    prs: Presentation,
+    construct_title: str,
+    definition: str,
+    reason: str,
+) -> None:
     slide = prs.slides.add_slide(blank_layout(prs))
     add_rect(slide, Inches(0), Inches(0), Inches(10), Inches(0.7), TERRACOTTA)
     add_textbox(
@@ -393,7 +574,7 @@ def add_perspective_slide(prs: Presentation) -> None:
         Inches(0.15),
         Inches(9),
         Inches(0.45),
-        text="Perspective-taking  ·  not generated yet",
+        text=f"{construct_title} · strict example unavailable",
         size=22,
         bold=True,
         color=WHITE,
@@ -406,21 +587,19 @@ def add_perspective_slide(prs: Presentation) -> None:
         Inches(3.5),
         lines=[
             (
-                "Definition: compute a relation from an imagined viewpoint "
-                "(another location or object's facing) — not the camera's frame.",
+                f"Definition: {definition}",
                 {"size": 16, "color": DARK, "space_after": 14},
             ),
             (
-                "Blocker: requires reference-entity facing / object-frame edges in episode GT.",
+                f"Metadata blocker: {reason.replace('_', ' ')}.",
                 {"size": 15, "bold": True, "color": TERRACOTTA, "space_after": 14},
             ),
             (
-                "No draft Q&A examples yet — we do not invent spatial facts.",
+                "No example is shown because an unprovable draft would violate the benchmark's GT-only invariant.",
                 {"size": 15, "color": DARK, "space_after": 10},
             ),
             (
-                "Example question shape (taxonomy only): "
-                '"From where the chair faces, which object is on its left?"',
+                "This is an explicit unsupported result, not a missing slide or generation failure.",
                 {"size": 14, "color": GRAY},
             ),
         ],
@@ -449,22 +628,44 @@ def add_final_slide(prs: Presentation) -> None:
         Inches(4.0),
         lines=[
             ("• Taxonomy is the capability axis; FoR is cross-cutting.", {"size": 15, "space_after": 10}),
-            ("• Draft items exist for 7/8 constructs from one AI2-THOR episode.", {"size": 15, "space_after": 10}),
+            ("• Each construct is shown with strict GT-backed examples or an explicit metadata blocker.", {"size": 15, "space_after": 10}),
             ("• Answers are CODE-locked to GT; images shown = model input.", {"size": 15, "space_after": 10}),
-            ("• Thin drafts (allocentric / updating / route / survey) need stronger filters.", {"size": 15, "space_after": 10}),
-            ("• Perspective-taking waits on facing metadata.", {"size": 15, "space_after": 10}),
+            ("• Temporal examples show the ordered frame sequence, not only its endpoints.", {"size": 15, "space_after": 10}),
+            ("• Unsupported constructs remain visible as honest metadata gaps.", {"size": 15, "space_after": 10}),
             ("• Next wall: validate → vision-necessity → FREEZE → evaluate VLMs.", {"size": 15, "bold": True, "color": TEAL}),
         ],
     )
 
 
-def main() -> None:
-    if not TEMPLATE.exists():
-        raise SystemExit(f"Template missing: {TEMPLATE}")
-    shutil.copy2(TEMPLATE, OUTPUT)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build understandable, per-construct benchmark example slides."
+    )
+    parser.add_argument("--template", type=Path, default=TEMPLATE)
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument(
+        "--draft-json",
+        type=Path,
+        action="append",
+        dest="draft_jsons",
+        help="Draft JSON input; repeat to combine episodes (defaults to known local drafts)",
+    )
+    parser.add_argument("--examples-per-construct", type=int, default=2)
+    return parser.parse_args()
 
-    prs = Presentation(str(OUTPUT))
-    by_id = load_items()
+
+def main() -> None:
+    args = parse_args()
+    draft_jsons = args.draft_jsons or DEFAULT_DRAFT_JSONS
+    if not args.template.exists():
+        raise SystemExit(f"Template missing: {args.template}")
+    if args.examples_per_construct < 1:
+        raise SystemExit("--examples-per-construct must be at least 1")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.template, args.output)
+
+    prs = Presentation(str(args.output))
+    items = load_items(draft_jsons)
 
     # Slide 8 (index 7): refresh progress
     refresh_progress_slide(prs.slides[7])
@@ -472,23 +673,30 @@ def main() -> None:
     add_divider(
         prs,
         "First-draft items — what the model sees",
-        "Real MC candidates from house_001030  ·  raw frames only  ·  not a frozen set",
+        "Strict GT-backed MC candidates · raw ordered frames · not a frozen set",
     )
 
-    for construct, item_ids in EXAMPLES.items():
-        title, definition, thin = CONSTRUCT_DEFS[construct]
-        add_construct_header(prs, title, definition, thin)
-        for n, iid in enumerate(item_ids, start=1):
-            item = by_id.get(iid)
-            if item is None:
-                raise KeyError(iid)
-            add_example_slide(prs, item, title, n, thin)
-        if construct == "spatial_updating":
-            add_perspective_slide(prs)
+    for construct, (title, definition, how_to_read) in CONSTRUCT_DEFS.items():
+        examples = select_examples(items, construct, args.examples_per_construct)
+        add_construct_header(
+            prs,
+            title,
+            definition,
+            how_to_read,
+            n_examples=len(examples),
+        )
+        if not examples:
+            add_unsupported_slide(
+                prs, title, definition, unsupported_reason(items, construct)
+            )
+            continue
+        for n, item in enumerate(examples, start=1):
+            add_sequence_slides(prs, item, title, n)
+            add_example_slide(prs, item, title, n)
 
     add_final_slide(prs)
-    prs.save(str(OUTPUT))
-    print(f"Wrote {OUTPUT} ({len(prs.slides)} slides)")
+    prs.save(str(args.output))
+    print(f"Wrote {args.output} ({len(prs.slides)} slides)")
 
 
 if __name__ == "__main__":
