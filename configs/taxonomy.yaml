@@ -79,6 +79,7 @@ class_2:
     spatial_working_memory:
       class: 2
       frame_of_reference: [egocentric, allocentric]
+      difficulty_axis: [delay_steps, load_n_objects]
       definition: Recall a previously seen location/relation/count under load and delay.
       what_moves: none            # object is STATIC; difficulty from load + step-depth
       answer_type: recalled relation, location, or count of past-seen items
@@ -88,7 +89,7 @@ class_2:
       discriminators:
         - queried object/relation is NOT in the final view
         - object positions UNCHANGED across shown frames (nothing relocates)
-        - difficulty scales with load (num items) and step-depth (frames since seen)
+        - delay (k = query_step - encoding_step) and load (n items) are both stated or computable per item, not implicit
 
     invisible_displacement:
       class: 2
@@ -99,11 +100,15 @@ class_2:
       required_temporal_fields: [object_state_track, displacement_event]
       question_template: "Where is the {object} now?"
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
+      # original_location = A-not-B probe (Piaget; infants <12mo reach for the prior
+      # hiding place after witnessing relocation) — literature-grounded, not arbitrary
       discriminators:
         - object goes VISIBLE -> HIDDEN before it is moved
         - displacement_event.hidden_during == true
         - object NOT visible at its true final location in the last frame
-
+        - to_receptacle (or its containing landmark) IS visible in at least one shown frame
+          after at_timestep — the destination container must be observable even though
+          the object itself is not (NEW — required for answerability)
 # ============================================================
 # CLASS 3 — OPERATION ON THE COGNITIVE MAP  (answer requires a pose
 # DIFFERENT from the encoding pose: real move, or imagined viewpoint)

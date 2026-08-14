@@ -26,12 +26,22 @@ def draft_items_for_episode(
     *,
     constructs: Optional[list[str]] = None,
     max_per_construct: int = 3,
+    swm_min_delay: int = 2,
+    swm_max_delay: Optional[int] = None,
+    su_min_delay: int = 2,
+    su_max_delay: Optional[int] = None,
     styles: tuple[str, ...] = ('concise', 'verbose'),
     paraphrase: bool = False,
     episode_tag: Optional[str] = None,
 ) -> list[dict]:
     facts = plan_episode(
-        episode, constructs=constructs, max_per_construct=max_per_construct
+        episode,
+        constructs=constructs,
+        max_per_construct=max_per_construct,
+        swm_min_delay=swm_min_delay,
+        swm_max_delay=swm_max_delay,
+        su_min_delay=su_min_delay,
+        su_max_delay=su_max_delay,
     )
     tag = episode_tag or scene_id_of(episode)
     items = build_items_from_facts(
