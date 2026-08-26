@@ -29,34 +29,42 @@ ORTHOGONAL = {
 # Template banks keyed by construct; modes selected via fact.extra['template_mode'].
 CONSTRUCT_TEMPLATES = {
     'egocentric_encoding': [
-        'From your current view, where is the {object_type} relative to you?',
+        'Where is the {object_type} relative to you right now?',
     ],
     'allocentric_encoding': [
-        'Relative to the {reference_object}, where is the {object_type}?',
+        'Where is the {object_type} in relation to the {reference_object}?',
     ],
     'spatial_working_memory': {
+        # Delay k is a difficulty axis — must be stated in the question (not implicit).
         'recall_relation': [
             (
-                'It has been {k} steps since you last saw the {object_type}. '
-                'At that time, where was it relative to you?'
-            ),
-            (
-                'You last saw the {object_type} {k} steps ago. '
-                'Where was it relative to you then?'
-            ),
+                'You last saw the {object_type} {k} steps ago: '
+                'where was it relative to you at that time?'
+            )
         ],
         'recall_count': [
-            'How many {object_category} have you seen so far?',
+            'How many different {object_category} have you seen up to this point?',
         ],
     },
-    'invisible_displacement': [
-        'Where is the {object_type} now?',
-    ],
+    'invisible_displacement': {
+        'displacement_update': [
+            (
+                'While out of view, the {object_type} was moved to {new_location}. '
+                'Where is it relative to you now?'
+            ),
+        ],
+        'swap': [
+            (
+                'The {object_type} was moved to the previous location of the {other_object_type}. '
+                'Where is the {object_type} relative to you now?'
+            ),
+        ],
+    },
     'spatial_updating': [
-        'Where is the {object_type} relative to you now?',
+        'You last saw the {object_type} {k} steps ago. Where is it relative to you now?',
     ],
     'perspective_taking': [
-        'From where the {reference_entity} faces, which object is on its left?',
+        'Given the direction the {reference_entity} is facing, which object is to its {relation}?',
     ],
     'route_knowledge': [
         (
@@ -79,25 +87,30 @@ def select_template(construct: str, template_mode: Optional[str] = None, index: 
     if bank is None:
         return '(no template)'
     if isinstance(bank, dict):
-        mode = template_mode or 'recall_relation'
-        templates = bank.get(mode) or bank.get('recall_relation') or ['(no template)']
+        mode = template_mode
+        if mode not in bank:
+            mode = next(iter(bank))
+        templates = bank.get(mode) or ['(no template)']
         return templates[index % len(templates)]
     return bank[index % len(bank)]
 
 
 def frame_sequence_cue(n_images: int) -> str:
-    """Explicit temporal cue when the item attaches more than one frame."""
-    if n_images <= 1:
-        return ''
-    if n_images == 2:
-        return (
-            'The two images are shown in time order '
-            '(first = earlier view, second = later view). '
-        )
-    return (
-        f'The {n_images} images are shown in time order '
-        f'(first = earliest, last = latest). '
-    )
+    """Deprecated: sequential/online protocol does not bundle images with the question.
+
+    Kept as a no-op so callers do not accidentally reintroduce multi-image cues.
+    """
+    return ''
+
+
+def online_temporal_preamble(construct: str, k: int) -> str:
+    """Optional short cue for online models (stream already observed; no image bundle)."""
+    k = max(1, int(k))
+    if construct == 'spatial_working_memory':
+        return f'Considering what you saw {k} steps ago. '
+    if construct == 'spatial_updating':
+        return f'Considering the last {k} navigation steps. '
+    return ''
 
 
 _BAD_CATEGORIES = frozenset(

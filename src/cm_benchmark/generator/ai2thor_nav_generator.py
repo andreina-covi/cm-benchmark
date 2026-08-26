@@ -122,6 +122,7 @@ def _file_overrides_from_args(args):
         'objects': getattr(args, 'file_objects', None),
         'object_state': getattr(args, 'file_object_state', None),
         'displacement_events': getattr(args, 'file_displacement_events', None),
+        'displacement_candidates': getattr(args, 'file_displacement_candidates', None),
     }
     return {k: v for k, v in mapping.items() if v}
 
@@ -142,6 +143,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
     ):
         self.episode_meta = {}
         self.displacement_events = []
+        self.displacement_candidates = []
         self.world_layout = None
         self.passage_state = []
         self.region_trajectory = []
@@ -212,6 +214,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 e['obj_id'] for e in self.displacement_events if e.get('obj_id')
             }
 
+        if 'displacement_candidates' in paths:
+            self.displacement_candidates = self._read_displacement_candidates(
+                paths['displacement_candidates']
+            )
+
         if 'object_state' in paths and self.displaced_obj_ids:
             self.state_lookup = self._read_object_state(
                 paths['object_state'], self.displaced_obj_ids
@@ -254,9 +261,39 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 'in_fov_just_before': _as_bool(row.get('in_fov_just_before')),
                 'in_fov_just_after': _as_bool(row.get('in_fov_just_after')),
                 'moved_via': row.get('moved_via') if pd.notna(row.get('moved_via')) else None,
+                'swap_partner_id': (
+                    row.get('swap_partner_id')
+                    if 'swap_partner_id' in row.index and pd.notna(row.get('swap_partner_id'))
+                    else None
+                ),
                 'notes': row.get('notes') if pd.notna(row.get('notes')) else None,
             })
         return events
+
+    def _read_displacement_candidates(self, path):
+        df = pd.read_csv(path)
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
+                'event_id': row.get('event_id'),
+                'obj_id': row.get('obj-id'),
+                'at_timestep': (
+                    int(row.get('at_timestep')) if pd.notna(row.get('at_timestep')) else None
+                ),
+                'candidate_role': row.get('candidate_role'),
+                'candidate_receptacle': (
+                    row.get('candidate_receptacle')
+                    if pd.notna(row.get('candidate_receptacle'))
+                    else None
+                ),
+                'candidate_position': (
+                    float(row.get('candidate_pos-x')),
+                    float(row.get('candidate_pos-y')),
+                    float(row.get('candidate_pos-z')),
+                ),
+                'is_persisted': _as_bool(row.get('is_persisted')),
+            })
+        return rows
 
     def _read_object_state(self, path, obj_ids):
         df = pd.read_csv(path)
@@ -539,6 +576,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             obj_pos, obj_rot, state = self._pose_for_object(obj, timestep)
             if obj_pos is None:
                 continue
+            # Honor object_state FOV for displaced objects (nav CSV can still list them).
+            if state is not None and not state.get('in_camera_fov', True):
+                continue
             category = (
                 state['category']
                 if state is not None
@@ -652,6 +692,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
     def enrich_episode_data(self, episode_dict):
         episode_dict['object_state_track'] = self.build_object_state_track()
         episode_dict['displacement_events'] = self.displacement_events
+        episode_dict['displacement_candidates'] = self.displacement_candidates
         episode_dict['world_layout'] = self.world_layout
         episode_dict['passage_state'] = self.passage_state
         episode_dict['region_trajectory'] = self.region_trajectory

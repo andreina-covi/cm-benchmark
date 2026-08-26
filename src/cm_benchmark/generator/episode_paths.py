@@ -28,6 +28,7 @@ DEFAULT_STEMS = {
     'objects': 'objects',
     'object_state': 'object_state',
     'displacement_events': 'displacement_events',
+    'displacement_candidates': 'displacement_candidates',
     'passage_state': 'passage_state',
     'region_trajectory': 'region_trajectory',
     'world_layout': 'world_layout',
@@ -38,6 +39,7 @@ DEFAULT_STEMS = {
 OPTIONAL_KEYS = {
     'object_state',
     'displacement_events',
+    'displacement_candidates',
     'passage_state',
     'region_trajectory',
     'world_layout',

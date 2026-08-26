@@ -40,17 +40,38 @@ def folder_episode(tmp_path):
 
 @pytest.fixture
 def delayed_episode(tiny_episode):
-    """Tiny episode extended so SWM can exercise a multi-step delay."""
+    """Tiny episode extended so SWM/SU exercise multi-step delay with translation."""
     episode = deepcopy(tiny_episode)
-    for step_idx in (2, 3):
+    # Ensure every step has a distinct floor position (tiny starts rotate-only).
+    for i, pose in enumerate(episode.get('agent_trajectory') or []):
+        new_pos = (0.25 * i, 1.0, 0.0)
+        pose['position'] = new_pos
+        step = next(
+            (s for s in episode['steps'] if int(s['step']) == int(pose['step'])),
+            None,
+        )
+        if step is not None:
+            step.setdefault('agent', {})['position'] = new_pos
+            step['agent']['rotation'] = pose.get('rotation')
+
+    last_pos = list(episode['agent_trajectory'][-1]['position'])
+    base = int(episode['steps'][-1]['step'])
+    for i, step_idx in enumerate((base + 1, base + 2), start=1):
         step = deepcopy(episode['steps'][-1])
         step['step'] = step_idx
         step['image_path'] = f'/img_{step_idx}.png'
         step['action'] = 'MoveAhead'
+        new_pos = (float(last_pos[0]) + 0.25 * i, float(last_pos[1]), float(last_pos[2]))
+        step['agent'] = {
+            **(step.get('agent') or {}),
+            'position': new_pos,
+            'rotation': (step.get('agent') or {}).get('rotation')
+            or episode['agent_trajectory'][-1]['rotation'],
+        }
         episode['steps'].append(step)
 
         pose = deepcopy(episode['agent_trajectory'][-1])
-        pose.update(step=step_idx, image_path=step['image_path'])
+        pose.update(step=step_idx, image_path=step['image_path'], position=new_pos)
         episode['agent_trajectory'].append(pose)
         episode['agent_actions'].append(
             {'step': step_idx, 'action': 'MoveAhead', 'degrees': None}
@@ -106,27 +127,140 @@ def test_concise_verbose_pair_share_answer(tiny_episode):
     )
 
 
-def test_invisible_displacement_requires_visible_to_hidden(folder_episode):
+def test_invisible_displacement_swap_mode(folder_episode):
     facts = plan_episode(
-        folder_episode, constructs=['invisible_displacement'], max_per_construct=1
+        folder_episode, constructs=['invisible_displacement'], max_per_construct=4
+    )
+    swap = [
+        f
+        for f in facts
+        if f.status == 'ok' and (f.extra or {}).get('template_mode') == 'swap'
+    ]
+    assert swap, f'expected swap facts, got {[f.reason for f in facts if f.status != "ok"]}'
+
+    items = draft_items_for_episode(
+        folder_episode,
+        constructs=['invisible_displacement'],
+        max_per_construct=4,
+        styles=('concise',),
+    )
+    swap_items = [
+        i
+        for i in items
+        if i.get('status') == 'ok' and 'used to be' in i['question']
+    ]
+    assert swap_items
+    for item in swap_items:
+        assert item['frame_of_reference'] == 'egocentric'
+        assert item.get('displacement_event', {}).get('moved_via') == 'swap'
+        assert 'moved onto' not in item['question']
+        assert any(
+            pid in (item.get('displacement_event') or {}).get('swap_partner_id', '')
+            for pid in ('Cup|1', 'Plate|1')
+        )
+
+
+def test_invisible_displacement_dual_modes(folder_episode):
+    facts = plan_episode(
+        folder_episode, constructs=['invisible_displacement'], max_per_construct=4
     )
     assert facts
-    # Fixture has Cup visible at step 0 before move at t=1 → ok when proven
-    if facts[0].status == 'ok':
-        items = draft_items_for_episode(
-            folder_episode,
-            constructs=['invisible_displacement'],
-            max_per_construct=1,
-            styles=('concise',),
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok, f'expected ok ID facts, got {[f.reason for f in facts]}'
+    modes = {(f.extra or {}).get('template_mode') for f in ok}
+    assert modes <= {'recall_direction', 'swap'}
+    assert 'recall_direction' in modes or 'swap' in modes
+
+    items = draft_items_for_episode(
+        folder_episode,
+        constructs=['invisible_displacement'],
+        max_per_construct=4,
+        styles=('concise',),
+    )
+    ok_items = [i for i in items if i.get('status') == 'ok']
+    assert ok_items
+    for item in ok_items:
+        assert item.get('displacement_event')
+        assert item['encoding_step'] is not None
+        assert item['query_step'] is not None
+        assert item['frame_of_reference'] == 'egocentric'
+        labels = list(item['options'].values())
+        assert len(labels) == len(set(labels))
+        assert any('you' in lab for lab in labels)
+        # Destination cue required: landmark name or partner object
+        q = item['question']
+        assert 'moved onto' in q or 'used to be' in q
+        assert not (
+            q.strip().endswith('now?') and 'moved onto' not in q and 'used to be' not in q
         )
-        item = items[0]
-        assert item['queried_object_id'] == 'Cup|1'
-        assert 'to_receptacle' in item['answer_source'][0]
-        assert item['options'][item['answer']].startswith('on/in the')
-        assert 'Where is the' in item['question']
-    else:
-        assert facts[0].status == 'unsupported'
-        assert 'visible' in (facts[0].reason or '') or 'hidden' in (facts[0].reason or '')
+
+
+def test_invisible_displacement_rejects_duplicate_ego_labels(folder_episode):
+    """If candidate poses collapse to one ego label at every query step, skip."""
+    episode = folder_episode
+    # Force all candidate positions identical → duplicate ego labels
+    for row in episode.get('displacement_candidates') or []:
+        row['candidate_position'] = (0.2, 1.0, 0.5)
+    for ev in episode.get('displacement_events') or []:
+        ev['from_position'] = (0.2, 1.0, 0.5)
+        ev['to_position'] = (0.2, 1.0, 0.5)
+    facts = plan_episode(
+        episode, constructs=['invisible_displacement'], max_per_construct=4
+    )
+    ok = [f for f in facts if f.status == 'ok']
+    assert not ok
+    assert any(f.status == 'unsupported' for f in facts)
+
+
+def test_invisible_displacement_skips_colliding_distractors(folder_episode):
+    """A distractor that shares the answer's ego label is dropped, not fatal."""
+    facts = plan_episode(
+        folder_episode, constructs=['invisible_displacement'], max_per_construct=4
+    )
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok
+    for fact in ok:
+        labels = fact.options_pool or []
+        assert len(labels) == len(set(labels))
+        assert len(labels) >= 2
+        assert fact.answer_label in labels
+        assert (fact.extra or {}).get('template_mode') in ('recall_direction', 'swap')
+
+
+def test_rotate_only_window_is_filtered(folder_episode):
+    """Encode→query with no floor-plane translation must not yield multi-frame items."""
+    from cm_benchmark.generation.planner import _has_real_move_between
+
+    episode = folder_episode
+    # Collapse all agent poses to one place (keep rotations).
+    fixed = (0.0, 1.0, 0.0)
+    for step in episode.get('steps') or []:
+        agent = step.setdefault('agent', {})
+        agent['position'] = fixed
+    for pose in episode.get('agent_trajectory') or []:
+        pose['position'] = fixed
+
+    assert not _has_real_move_between(episode, 0, 2)
+
+    for construct in (
+        'spatial_working_memory',
+        'spatial_updating',
+        'invisible_displacement',
+    ):
+        facts = plan_episode(episode, constructs=[construct], max_per_construct=4)
+        assert not any(f.status == 'ok' for f in facts), construct
+
+
+def test_images_between_drops_stationary_intermediates(folder_episode):
+    from cm_benchmark.generation.planner import _images_between
+
+    episode = folder_episode
+    # step 0 and 1 same position, step 2 translated (fixture)
+    paths = _images_between(episode, 0, 2)
+    assert paths[0].endswith('img_0.png')
+    assert paths[-1].endswith('img_2.png')
+    # Intermediate rotate-only frame at same (x,z) as step 0 is dropped.
+    assert not any(p.endswith('img_1.png') for p in paths)
 
 
 def test_perspective_taking_unsupported(tiny_episode):
@@ -164,7 +298,13 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
     k = fact.extra['k']
     assert k == fact.query_step - fact.encoding_step
     assert k >= 2
-    assert len(fact.image_paths) == k + 1
+    # One image per navigated pose in the window (stationary intermediates dropped).
+    assert 2 <= len(fact.image_paths) <= k + 1
+    from cm_benchmark.generation.planner import _has_real_move_between
+
+    assert _has_real_move_between(
+        delayed_episode, fact.encoding_step, fact.query_step
+    )
     q = _core_question(fact)
     assert str(k) in q
     assert 'steps' in q.lower() or 'ago' in q.lower()
@@ -200,9 +340,12 @@ def test_spatial_updating_mentions_now(delayed_episode):
     item = items[0]
     q = item['question'].lower()
     assert 'relative to you now' in q or 'now' in q
-    assert len(item.get('image_paths') or []) >= 3
+    assert len(item.get('image_paths') or []) >= 2
     assert item['query_step'] - item['encoding_step'] >= 2
-    assert 'time order' in q or 'in order' in q or 'earlier' in q
+    # Online sequential protocol: no bundled multi-image time-order cue.
+    assert 'time order' not in q
+    assert 'images are shown' not in q
+    assert 'steps' in q or 'navigation' in q
 
 
 def test_spatial_updating_delay_range_is_configurable(delayed_episode):
@@ -288,7 +431,7 @@ def test_core_question_covers_active_template_placeholders():
 
     for construct, modes in (
         ('egocentric_encoding', [None]),
-        ('invisible_displacement', [None]),
+        ('invisible_displacement', ['recall_direction', 'swap']),
         ('spatial_updating', [None]),
         ('route_knowledge', [None]),
         ('survey_knowledge', [None]),
@@ -310,6 +453,8 @@ def test_core_question_covers_active_template_placeholders():
                     'reference_object': 'Table',
                     'source': 'Kitchen',
                     'goal': 'LivingRoom',
+                    'new_location': 'Shelf',
+                    'other_object_type': 'Plate',
                     'k': 3,
                     'template_mode': mode,
                 },
@@ -317,6 +462,8 @@ def test_core_question_covers_active_template_placeholders():
             q = _core_question(fact)
             assert '{object' not in q
             assert '{k}' not in q
+            assert '{new_location}' not in q
+            assert '{other_object_type}' not in q
             assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q
 
 

@@ -106,18 +106,26 @@ def folder_episode(tmp_path):
 def test_folder_loads_displacement_and_survey_fields(folder_episode):
     _gen, data = folder_episode
     assert data['scene'] == 'house_tiny'
-    assert len(data['displacement_events']) == 1
-    assert data['displacement_events'][0]['obj_id'] == 'Cup|1'
-    assert data['displacement_events'][0]['hidden_during'] is True
+    assert len(data['displacement_events']) == 3
+    disp_0 = data['displacement_events'][0]
+    assert disp_0['obj_id'] == 'Cup|1'
+    assert disp_0['hidden_during'] is True
+    assert disp_0['moved_via'] == 'direct'
+    swap_rows = [e for e in data['displacement_events'] if e.get('moved_via') == 'swap']
+    assert len(swap_rows) == 2
+    assert {e['obj_id'] for e in swap_rows} == {'Cup|1', 'Plate|1'}
+    assert swap_rows[0]['swap_partner_id'] in {'Cup|1', 'Plate|1'}
 
     assert data['object_state_track'] is not None
     assert 'Cup|1' in data['object_state_track']
     entries = data['object_state_track']['Cup|1']['entries']
-    # Sparse: step 0 (first) + step 1 (pose/fov change) — no duplicate unchanged rows
-    assert [e['step'] for e in entries] == [0, 1]
+    # Sparse: step 0 (first) + steps 1–2 (pose/fov changes) — no duplicate unchanged rows
+    assert [e['step'] for e in entries] == [0, 1, 2]
     assert entries[0]['in_camera_fov'] is True
     assert entries[1]['in_camera_fov'] is False
     assert entries[1]['position'] == [0.2, 1.0, 0.5]
+    assert entries[2]['in_camera_fov'] is False
+    assert entries[2]['position'] == [0.8, 1.0, 0.0]
 
     from cm_benchmark.generator.ai2thor_nav_generator import state_at_step
 
@@ -125,7 +133,7 @@ def test_folder_loads_displacement_and_survey_fields(folder_episode):
     assert state_at_step(entries, 0)['in_camera_fov'] is True
     mid = state_at_step(entries, 1)
     assert mid['position'] == [0.2, 1.0, 0.5]
-    assert state_at_step(entries, 5)['position'] == [0.2, 1.0, 0.5]
+    assert state_at_step(entries, 5)['position'] == [0.8, 1.0, 0.0]
 
     assert data['world_layout']['regions'][0]['region_id'] == 'room|1'
     assert data['region_trajectory'][0]['region_id'] == 'room|1'

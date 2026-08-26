@@ -1,0 +1,10 @@
+event_id,obj-id,at_timestep,candidate_role,candidate_receptacle,candidate_pos-x,candidate_pos-y,candidate_pos-z,is_persisted
+disp_0,Cup|1,1,chosen,Shelf|1,0.2,1.0,0.5,True
+disp_0,Cup|1,1,nearby_receptacle,Cabinet|1,-0.5,1.0,0.2,False
+disp_0,Cup|1,1,salient_decoy_location,Table|1,0.5,1.0,-0.8,False
+disp_1,Cup|1,2,chosen,Plate|1,0.8,1.0,0.0,True
+disp_1,Cup|1,2,nearby_receptacle,Shelf|1,-0.6,1.0,0.0,False
+disp_1,Cup|1,2,salient_decoy_location,Table|1,0.5,1.0,-0.8,False
+disp_1,Plate|1,2,chosen,Cup|1,0.0,1.0,0.8,True
+disp_1,Plate|1,2,nearby_receptacle,Shelf|1,-0.6,1.0,0.0,False
+disp_1,Plate|1,2,salient_decoy_location,Table|1,0.5,1.0,-0.8,False

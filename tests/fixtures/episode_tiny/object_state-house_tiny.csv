@@ -1,3 +1,7 @@
 timestep,obj-id,obj-type,obj-pos-x,obj-pos-y,obj-pos-z,obj-rot-x,obj-rot-y,obj-rot-z,visible,in_camera_fov,parent_receptacle,parent_receptacles,is_inside_receptacle,receptacle_is_open,distance_from_agent
 0,Cup|1,Cup,0.0,1.0,0.8,0.0,0.0,0.0,True,True,CounterTop|1,"[""CounterTop|1""]",True,,0.8
-1,Cup|1,Cup,0.2,1.0,0.5,0.0,0.0,0.0,False,False,CounterTop|1,"[""CounterTop|1""]",True,,0.54
+0,Plate|1,Plate,0.8,1.0,0.0,0.0,0.0,0.0,True,True,CounterTop|1,"[""CounterTop|1""]",True,,0.9
+1,Cup|1,Cup,0.2,1.0,0.5,0.0,0.0,0.0,False,False,Shelf|1,"[""Shelf|1""]",True,,0.54
+1,Plate|1,Plate,0.8,1.0,0.0,0.0,0.0,0.0,True,True,CounterTop|1,"[""CounterTop|1""]",True,,0.9
+2,Cup|1,Cup,0.8,1.0,0.0,0.0,0.0,0.0,False,False,,,False,,0.9
+2,Plate|1,Plate,0.0,1.0,0.8,0.0,0.0,0.0,False,False,,,False,,0.8

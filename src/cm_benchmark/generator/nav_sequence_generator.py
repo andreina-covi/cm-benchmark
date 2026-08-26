@@ -71,6 +71,7 @@ class NavSequenceGenerator(ABC):
             'route': {'landmarks': [], 'turns': []},
             'object_state_track': None,
             'displacement_events': [],
+            'displacement_candidates': [],
             'world_layout': None,
             'passage_state': [],
             'region_trajectory': [],
@@ -344,6 +345,12 @@ def parse_args():
         type=str,
         default=None,
         help="Override displacement_events CSV basename or path",
+    )
+    parser.add_argument(
+        "--file_displacement_candidates",
+        type=str,
+        default=None,
+        help="Override displacement_candidates CSV basename or path",
     )
     parser.add_argument(
         "--output_path",

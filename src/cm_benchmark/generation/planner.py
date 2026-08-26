@@ -17,6 +17,10 @@ from cm_benchmark.generation.constructs import (
     object_type_from_id,
     step_by_index,
 )
+from cm_benchmark.generation.geometry import (
+    agent_pose_at_step,
+    ego_label_from_world_pose,
+)
 
 
 @dataclass
@@ -57,13 +61,31 @@ def _img(step: Optional[dict]) -> list[str]:
 
 
 def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
-    """Image paths for the inclusive step window, in navigation order."""
-    paths = []
+    """Image paths for the inclusive step window, in navigation order.
+
+    Intermediate frames that share the previous kept frame's horizontal agent
+    position are dropped (rotate-in-place / look-only). Encoding and query
+    endpoints are always kept when present.
+    """
+    window: list[tuple[int, str]] = []
     for step in episode.get('steps') or []:
         step_idx = int(step['step'])
         if start_step <= step_idx <= end_step and step.get('image_path'):
-            paths.append(step['image_path'])
-    return paths
+            window.append((step_idx, step['image_path']))
+    if not window:
+        return []
+
+    start_i, end_i = int(start_step), int(end_step)
+    kept: list[str] = []
+    last_pos: Optional[tuple[float, float]] = None
+    for step_idx, path in window:
+        pos = _agent_horizontal_pos(episode, step_idx)
+        is_endpoint = step_idx == start_i or step_idx == end_i
+        if is_endpoint or last_pos is None or _horizontal_pos_differs(last_pos, pos):
+            kept.append(path)
+            if pos is not None:
+                last_pos = pos
+    return kept
 
 
 def _delay_is_allowed(k: int, min_delay: int, max_delay: Optional[int]) -> bool:
@@ -106,18 +128,55 @@ def _ego_pool_with_diagnostics(correct: str, *extra_labels: str) -> tuple[list[s
     return pool[:4], seeds
 
 
-def _has_real_move_between(episode: dict, t0: int, t1: int) -> bool:
-    for s in episode.get('steps') or []:
-        si = int(s['step'])
-        if t0 < si <= t1:
-            act = (s.get('action') or '').lower()
-            if any(k in act for k in ('move', 'rotate', 'turn', 'look')):
-                return True
-    for a in episode.get('agent_actions') or []:
-        si = int(a.get('step', -1))
-        if t0 < si <= t1:
-            act = str(a.get('action') or '').lower()
-            if any(k in act for k in ('move', 'rotate', 'turn', 'look')):
+# Horizontal translation epsilon (meters). Rotate/look-only steps stay below this.
+_POSITION_EPS_M = 1e-3
+
+
+def _agent_horizontal_pos(
+    episode: dict, step_idx: int
+) -> Optional[tuple[float, float]]:
+    """Agent (x, z) at step — floor-plane position; y is height."""
+    pos, _rot = agent_pose_at_step(episode, step_idx)
+    if pos is None or len(pos) < 3:
+        return None
+    try:
+        return (float(pos[0]), float(pos[2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _horizontal_pos_differs(
+    a: Optional[tuple[float, float]],
+    b: Optional[tuple[float, float]],
+    *,
+    eps: float = _POSITION_EPS_M,
+) -> bool:
+    if a is None or b is None:
+        return False
+    return abs(a[0] - b[0]) > eps or abs(a[1] - b[1]) > eps
+
+
+def _has_real_move_between(
+    episode: dict, t0: int, t1: int, *, eps: float = _POSITION_EPS_M
+) -> bool:
+    """True if the agent translates on the floor plane between t0 and t1 (inclusive end).
+
+    Action names alone are not enough: rotate/look/turn in place leave position
+    unchanged and are not treated as navigation for this benchmark.
+    """
+    if int(t1) <= int(t0):
+        return False
+    p_start = _agent_horizontal_pos(episode, int(t0))
+    if p_start is None:
+        return False
+    p_end = _agent_horizontal_pos(episode, int(t1))
+    if _horizontal_pos_differs(p_start, p_end, eps=eps):
+        return True
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if int(t0) < si <= int(t1):
+            p = _agent_horizontal_pos(episode, si)
+            if _horizontal_pos_differs(p_start, p, eps=eps):
                 return True
     return False
 
@@ -221,6 +280,9 @@ def plan_spatial_working_memory(
             k = step_idx - enc_idx
             if not _delay_is_allowed(k, min_delay, max_delay):
                 continue
+            # Rotate-in-place delay is not navigation for this benchmark.
+            if not _has_real_move_between(episode, enc_idx, step_idx):
+                continue
             enc = step_by_index(episode, enc_idx)
             if enc is None:
                 continue
@@ -321,6 +383,8 @@ def plan_spatial_working_memory(
                 k = step_idx - enc_idx
                 if not _delay_is_allowed(k, min_delay, max_delay):
                     continue
+                if not _has_real_move_between(episode, enc_idx, step_idx):
+                    continue
                 out.append(
                     PlannedFact(
                         construct='spatial_working_memory',
@@ -351,105 +415,444 @@ def plan_spatial_working_memory(
     return out
 
 
+def _is_floor_receptacle(receptacle_id: Optional[str]) -> bool:
+    if not receptacle_id:
+        return True
+    stem = str(receptacle_id).split('|')[0].strip().lower()
+    return stem in ('floor', 'wall', 'ceiling', 'room')
+
+
+def _object_in_fov_at_step(episode: dict, obj_id: str, step_idx: int) -> bool:
+    step = step_by_index(episode, step_idx)
+    if step and obj_id in (step.get('visible_objects') or {}):
+        return True
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    entries = track.get('entries') or []
+    chosen = None
+    for entry in entries:
+        t = entry.get('step', entry.get('timestep'))
+        if t is None:
+            continue
+        if int(t) <= int(step_idx):
+            chosen = entry
+        else:
+            break
+    if chosen is None:
+        return False
+    return bool(chosen.get('in_camera_fov') or chosen.get('visible'))
+
+
+def _object_hidden_through(
+    episode: dict, obj_id: str, start_step: int, end_step: int
+) -> bool:
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if start_step <= si <= end_step and obj_id in (step.get('visible_objects') or {}):
+            return False
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    for entry in track.get('entries') or []:
+        t = entry.get('step', entry.get('timestep'))
+        if t is None:
+            continue
+        if start_step <= int(t) <= end_step and (
+            entry.get('in_camera_fov') or entry.get('visible')
+        ):
+            return False
+    return True
+
+
+def _last_distinguishable_sighting(
+    episode: dict, obj_id: str, before_step: int
+) -> Optional[int]:
+    """Latest step < before_step where obj is in filtered visible_objects (distinguishable)."""
+    best = None
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si >= int(before_step):
+            break
+        if obj_id in (step.get('visible_objects') or {}):
+            best = si
+    return best
+
+
+def _landmark_matches(visible_id: str, landmark_id: str) -> bool:
+    if visible_id == landmark_id:
+        return True
+    return str(visible_id).split('|')[0] == str(landmark_id).split('|')[0]
+
+
+def _landmark_distinguishable_in_frames(
+    episode: dict, landmark_id: Optional[str], frame_steps: list[int]
+) -> bool:
+    if not landmark_id or _is_floor_receptacle(landmark_id):
+        return False
+    for si in frame_steps:
+        step = step_by_index(episode, si)
+        if not step:
+            continue
+        for oid in (step.get('visible_objects') or {}):
+            if _landmark_matches(oid, landmark_id):
+                return True
+    return False
+
+
+def _candidates_for_event(episode: dict, event_id, obj_id: str) -> list[dict]:
+    rows = []
+    for row in episode.get('displacement_candidates') or []:
+        if row.get('event_id') == event_id and row.get('obj_id') == obj_id:
+            rows.append(row)
+    return rows
+
+
+def _option_specs_for_event(ev: dict, candidates: list[dict]) -> list[dict]:
+    """Build diagnostic option specs: chosen + A-not-B + nearby + decoy."""
+    by_role = {c.get('candidate_role'): c for c in candidates if c.get('candidate_role')}
+    specs = []
+    chosen = by_role.get('chosen')
+    chosen_pos = (
+        chosen.get('candidate_position')
+        if chosen and chosen.get('candidate_position') is not None
+        else ev.get('to_position')
+    )
+    chosen_rec = (
+        (chosen.get('candidate_receptacle') if chosen else None)
+        or ev.get('to_receptacle')
+    )
+    specs.append(
+        {
+            'role': 'chosen',
+            'receptacle': chosen_rec,
+            'position': chosen_pos,
+            'is_answer': True,
+        }
+    )
+    from_r = ev.get('from_receptacle')
+    from_pos = ev.get('from_position')
+    if from_pos is not None or (from_r and from_r != chosen_rec):
+        specs.append(
+            {
+                'role': 'original_location',
+                'receptacle': from_r,
+                'position': from_pos,
+                'is_answer': False,
+            }
+        )
+    for role in ('nearby_receptacle', 'salient_decoy_location'):
+        row = by_role.get(role)
+        if not row:
+            continue
+        specs.append(
+            {
+                'role': role,
+                'receptacle': row.get('candidate_receptacle'),
+                'position': row.get('candidate_position'),
+                'is_answer': False,
+            }
+        )
+    return specs
+
+
+def _pick_query_step(episode: dict, obj_id: str, at_t: int) -> Optional[int]:
+    """Latest step ≥ at_t where object stays hidden from at_t through that step."""
+    steps = _hidden_query_candidates(episode, obj_id, at_t)
+    return steps[-1] if steps else None
+
+
+def _hidden_query_candidates(episode: dict, obj_id: str, at_t: int) -> list[int]:
+    """All steps ≥ at_t where object stays hidden from at_t through that step."""
+    out: list[int] = []
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si < int(at_t):
+            continue
+        if _object_hidden_through(episode, obj_id, int(at_t), si):
+            out.append(si)
+    return out
+
+
+def _ego_pool_from_specs(
+    episode: dict, specs: list[dict], query_step: int
+) -> tuple[Optional[str], list[str], list[str]]:
+    """Map option specs to unique ego labels at query_step.
+
+    Answer is kept first. Distractors that share a label already in the pool
+    are skipped (not fatal) so nearby trial-teleports that collapse to the same
+    cardinal direction do not kill the item.
+    """
+    ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+    answer_dir: Optional[str] = None
+    dir_pool: list[str] = []
+    dir_seeds: list[str] = []
+    labels_seen: set[str] = set()
+
+    # Process answer first so it wins collisions with distractors.
+    ordered = sorted(specs, key=lambda s: (0 if s.get('is_answer') else 1))
+    for spec in ordered:
+        if spec.get('position') is None:
+            continue
+        lab = ego_label_from_world_pose(ag_pos, ag_rot, spec['position'], episode)
+        if not lab:
+            continue
+        if lab in labels_seen:
+            continue
+        labels_seen.add(lab)
+        dir_pool.append(lab)
+        if spec.get('is_answer'):
+            answer_dir = lab
+        else:
+            dir_seeds.append(spec['role'])
+            dir_seeds.append(_mode_seed(spec['role'], lab))
+    return answer_dir, dir_pool, dir_seeds
+
+
+def _pick_best_id_query_step(
+    episode: dict, obj_id: str, at_t: int, specs: list[dict]
+) -> Optional[int]:
+    """Prefer a hidden query step where candidate poses yield ≥2 unique ego labels.
+
+    Score: more unique labels first, then later step (more delay) among ties.
+    """
+    best: Optional[int] = None
+    best_key = (-1, -1)
+    for si in _hidden_query_candidates(episode, obj_id, at_t):
+        answer, pool, _seeds = _ego_pool_from_specs(episode, specs, si)
+        if not answer or answer not in pool or len(pool) < 2:
+            continue
+        key = (len(pool), si)
+        if key > best_key:
+            best_key = key
+            best = si
+    return best
+
+
+def _is_swap_event(ev: dict) -> bool:
+    via = str(ev.get('moved_via') or '').lower()
+    if via == 'swap':
+        return True
+    notes = str(ev.get('notes') or '').lower()
+    if 'object_swap' in notes:
+        return True
+    return bool(ev.get('swap_partner_id'))
+
+
+def _partner_event(episode: dict, ev: dict) -> Optional[dict]:
+    partner_id = ev.get('swap_partner_id')
+    event_id = ev.get('event_id')
+    if not partner_id or not event_id:
+        return None
+    for row in episode.get('displacement_events') or []:
+        if row.get('event_id') == event_id and row.get('obj_id') == partner_id:
+            return row
+    return None
+
+
+def _object_distinguishable_in_frames(
+    episode: dict, obj_id: str, frame_steps: list[int]
+) -> bool:
+    for si in frame_steps:
+        step = step_by_index(episode, si)
+        if step and obj_id in (step.get('visible_objects') or {}):
+            return True
+    return False
+
+
+def _build_id_frame_steps(
+    enc_idx: int, at_t: int, query_step: int, *, extra_steps: Optional[list[int]] = None
+) -> list[int]:
+    frame_steps = [enc_idx]
+    if int(at_t) - 1 > enc_idx:
+        frame_steps.append(int(at_t) - 1)
+    for si in extra_steps or []:
+        if si not in frame_steps:
+            frame_steps.append(int(si))
+    if query_step not in frame_steps:
+        frame_steps.append(query_step)
+    return sorted(frame_steps)
+
+
+def _images_for_steps(episode: dict, frame_steps: list[int]) -> list[str]:
+    images: list[str] = []
+    for si in frame_steps:
+        images.extend(_img(step_by_index(episode, si)))
+    return [p for p in images if p]
+
+
+def _try_ego_direction_fact(
+    episode: dict,
+    ev: dict,
+    *,
+    obj_id: str,
+    object_type: str,
+    enc_idx: int,
+    query_step: int,
+    at_t: int,
+    images: list[str],
+    specs: list[dict],
+    template_mode: str,
+    answer_source: list[str],
+    extra_fields: dict,
+) -> Optional[PlannedFact]:
+    answer_dir, dir_pool, dir_seeds = _ego_pool_from_specs(episode, specs, query_step)
+    if not answer_dir or answer_dir not in dir_pool or len(dir_pool) < 2:
+        return None
+    return PlannedFact(
+        construct='invisible_displacement',
+        status='ok',
+        query_step=query_step,
+        encoding_step=enc_idx,
+        queried_object_id=obj_id,
+        answer_label=answer_dir,
+        answer_source=answer_source,
+        image_paths=images,
+        options_pool=dir_pool[:4],
+        distractor_seeds=dir_seeds,
+        displacement_event=ev,
+        extra={
+            'object_type': object_type,
+            'template_mode': template_mode,
+            'frame_of_reference': 'egocentric',
+            'k': max(1, int(query_step) - int(at_t)),
+            **extra_fields,
+        },
+    )
+
+
 def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[PlannedFact]:
+    """One item per displacement_events row; direct (recall_direction) or swap modes.
+
+    Query step is chosen among hidden steps so candidate ego bearings stay unique;
+    colliding distractor labels are dropped rather than rejecting the event.
+    """
     events = episode.get('displacement_events') or []
     if not events:
         return []
-    steps = episode.get('steps') or []
-    last_step = steps[-1] if steps else None
-    last_idx = int(last_step['step']) if last_step else None
+
     out: list[PlannedFact] = []
-
-    # Real receptacles from events + landmarks only (no invented Shelf/Sofa)
-    receptacles: set[str] = set()
-    for e in events:
-        for key in ('from_receptacle', 'to_receptacle'):
-            if e.get(key):
-                receptacles.add(e[key])
-    layout = episode.get('world_layout') or {}
-    for lm in layout.get('landmarks') or []:
-        if lm.get('landmark_id'):
-            receptacles.add(lm['landmark_id'])
-
     for ev in events:
+        if len(out) >= max_items:
+            break
         if not ev.get('hidden_during', False):
             continue
         obj_id = ev.get('obj_id')
         to_r = ev.get('to_receptacle')
-        from_r = ev.get('from_receptacle')
         at_t = ev.get('at_timestep')
         if not obj_id or at_t is None:
             continue
-        # Discriminator: visible → hidden before move
+        enc_idx = _last_distinguishable_sighting(episode, obj_id, int(at_t))
+        if enc_idx is None:
+            continue
         if not _object_visible_before(episode, obj_id, int(at_t)):
             continue
-        # Not visible at final location in last frame
-        if last_step and obj_id in (last_step.get('visible_objects') or {}):
+
+        object_type = object_type_from_id(obj_id)
+        candidates = _candidates_for_event(episode, ev.get('event_id'), obj_id)
+        specs = _option_specs_for_event(ev, candidates)
+        # Prefer a pose where distractor bearings stay unique (latest-only often collapses).
+        query_step = _pick_best_id_query_step(episode, obj_id, int(at_t), specs)
+        if query_step is None:
+            continue
+        if not _object_hidden_through(episode, obj_id, int(at_t), int(query_step)):
+            continue
+        # Encoding→query must include a floor-plane translation (not rotate-only).
+        if not _has_real_move_between(episode, enc_idx, int(query_step)):
             continue
 
-        answer = humanize_receptacle(to_r)
-        pool = [answer]
-        seeds: list[str] = []
-
-        # A-not-B: original location
-        if from_r and from_r != to_r:
-            orig = humanize_receptacle(from_r)
-            if orig not in pool:
-                pool.append(orig)
-                seeds.append('original_location')
-                seeds.append(_mode_seed('original_location', orig))
-
-        for r in receptacles:
-            lab = humanize_receptacle(r)
-            if lab != answer and lab not in pool:
-                pool.append(lab)
-                seeds.append('nearby_receptacle')
-                seeds.append(_mode_seed('nearby_receptacle', lab))
-            if len(pool) >= 4:
-                break
-
-        # Need at least one diagnostic distractor from real scene values
-        if len(pool) < 2:
-            continue
-
-        images = []
-        before = step_by_index(episode, max(0, int(at_t) - 1))
-        images.extend(_img(before))
-        images.extend(_img(last_step))
-
-        out.append(
-            PlannedFact(
-                construct='invisible_displacement',
-                status='ok',
-                query_step=last_idx,
-                encoding_step=int(at_t) - 1 if int(at_t) > 0 else 0,
-                queried_object_id=obj_id,
-                answer_label=answer,
+        if _is_swap_event(ev):
+            partner_id = ev.get('swap_partner_id')
+            if not partner_id or not _partner_event(episode, ev):
+                continue
+            partner_enc = _last_distinguishable_sighting(
+                episode, partner_id, int(at_t)
+            )
+            if partner_enc is None:
+                continue
+            if not _object_visible_before(episode, partner_id, int(at_t)):
+                continue
+            frame_steps = _build_id_frame_steps(
+                enc_idx, int(at_t), int(query_step), extra_steps=[partner_enc]
+            )
+            if not _object_distinguishable_in_frames(
+                episode, partner_id, frame_steps
+            ):
+                continue
+            images = _images_for_steps(episode, frame_steps)
+            if not images:
+                continue
+            partner_type = object_type_from_id(partner_id)
+            fact = _try_ego_direction_fact(
+                episode,
+                ev,
+                obj_id=obj_id,
+                object_type=object_type,
+                enc_idx=enc_idx,
+                query_step=query_step,
+                at_t=int(at_t),
+                images=images,
+                specs=specs,
+                template_mode='swap',
                 answer_source=[
-                    f"displacement_events[obj_id={obj_id}].to_receptacle",
-                    f"object_state_track[{obj_id}]",
+                    f"displacement_events[obj_id={obj_id}].to_position",
+                    f"displacement_events[swap_partner_id={partner_id}].from_position",
+                    f"agent_trajectory[{query_step}]",
                 ],
-                image_paths=[p for p in images if p],
-                options_pool=pool[:4],
-                distractor_seeds=seeds,
-                displacement_event=ev,
-                extra={
-                    'object_type': object_type_from_id(obj_id),
+                extra_fields={
+                    'other_object_type': partner_type,
+                    'swap_partner_id': partner_id,
+                    'from_receptacle': ev.get('from_receptacle'),
                     'to_receptacle': to_r,
-                    'from_receptacle': from_r,
-                    'frame_of_reference': 'allocentric',
                 },
             )
+            if fact is not None:
+                out.append(fact)
+            continue
+
+        # Direct hidden place onto a receptacle landmark
+        if _is_floor_receptacle(to_r):
+            continue
+        frame_steps = _build_id_frame_steps(enc_idx, int(at_t), int(query_step))
+        if not _landmark_distinguishable_in_frames(episode, to_r, frame_steps):
+            continue
+        images = _images_for_steps(episode, frame_steps)
+        if not images:
+            continue
+        new_location = humanize_receptacle(to_r).replace('on/in the ', '')
+
+        # Direct moves: name the destination landmark, ask ego bearing.
+        # Do NOT emit receptacle-only "Where is X now?" — that is unanswerable
+        # when the move was never witnessed and the question gives no cue.
+        fact = _try_ego_direction_fact(
+            episode,
+            ev,
+            obj_id=obj_id,
+            object_type=object_type,
+            enc_idx=enc_idx,
+            query_step=query_step,
+            at_t=int(at_t),
+            images=images,
+            specs=specs,
+            template_mode='recall_direction',
+            answer_source=[
+                f"displacement_events[obj_id={obj_id}].to_position",
+                f"displacement_candidates[event_id={ev.get('event_id')}].chosen",
+                f"agent_trajectory[{query_step}]",
+            ],
+            extra_fields={
+                'new_location': new_location,
+                'to_receptacle': to_r,
+                'from_receptacle': ev.get('from_receptacle'),
+            },
         )
-        if len(out) >= max_items:
-            break
+        if fact is not None:
+            out.append(fact)
 
     if not out and events:
         return [
             PlannedFact(
                 construct='invisible_displacement',
                 status='unsupported',
-                reason='no_event_with_visible_to_hidden_then_hidden_move',
+                reason=(
+                    'no_event_with_distinguishable_hidden_move_and_unique_options'
+                ),
             )
         ]
     return out

@@ -7,7 +7,6 @@ from typing import Optional
 from cm_benchmark.generation.constructs import (
     OPPOSITE,
     ORTHOGONAL,
-    frame_sequence_cue,
     object_type_from_id,
     select_template,
     step_by_index,
@@ -87,6 +86,9 @@ def _shuffle_options(correct: str, pool: list[str], seeds: list[str]) -> tuple[d
                 if cand not in labels:
                     labels.append(cand)
             continue
+        # "mode::label" seeds are for distractor_rationale only, not option text.
+        if '::' in seed:
+            continue
         if seed and seed not in labels:
             labels.append(seed)
 
@@ -156,12 +158,15 @@ def _core_question(fact: PlannedFact) -> str:
         k = max(1, int(fact.query_step) - int(fact.encoding_step))
     k = max(1, int(k or 1))
     object_category = extra.get('object_category') or object_type
+    new_location = extra.get('new_location') or extra.get('to_receptacle') or 'a surface'
+    other_object_type = extra.get('other_object_type') or 'another object'
 
     body = tmpl.format(
         object_type=object_type,
         object=object_type,
         object_category=object_category,
         objects=object_category,
+        other_object_type=other_object_type,
         reference_object=reference,
         reference_entity=reference,
         source=source,
@@ -169,10 +174,11 @@ def _core_question(fact: PlannedFact) -> str:
         A=source,
         B=goal,
         k=k,
+        new_location=new_location,
     )
-    n_images = len(fact.image_paths or [])
-    cue = frame_sequence_cue(n_images)
-    return f'{cue}{body}' if cue else body
+    # Online sequential protocol: no multi-image "time order" cue; templates
+    # already situate "now" / "{k} steps ago" relative to the live nav stream.
+    return body
 
 
 def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
@@ -183,44 +189,49 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         step = episode['steps'][0]
 
     parts = []
-    n_images = len(fact.image_paths or [])
     extra = fact.extra or {}
-    if n_images > 1:
-        parts.append(frame_sequence_cue(n_images).strip())
-        if fact.construct == 'spatial_updating':
-            k = extra.get('k') or max(
-                1, (fact.query_step or 1) - (fact.encoding_step or 0)
-            )
+    k = extra.get('k')
+    if k is None and fact.query_step is not None and fact.encoding_step is not None:
+        k = max(1, int(fact.query_step) - int(fact.encoding_step))
+    k = max(1, int(k or 1))
+
+    # Online protocol: situate in the navigation stream, never "these N images".
+    if fact.construct == 'spatial_updating':
+        parts.append(
+            f'You have been navigating for the last {k} step(s). '
+            "Answer the object's bearing from your current pose."
+        )
+    elif fact.construct == 'spatial_working_memory':
+        parts.append(
+            f'The answer refers to the view from {k} steps ago, '
+            'when the object was still visible.'
+        )
+    elif fact.construct == 'invisible_displacement':
+        mode = extra.get('template_mode')
+        if mode == 'swap':
             parts.append(
-                f'Encode the object in the first image, then follow {k} navigation '
-                "step(s). Answer the object's bearing from your pose in the last image."
+                'Two objects exchanged places while hidden. The question names '
+                'the partner object you saw earlier — not a receptacle.'
             )
-        elif fact.construct == 'spatial_working_memory':
-            k = extra.get('k') or max(
-                1, (fact.query_step or 1) - (fact.encoding_step or 0)
-            )
+        else:
             parts.append(
-                f'The answer refers to the view from {k} steps before the last image, '
-                'when the object was still visible.'
+                'The object relocated while hidden. Use the destination named '
+                'in the question and report its bearing from your current pose.'
             )
-        elif fact.construct == 'invisible_displacement':
-            parts.append(
-                'The object moves while hidden; answer its location after the last image.'
-            )
-        elif fact.construct == 'route_knowledge':
-            src = extra.get('source', 'the start')
-            goal = extra.get('goal', 'the goal')
-            parts.append(
-                f'Retrace the walked route from {src} to {goal}. '
-                'The images show views near the start and goal.'
-            )
-        elif fact.construct == 'survey_knowledge':
-            src = extra.get('source', 'the start')
-            goal = extra.get('goal', 'the goal')
-            parts.append(
-                f'Use the layout to find a connection from {src} to {goal} '
-                'that was not walked as an experienced route.'
-            )
+    elif fact.construct == 'route_knowledge':
+        src = extra.get('source', 'the start')
+        goal = extra.get('goal', 'the goal')
+        parts.append(
+            f'Retrace the walked route from {src} to {goal} based on the path '
+            'you have followed so far.'
+        )
+    elif fact.construct == 'survey_knowledge':
+        src = extra.get('source', 'the start')
+        goal = extra.get('goal', 'the goal')
+        parts.append(
+            f'Use the layout to find a connection from {src} to {goal} '
+            'that was not walked as an experienced route.'
+        )
 
     room = None
     if step:

@@ -84,7 +84,9 @@ class_2:
       what_moves: none            # object is STATIC; difficulty from load + step-depth
       answer_type: recalled relation, location, or count of past-seen items
       required_temporal_fields: [agent_trajectory, agent_actions]  # to define "N steps ago"
-      question_template: "What was to your left {k} steps ago?  /  How many {objects} did you pass?"
+      question_template: >-
+        Considering what you saw {k} steps ago: where was the {object} relative to you then?
+        / How many {objects} have you seen so far?
       distractor_pattern: [current_view_answer, adjacent_step_answer, off_by_one_count]
       discriminators:
         - queried object/relation is NOT in the final view
@@ -93,22 +95,49 @@ class_2:
 
     invisible_displacement:
       class: 2
-      frame_of_reference: allocentric        # answer is a container/landmark
-      definition: Track an object's location after it is hidden AND relocated out of view.
+      frame_of_reference: egocentric  # both modes ask ego bearing at query pose
+      definition:
+        Track an object's location after it is hidden AND relocated out of view
+        (Piaget Stage 6: the move itself is never witnessed, only inferred).
+        The question MUST supply a spatial cue naming where the object went
+        (destination landmark or partner object's prior place); without that cue
+        the item is unanswerable from the frames alone.
       what_moves: object (while hidden)
-      answer_type: final location / container of the object
-      required_temporal_fields: [object_state_track, displacement_event]
-      question_template: "Where is the {object} now?"
+      answer_type:
+        - recall_direction: egocentric direction at query pose; question names the destination landmark
+        - swap: egocentric direction; question names a previously seen partner object as the spatial anchor
+      required_temporal_fields:
+        [object_state_track, displacement_event, displacement_candidates]
+      question_template:
+        recall_direction: >-
+          The {object_type} was moved onto {new_location}.
+          Where is it relative to you now?
+        swap: >-
+          The {object_type} was moved to where the {other_object_type} used to be.
+          Where is the {object_type} relative to you now?
+      ground_truth_method:
+        Exporter (e.g. SPOC) logs the hidden move plus trial-teleport distractor poses
+        (then restores). This repo computes egocentric labels from agent_pose@query_step
+        and world poses (chosen / from / candidate positions). Floor destinations are
+        rejected. Direct-move items require a distinguishable destination landmark in
+        ≥1 shown frame and name it in the question; swap items use a distinguishable
+        partner object seen before the swap instead — never both in one question.
+        Do not emit receptacle-name-only questions (no destination cue).
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
-      # original_location = A-not-B probe (Piaget; infants <12mo reach for the prior
-      # hiding place after witnessing relocation) — literature-grounded, not arbitrary
+      # original_location = A-not-B (from_pos on the event row).
+      # nearby / salient decoy = displacement_candidates trial teleports.
+      # Reject if any two options share the same ego label.
       discriminators:
-        - object goes VISIBLE -> HIDDEN before it is moved
+        - queried object was distinguishable, then hidden, before it moved
         - displacement_event.hidden_during == true
-        - object NOT visible at its true final location in the last frame
-        - to_receptacle (or its containing landmark) IS visible in at least one shown frame
-          after at_timestep — the destination container must be observable even though
-          the object itself is not (NEW — required for answerability)
+        - queried object NOT in nav FOV on any shown frame from move through query_step t
+        - one draft item per displacement_events object row (a swap logs two rows → two items)
+        - question always names a destination cue (landmark OR partner object)
+        - direct move (moved_via != swap): to_receptacle != Floor and that landmark
+          distinguishable in ≥1 shown frame; emit recall_direction only
+        - swap (moved_via == swap): swap_partner_id set; partner object distinguishable
+          in ≥1 shown frame at its pre-swap position; emit swap template only (never
+          name a receptacle in the question — object anchor OR receptacle anchor, not both)
 # ============================================================
 # CLASS 3 — OPERATION ON THE COGNITIVE MAP  (answer requires a pose
 # DIFFERENT from the encoding pose: real move, or imagined viewpoint)
@@ -125,7 +154,8 @@ class_3:
       what_moves: observer (real, executed actions)
       answer_type: egocentric direction at the post-move pose
       required_temporal_fields: [agent_trajectory, agent_actions]
-      question_template: "Where is the {object} relative to you now?"
+      question_template: >-
+        Considering the last {k} navigation steps, where is the {object} relative to you now?
       distractor_pattern: [pre_move_bearing, opposite_turn_bearing, over_rotation_bearing]
       discriminators:
         - object position UNCHANGED (only the agent moves)
@@ -190,6 +220,7 @@ class_4:
 schema_hooks:
   object_state_track:  required_for: [invisible_displacement]
   displacement_event:  required_for: [invisible_displacement]
+  displacement_candidates: required_for: [invisible_displacement]
   agent_trajectory:    required_for: [spatial_working_memory, spatial_updating,
                                       route_knowledge, survey_knowledge]
   agent_actions:       required_for: [spatial_working_memory, spatial_updating,
