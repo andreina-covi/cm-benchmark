@@ -31,7 +31,9 @@ Runs on every candidate item before it's eligible for human review. This is the 
 - `answer_source` is non-null and resolves to a real field/row in the episode store (invariant #2).
 - `answer` is one of `options`; exactly one option is correct.
 - `frame_of_reference` is set and matches what the construct requires (fixed per construct, or explicit in multi-frame items).
-- For multi-image items (class 2–4): question text states time order and which frame "now" refers to. Flag as bug if "now" is ambiguous (README: "treated as a bug").
+- For temporal constructs (class 2–4): question text situates “now” / “{k} steps ago”
+  relative to the live navigation stream (online sequential protocol). Do **not** require
+  a bundled multi-image “time order” cue. Flag as bug if temporal reference is ambiguous.
 - `image_paths` are non-empty and resolvable to real files.
 - No duplicate `item_id`.
 

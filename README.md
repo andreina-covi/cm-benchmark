@@ -477,17 +477,22 @@ python -m cm_benchmark.generation.draft_items \
 
 Paired items share `answer` / `answer_source` and link via `paired_item_id`.
 
-### Multi-image wording (classes 2–4)
+### Multi-image / online sequential wording (classes 2–4)
 
-When an item has **more than one** `image_path`, the question states **time order** and which frame the answer uses (e.g. “now = last image”). Ambiguous “now” without that cue is treated as a bug.
+Questions target **online sequential models** that already observe the navigation
+stream. Do **not** attach a bundled multi-image “time order” cue to the question.
+Temporal context is linguistic (`{k} steps ago`, `now`, `last {k} navigation steps`).
+`image_paths` on a draft item remain for provenance (which stream window the item
+covers); they are not the presentation protocol for the question itself.
 
-Spatial-working-memory and spatial-updating items include every available
-navigation frame from `encoding_step` through `query_step` (inclusive), so a
-delay of `k` normally produces `k + 1` images.
-`--swm_min_delay` / `--su_min_delay` default to `2`; the matching
-`--*_max_delay` flags are optional and otherwise extend through the episode end.
-Generation is deterministic rather than randomly choosing a delay. Set both
-min and max to the same value to request an exact delay.
+Construct filters still decide **whether** a question is emitted at a given step
+(visibility, translation, displacement, etc.).
+
+Encode→query windows with **no floor-plane translation** are rejected for SWM,
+spatial updating, and invisible displacement (rotate/look-in-place alone is not
+enough). Provenance `image_paths` also drop stationary intermediate poses.
+`--swm_min_delay` / `--su_min_delay` default to `2`; matching `--*_max_delay`
+flags are optional. Generation is deterministic.
 
 ### Class 4 — route / survey (important)
 
@@ -506,8 +511,8 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 |-----------|--------------|
 | `egocentric_encoding` | full |
 | `spatial_working_memory` | full (explicit delay `k`; ego edge at encoding step; optional count mode) |
-| `invisible_displacement` | full (visible→hidden before move; real receptacle distractors) |
-| `spatial_updating` | full when agent moved, object static, not visible at final; else unsupported |
+| `invisible_displacement` | full: direct (`recall_direction` — names destination landmark) and swap (names partner object); ego bearing only; trial-teleport candidates; distinguishable object + landmark/partner; unique option labels |
+| `spatial_updating` | full when agent **translates** (position change), object static, not visible at final; rotate-only windows rejected |
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
 | `route_knowledge` | full (retrace walked A→B) |
 | `survey_knowledge` | full only for novel unwalked path; else unsupported |

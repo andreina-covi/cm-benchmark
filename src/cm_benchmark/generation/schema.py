@@ -23,7 +23,7 @@ CONSTRUCT_FOR: dict[str, Union[str, list[str]]] = {
     'egocentric_encoding': 'egocentric',
     'allocentric_encoding': 'allocentric',
     'spatial_working_memory': ['egocentric', 'allocentric'],
-    'invisible_displacement': 'allocentric',
+    'invisible_displacement': 'egocentric',
     'spatial_updating': 'egocentric',
     'perspective_taking': 'allocentric',
     'route_knowledge': 'egocentric',

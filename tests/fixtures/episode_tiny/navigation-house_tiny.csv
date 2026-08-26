@@ -1,3 +1,8 @@
-timestep,ag-action,action_success,held_obj-id,degrees,ag-pos-x,ag-pos-y,ag-pos-z,ag-rot-x,ag-rot-y,ag-rot-z,cmin,rmin,cmax,rmax,camera-horizon,camera-pos-x,camera-pos-y,camera-pos-z,current-room,current-room-type,obj-id,path
-0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,10,10,50,50,0.0,0.0,1.0,0.0,room|1,Kitchen,Cup|1,/img_0.png
-1,rotate_right,True,,90,0.0,1.0,0.0,0.0,90.0,0.0,20,20,60,60,0.0,0.0,1.0,0.0,room|1,Kitchen,Plate|1,/img_1.png
+timestep,ag-action,action_success,held_obj-id,degrees,ag-pos-x,ag-pos-y,ag-pos-z,ag-rot-x,ag-rot-y,ag-rot-z,cmin,rmin,cmax,rmax,camera-horizon,camera-pos-x,camera-pos-y,camera-pos-z,current-room,current-room-type,obj-id,path,visible-pixels,bbox-area,min-side,occupancy-ratio
+0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,10,10,50,50,0.0,0.0,1.0,0.0,room|1,Kitchen,Cup|1,/img_0.png,400,1600,40,0.25
+0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,130,10,170,50,0.0,0.0,1.0,0.0,room|1,Kitchen,Plate|1,/img_0.png,350,1600,40,0.22
+0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,60,60,100,100,0.0,0.0,1.0,0.0,room|1,Kitchen,Shelf|1,/img_0.png,300,1600,40,0.19
+0,rotate_right,True,,0,0.0,1.0,0.0,0.0,0.0,0.0,110,10,150,50,0.0,0.0,1.0,0.0,room|1,Kitchen,CounterTop|1,/img_0.png,250,1600,40,0.16
+1,rotate_right,True,,90,0.0,1.0,0.0,0.0,90.0,0.0,20,20,60,60,0.0,0.0,1.0,0.0,room|1,Kitchen,Plate|1,/img_1.png,350,1600,40,0.22
+1,rotate_right,True,,90,0.0,1.0,0.0,0.0,90.0,0.0,70,70,110,110,0.0,0.0,1.0,0.0,room|1,Kitchen,Shelf|1,/img_1.png,280,1600,40,0.18
+2,MoveAhead,True,,,0.25,1.0,0.0,0.0,90.0,0.0,,,,,0.0,0.25,1.0,0.0,room|1,Kitchen,,/img_2.png,,,,

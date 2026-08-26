@@ -74,6 +74,7 @@ class EpisodeStore:
                 movement_constant REAL,
                 object_state_track_json TEXT,
                 displacement_events_json TEXT NOT NULL DEFAULT '[]',
+                displacement_candidates_json TEXT,
                 world_layout_json TEXT,
                 passage_state_json TEXT,
                 region_trajectory_json TEXT,
@@ -170,6 +171,7 @@ class EpisodeStore:
             'passage_state_json': 'TEXT',
             'region_trajectory_json': 'TEXT',
             'episode_meta_json': 'TEXT',
+            'displacement_candidates_json': 'TEXT',
         }
         for name, typedef in extras.items():
             if name not in cols:
@@ -193,9 +195,10 @@ class EpisodeStore:
             INSERT INTO episodes (
                 episode_id, scene, environment, thresholds_json, movement_constant,
                 object_state_track_json, displacement_events_json,
+                displacement_candidates_json,
                 world_layout_json, passage_state_json, region_trajectory_json,
                 episode_meta_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 episode_id,
@@ -207,6 +210,7 @@ class EpisodeStore:
                 if episode.get('object_state_track') is not None
                 else None,
                 _dumps(episode.get('displacement_events', [])),
+                _dumps(episode.get('displacement_candidates', [])),
                 _dumps(episode.get('world_layout'))
                 if episode.get('world_layout') is not None
                 else None,

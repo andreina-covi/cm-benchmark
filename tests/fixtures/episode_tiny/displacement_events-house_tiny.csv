@@ -1,2 +1,4 @@
-event_id,obj-id,at_timestep,action,from_receptacle,to_receptacle,from_pos-x,from_pos-y,from_pos-z,to_pos-x,to_pos-y,to_pos-z,hidden_during,visible_just_before,visible_just_after,in_fov_just_before,in_fov_just_after,moved_via,notes
-disp_0,Cup|1,1,PlaceObjectAtPoint,CounterTop|1,Shelf|1,0.0,1.0,0.8,0.2,1.0,0.5,True,True,False,True,False,direct,visible_then_hidden_move_A_not_B
+event_id,obj-id,at_timestep,action,from_receptacle,to_receptacle,from_pos-x,from_pos-y,from_pos-z,to_pos-x,to_pos-y,to_pos-z,hidden_during,visible_just_before,visible_just_after,in_fov_just_before,in_fov_just_after,moved_via,swap_partner_id,notes
+disp_0,Cup|1,1,PlaceObjectAtPoint,CounterTop|1,Shelf|1,0.0,1.0,0.8,0.2,1.0,0.5,True,True,False,True,False,direct,,visible_then_hidden_move_A_not_B
+disp_1,Cup|1,2,PlaceObjectAtPoint,CounterTop|1,Plate|1,0.0,1.0,0.8,0.8,1.0,0.0,True,False,False,False,False,swap,Plate|1,object_swap
+disp_1,Plate|1,2,PlaceObjectAtPoint,,Cup|1,0.8,1.0,0.0,0.0,1.0,0.8,True,False,False,False,False,swap,Cup|1,object_swap

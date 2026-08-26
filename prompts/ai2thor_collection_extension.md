@@ -63,10 +63,25 @@ Episode identity (`episode_id`, `scene_id`, `images_dir`, `annotations_dir`) liv
 | `hidden_during` | yes | Must be `true` for these episodes |
 | `visible_just_before` / `visible_just_after` | yes | |
 | `in_fov_just_before` / `in_fov_just_after` | yes | |
-| `moved_via` | recommended | `direct` \| `receptacle_moved` \| `other` |
-| `notes` | optional | e.g. `same_receptacle_hidden_shift` |
+| `moved_via` | recommended | `direct` \| `swap` \| `other` |
+| `swap_partner_id` | if swap | Partner object id |
+| `notes` | optional | e.g. `same_receptacle_hidden_shift` \| `object_swap` |
 
 Also log manipulation actions in the navigation CSV (`ag-action`, `action_success` if available).
+
+### `displacement_candidates.csv` (trial-teleport poses for MC options)
+
+| Column | Required | Description |
+|--------|----------|-------------|
+| `event_id` | yes | Joins `displacement_events.event_id` |
+| `obj-id` | yes | Same object as the event row |
+| `at_timestep` | yes | |
+| `candidate_role` | yes | `chosen` \| `nearby_receptacle` \| `salient_decoy_location` |
+| `candidate_receptacle` | yes | Surface for that candidate (not Floor) |
+| `candidate_pos-x/y/z` | yes | Engine-resolved pose after kinematic place |
+| `is_persisted` | yes | `True` only for `chosen` |
+
+Distractor rows are trial teleports (place → readback → restore). **Do not** export egocentric labels here — cm-benchmark computes them from agent pose at the query step. A-not-B / original location uses `from_pos-*` on the event row (not a candidate role).
 
 ---
 

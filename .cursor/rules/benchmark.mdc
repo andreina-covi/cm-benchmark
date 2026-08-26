@@ -114,7 +114,8 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   only paraphrase question text later (never change the answer).
 - Items may use concise or verbose question styles; verbose text must not
   leak the answer.
-- Multi-image items must make temporal frame order unambiguous.
+- Temporal items use online sequential wording (`{k} steps ago` / `now`); do not
+  bundle a multi-image “time order” cue with the question.
 - Class 4 asks source→goal route / layout planning, not full-trajectory
   memorization.
 - Constructs that lack required metadata (e.g. object facing) stay
@@ -134,5 +135,6 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   frozen item has null answer_source or vision_necessary != true).
 - If a request would blur the FREEZE wall or make an [CODE] node call an
   LLM for scoring, refuse and explain.
-- Flag class-4 drafts that ask for full-episode turn recall, or multi-image
-  items whose question never situates “now” in the frame sequence.
+- Flag class-4 drafts that ask for full-episode turn recall, or temporal items
+  whose question never situates “now” / “{k} steps ago” in the navigation stream
+  (online sequential protocol — no bundled multi-image “time order” cue).
