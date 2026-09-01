@@ -43,7 +43,7 @@ CONSTRUCT_TEMPLATES = {
             )
         ],
         'recall_count': [
-            'How many different {object_category} have you seen up to this point?',
+            'How many distinct {object_category} have you seen up to this point?',
         ],
     },
     'invisible_displacement': {
@@ -68,15 +68,19 @@ CONSTRUCT_TEMPLATES = {
     ],
     'route_knowledge': [
         (
-            'Retrace the path from {source} to {goal}: '
-            'what is the correct order of turns?'
+            'What was the sequence of turns along the route you traveled from {source} to {goal}?'
         ),
     ],
-    'survey_knowledge': [
+    'survey_based_route_planning': [
         (
-            'Using the layout of the space, to go from {source} to {goal}, '
-            'which connection should you use?'
+            "Using your knowledge of the environment's layout, "
+            "what route should you take from {source} to {goal}?"
         ),
+        (
+            "Using your knowledge of the environment's layout, "
+            "what route should you take from {source} to {goal}, "
+            'given that {condition}?'
+        )
     ],
 }
 
