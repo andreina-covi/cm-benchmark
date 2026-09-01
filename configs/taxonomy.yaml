@@ -183,35 +183,41 @@ class_3:
 # ============================================================
 class_4:
   name: Navigation / wayfinding
-  summary: Use the map to describe or infer a path.
+  summary: Use acquired environmental spatial knowledge to recall an 
+  experienced route or infer a novel path to a goal.
   constructs:
 
     route_knowledge:
       class: 4
-      frame_of_reference: egocentric          # procedural, sequential
+      frame_of_reference: egocentric          # procedural, sequential route representation
       definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
-      what_moves: observer (along a traversed path)
-      answer_type: ordered turns/landmarks along a previously walked route
+      what_moves: observer (along a previouslytraversed route)
+      answer_type: ordered sequence of turns, actions, or landmarks along a previously traversed route
       required_temporal_fields: [agent_trajectory, agent_actions]
-      question_template: "Retrace the path from the {A} to the {B}: what is the correct order of turns?"
+      question_template: "What was the sequence of turns along the route you traveled from{A} to {B}?"
       distractor_pattern: [reversed_sequence, swapped_two_turns, plausible_but_unwalked_route]
       discriminators:
-        - the queried path WAS actually traversed (present in trajectory)
-        - answer is sequential/procedural (turns or landmark order)
+        - the queried route WAS previously traversed by the agent
+        - the answer requires retrieval of sequential/procedural route information
+        - the expected answer preserves the experienced order of turns, actions, or landmarks
+        - INVALID if the queried source-goal route was not previously traversed by the agent.
 
-    survey_knowledge:
+    survey_knowledge_route_planning:
       class: 4
-      frame_of_reference: allocentric          # configurational, map-like
-      definition: Infer a NOVEL path/shortcut over observed but UNTRAVERSED space.
-      what_moves: none required (inference over global layout)
-      answer_type: a shortcut / novel route / direction never previously walked
+      frame_of_reference: allocentric          # configurational, map-like representation
+      definition: Infer a NOVEL route, shortcut, or alternative path between locations using
+      an integrated representation of the observed environment.
+      what_moves: none required # planning is performed over the represented environmental layout
+      answer_type: novel route, shortcut, path sequence, or next connection that was not previously traversed
       required_temporal_fields: [agent_trajectory]   # to prove the path was NOT taken
-      question_template: "The door is now open. Trace a route from the {A} to the {B}."
-      distractor_pattern: [known_route_answer, dead_end_path, longer_traversed_detour]
+      question_template: "Using your knowledge of the environment's layout, what route should you take from {A} to {B}, given that {condition}?"
+      distractor_pattern: [known_route_answer, dead_end_path, longer_traversed_detour, route_violating_condition]
       discriminators:
-        - queried path/shortcut was NEVER traversed by the agent
-        - answer derivable only from global layout (survey representation)
-        - INVALID if it reduces to an experienced route (that is route_knowledge)
+        - queried route or critical connection was NEVER previously traversed by the agent
+        - the route is inferable from spatial information previously observed about the environment
+        - solving the task requires integrating configurational or map-like spatial knowledge
+        - stated conditions or environmental changes must be incorporated when applicable
+        - INVALID if the answer can be obtained by simply recalling a previously experienced route
 
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
