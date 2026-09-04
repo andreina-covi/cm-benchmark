@@ -125,8 +125,9 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   ≥1.5× sibling distance); otherwise exclude the candidate. Unique categories
   omit the phrase. Recalled / queried objects must also pass FOV size gates
   at the encoding step (not merely appear in ``non_visible_objects`` memory).
-- Temporal items use online sequential wording (`{k} steps ago` / `now`); do not
-  bundle a multi-image “time order” cue with the question.
+- Temporal SWM / spatial_updating encode at the latest *distinguishable*
+  prior sighting (FOV metrics + ego edge), not raw ``last_seen_step`` (which
+  may be a weak scrape of a large mesh).
 - Class 4 asks source→goal route recall (`route_knowledge` / `derive_turns`) or
   survey layout judgments (`survey_based_route_planning`: direction/distance or
   conditional first-hop under a recorded passage closure) — not full-trajectory

@@ -320,6 +320,117 @@ def test_allocentric_encoding_unsupported_without_facing(tiny_episode):
     assert 'facing' in items[0]['distractor_rationale'].get('reason', '')
 
 
+def test_swm_encoding_uses_last_distinguishable_not_weak_last_seen():
+    """SWM encode walks back past a weak FOV scrape to a clear earlier sighting."""
+    from cm_benchmark.generation.planner import (
+        _last_distinguishable_sighting,
+        plan_spatial_working_memory,
+    )
+
+    def _vis(area, side, pix, pos=(0.0, 1.0, 1.0)):
+        return {
+            'category': 'CounterTop',
+            'position': list(pos),
+            'bbox_area': area,
+            'min_side': side,
+            'visible_pixels': pix,
+        }
+
+    # step 0: clear sighting; step 2: weak scrape still in visible_objects;
+    # step 4: object only in non_visible with last_seen=2
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/img_0.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'CounterTop|1': _vis(2000, 40, 500)},
+                'non_visible_objects': {},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['', '', 'front'],
+                    }
+                ],
+            },
+            {
+                'step': 1,
+                'image_path': '/img_1.png',
+                'agent': {'position': [0.5, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {},
+                'non_visible_objects': {
+                    'CounterTop|1': {
+                        'category': 'CounterTop',
+                        'last_seen_step': 0,
+                        'position': [0.0, 1.0, 1.0],
+                    }
+                },
+                'edges_egocentric': [],
+            },
+            {
+                'step': 2,
+                'image_path': '/img_2.png',
+                'agent': {'position': [1.0, 1, 0], 'rotation': [0, 0, 0]},
+                # Weak scrape: in FOV list but fails QUERY_FOV gates
+                'visible_objects': {'CounterTop|1': _vis(50, 5, 20)},
+                'non_visible_objects': {},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['right', '', ''],
+                    }
+                ],
+            },
+            {
+                'step': 3,
+                'image_path': '/img_3.png',
+                'agent': {'position': [1.5, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {},
+                'non_visible_objects': {
+                    'CounterTop|1': {
+                        'category': 'CounterTop',
+                        'last_seen_step': 2,
+                        'position': [0.0, 1.0, 1.0],
+                    }
+                },
+                'edges_egocentric': [],
+            },
+            {
+                'step': 4,
+                'image_path': '/img_4.png',
+                'agent': {'position': [2.0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {},
+                'non_visible_objects': {
+                    'CounterTop|1': {
+                        'category': 'CounterTop',
+                        'last_seen_step': 2,
+                        'position': [0.0, 1.0, 1.0],
+                    }
+                },
+                'edges_egocentric': [],
+            },
+        ],
+        'agent_trajectory': [
+            {'step': i, 'position': [0.5 * i, 1, 0], 'rotation': [0, 0, 0], 'image_path': f'/img_{i}.png'}
+            for i in range(5)
+        ],
+        'agent_actions': [
+            {'step': i, 'action': 'MoveAhead', 'degrees': None} for i in range(1, 5)
+        ],
+        'displacement_events': [],
+    }
+
+    assert _last_distinguishable_sighting(episode, 'CounterTop|1', 4) == 0
+    facts = plan_spatial_working_memory(episode, max_items=5, min_delay=2)
+    ok = [f for f in facts if f.status == 'ok' and f.queried_object_id == 'CounterTop|1']
+    assert ok, 'expected SWM fact using clear encode, not weak last_seen=2'
+    assert all(f.encoding_step == 0 for f in ok)
+    assert all(f.encoding_step != 2 for f in ok)
+    assert any(f.query_step >= 3 for f in ok)
+
+
 def test_swm_question_states_explicit_delay_k(delayed_episode):
     facts = plan_episode(
         delayed_episode, constructs=['spatial_working_memory'], max_per_construct=2

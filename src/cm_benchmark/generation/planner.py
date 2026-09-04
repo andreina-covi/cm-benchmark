@@ -326,7 +326,11 @@ def plan_spatial_working_memory(
     min_delay: int = 2,
     max_delay: Optional[int] = None,
 ) -> list[PlannedFact]:
-    """Recall past relation (encoding step) under delay k; optional count/load mode."""
+    """Recall past relation under delay k; optional count/load mode.
+
+    Encoding step is the latest *distinguishable* prior sighting (metrics + ego
+    edge), not ``last_seen_step`` alone (which may be a weak FOV scrape).
+    """
     if min_delay < 1:
         raise ValueError('SWM min_delay must be at least 1')
     if max_delay is not None and max_delay < min_delay:
@@ -341,11 +345,9 @@ def plan_spatial_working_memory(
         for obj_id, mem in non_vis.items():
             if obj_id in displaced:
                 continue
-            last_seen = mem.get('last_seen_step')
-            if last_seen is None:
-                continue
-            enc_idx = int(last_seen)
-            if step_idx <= enc_idx:
+            # Encode at last distinguishable sighting, not last FOV scrape.
+            enc_idx = _last_distinguishable_sighting(episode, obj_id, step_idx)
+            if enc_idx is None or step_idx <= enc_idx:
                 continue
             k = step_idx - enc_idx
             if not _delay_is_allowed(k, min_delay, max_delay):
@@ -355,8 +357,6 @@ def plan_spatial_working_memory(
                 continue
             enc = step_by_index(episode, enc_idx)
             if enc is None:
-                continue
-            if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
                 continue
             # Answer from equal-wedge bearing at encoding pose (not stored triple)
             edge = find_ego_edge(enc, obj_id)
@@ -624,13 +624,18 @@ def _object_hidden_through(
 def _last_distinguishable_sighting(
     episode: dict, obj_id: str, before_step: int
 ) -> Optional[int]:
-    """Latest step < before_step where obj is in filtered visible_objects (distinguishable)."""
+    """Latest step < before_step where the object is FOV-distinguishable.
+
+    Uses ``_distinguishable_encoding_sighting`` (size metrics + ego edge), not
+    merely membership in ``visible_objects`` / ``last_seen_step`` (which can be
+    a weak scrape of a large mesh).
+    """
     best = None
     for step in episode.get('steps') or []:
         si = int(step['step'])
         if si >= int(before_step):
             break
-        if obj_id in (step.get('visible_objects') or {}):
+        if _distinguishable_encoding_sighting(episode, si, obj_id):
             best = si
     return best
 
@@ -1111,9 +1116,10 @@ def plan_spatial_updating(
 ) -> list[PlannedFact]:
     """Bearing at NEW pose after real agent motion; object static and not visible now.
 
-    Net pose change is verified from agent_trajectory (position OR heading), never
-    from action count alone. Duplicate (object, encode) pairs with identical answers
-    across query steps are dropped.
+    Encoding step is the latest distinguishable prior sighting (not raw
+    ``last_seen_step``). Net pose change is verified from agent_trajectory
+    (position OR heading), never from action count alone. Duplicate
+    (object, encode) pairs with identical answers across query steps are dropped.
     """
     if min_delay < 1:
         raise ValueError('spatial_updating min_delay must be at least 1')
@@ -1131,10 +1137,10 @@ def plan_spatial_updating(
         for obj_id, mem in (step.get('non_visible_objects') or {}).items():
             if obj_id in displaced:
                 continue
-            last_seen = mem.get('last_seen_step')
-            if last_seen is None or step_idx <= int(last_seen):
+            # Encode at last distinguishable sighting, not last FOV scrape.
+            enc_idx = _last_distinguishable_sighting(episode, obj_id, step_idx)
+            if enc_idx is None or step_idx <= enc_idx:
                 continue
-            enc_idx = int(last_seen)
             k = step_idx - enc_idx
             if not _delay_is_allowed(k, min_delay, max_delay):
                 continue
@@ -1144,8 +1150,6 @@ def plan_spatial_updating(
             if not _net_pose_changed_between(episode, enc_idx, step_idx):
                 continue
             if not _object_static_between(episode, obj_id, enc_idx, step_idx):
-                continue
-            if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
                 continue
             # Queried object must NOT be visible at final pose
             if obj_id in (step.get('visible_objects') or {}):
