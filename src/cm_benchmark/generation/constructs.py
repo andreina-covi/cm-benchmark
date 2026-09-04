@@ -53,7 +53,7 @@ CONSTRUCT_TEMPLATES = {
             )
         ],
         'recall_count': [
-            'How many distinct {object_category} have you seen up to this point?',
+            'How many distinct {object_category}s have you seen up to this point?',
         ],
     },
     'invisible_displacement': {
@@ -340,6 +340,13 @@ MIN_DISAMBIG_MARGIN_RATIO = 1.5  # nearest sibling must be ≥ this × target–
 QUERY_FOV_MIN_BBOX_AREA = 800.0
 QUERY_FOV_MIN_SIDE = 24.0
 QUERY_FOV_MIN_VISIBLE_PIXELS = 200.0
+
+# Invisible-displacement objects are small movable props (Cup, Phone, Bread).
+# Encode them with the soft Q&A visibility bar, not the landmark QUERY_FOV bar —
+# otherwise every swap/direct event is rejected for "no distinguishable sighting".
+ID_ENCODE_FOV_MIN_BBOX_AREA = 100.0
+ID_ENCODE_FOV_MIN_SIDE = 8.0
+ID_ENCODE_FOV_MIN_VISIBLE_PIXELS = 40.0
 
 
 def fov_metrics_ok(

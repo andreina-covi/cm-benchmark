@@ -40,7 +40,7 @@ CONSTRUCT_DEFS = {
     "egocentric_encoding": (
         "Egocentric encoding",
         "Relation of a visible object to the viewer's current pose.",
-        "Read the direction from the camera/viewer frame in the single current image.",
+        "Single labeled current view: report the object's bearing in the camera frame.",
     ),
     "allocentric_encoding": (
         "Allocentric encoding",
@@ -49,35 +49,45 @@ CONSTRUCT_DEFS = {
     ),
     "spatial_working_memory": (
         "Spatial working memory",
-        "Recall an encoded relation after the object leaves view and navigation continues.",
-        "Encode the object in the first frame, follow the ordered navigation frames, then recall the earlier relation.",
+        "Recall a previously seen location/relation/count under load and delay.",
+        "Ordered frames: encode → navigation delay → query. Relation items recall bearing; count items ask how many of a category you saw.",
     ),
     "invisible_displacement": (
         "Invisible displacement",
         "Track an object's location after it is hidden and relocated out of view.",
-        "The object is visible before occlusion, moves while hidden, and remains absent in the final view.",
+        "Encode while visible; object moves while hidden; query when still absent — use the destination cue in the question.",
     ),
     "spatial_updating": (
         "Spatial updating",
         "Update the bearing of a static object after the viewer moves.",
-        "Read the ordered navigation sequence: encode the object early, track your own motion through the intermediate frames, then report the updated bearing at the final pose.",
+        "Ordered navigation: encode early, track your motion, report the updated bearing at the final pose.",
     ),
     "perspective_taking": (
         "Perspective-taking",
         "Imagine standing at landmark A facing B; report where landmark C is.",
-        "Heading is relational (A→B) from positions — no object-intrinsic front required.",
+        "Frames are labeled A/B/C (first clear views of each landmark). Answer is C in the imagined A→B frame — not the camera's egocentric bearing.",
     ),
     "route_knowledge": (
         "Route knowledge",
         "Choose the matching turn sequence for a walked source→goal route.",
-        "MCQ over derive_turns() on the graph-snapped trajectory; not full-episode recall.",
+        "Frames are labeled source/goal landmark views only. The MC answer is the walked turn sequence from the nav graph — not readable from the stills alone.",
     ),
     "survey_based_route_planning": (
         "Survey-based route planning",
         "Judge layout direction/distance (or first-hop under a recorded passage closure).",
-        "Path must be untraversed; answers are not turn sequences (those are route_knowledge).",
+        "Frames are source/goal layout views. Answer is allocentric (or conditional first hop) on an untraversed link — not a turn sequence.",
     ),
 }
+
+# Temporal constructs: ordered navigation story. Landmark-triple / endpoint
+# constructs use role-labeled stills instead (no fake encode→delay→query strip).
+_NAV_SEQUENCE_CONSTRUCTS = frozenset(
+    {
+        "spatial_working_memory",
+        "spatial_updating",
+        "invisible_displacement",
+    }
+)
 
 
 def _set_run(run, text: str, *, size: int, bold: bool = False, color=DARK) -> None:
@@ -326,19 +336,46 @@ def add_construct_header(
     )
 
 
-def _fit_images(slide, image_paths: list[str], left, top, max_w, max_h) -> None:
+def _fit_images(
+    slide,
+    image_paths: list[str],
+    left,
+    top,
+    max_w,
+    max_h,
+    *,
+    labels: list[str] | None = None,
+) -> None:
     n = len(image_paths)
     if n == 0:
         return
-    gap = Inches(0.12)
-    label_h = Inches(0.22)
+    gap = Inches(0.10)
+    label_h = Inches(0.36)
+    roles = list(labels or [])
+    while len(roles) < n:
+        roles.append(f"frame {len(roles)}")
+
     if n == 1:
+        add_textbox(
+            slide,
+            left,
+            top,
+            max_w,
+            label_h,
+            text=roles[0],
+            size=10,
+            bold=True,
+            color=TEAL,
+            align=PP_ALIGN.CENTER,
+        )
         w, h = _picture_size(image_paths[0], int(max_w), int(max_h - label_h))
-        slide.shapes.add_picture(image_paths[0], left, top, width=w, height=h)
+        slide.shapes.add_picture(image_paths[0], left, top + label_h, width=w, height=h)
         return
-    each_w = Emu(int((max_w - gap) / 2))
-    labels = ["encoding / earlier", "query / final"]
-    for i, path in enumerate(image_paths[:2]):
+
+    # Up to 3 columns for A/B/C or source/goal(+extra)
+    cols = min(n, 3)
+    each_w = Emu(int((max_w - gap * (cols - 1)) / cols))
+    for i, path in enumerate(image_paths[:cols]):
         x = left + i * (each_w + gap)
         add_textbox(
             slide,
@@ -346,8 +383,8 @@ def _fit_images(slide, image_paths: list[str], left, top, max_w, max_h) -> None:
             top,
             each_w,
             label_h,
-            text=labels[i],
-            size=10,
+            text=roles[i],
+            size=9,
             bold=True,
             color=TEAL,
             align=PP_ALIGN.CENTER,
@@ -356,21 +393,129 @@ def _fit_images(slide, image_paths: list[str], left, top, max_w, max_h) -> None:
         slide.shapes.add_picture(path, x, top + label_h, width=w, height=h)
 
 
+def _item_context(item: dict) -> dict:
+    ctx = item.get("context")
+    if isinstance(ctx, dict) and ctx:
+        return dict(ctx)
+    # Legacy drafts: recover A/B/C or source/goal from the question text.
+    q = item.get("question") or ""
+    out: dict = {}
+    construct = item.get("construct") or ""
+    if construct == "perspective_taking":
+        import re
+
+        m = re.search(
+            r"standing at the (?P<A>[^,]+), facing the (?P<B>[^.]+)\..*?where is the (?P<C>[^?]+)\?",
+            q,
+            re.I | re.S,
+        )
+        if m:
+            out = {k: m.group(k).strip() for k in ("A", "B", "C")}
+    elif construct in ("route_knowledge", "survey_based_route_planning"):
+        import re
+
+        m = re.search(
+            r"from (?:the )?(?P<source>.+?) to (?:the )?(?P<goal>.+?)[\?\.,]",
+            q,
+            re.I,
+        )
+        if m:
+            out = {
+                "source": m.group("source").strip(),
+                "goal": m.group("goal").strip().rstrip("."),
+            }
+    return out
+
+
 def _frame_labels(item: dict) -> list[str]:
+    """Construct-aware captions for each image_path."""
     paths = item.get("image_paths") or []
+    n = len(paths)
+    roles = item.get("image_roles")
+    if isinstance(roles, list) and len(roles) == n:
+        return [str(r) for r in roles]
+
+    ctx = _item_context(item)
+    construct = item.get("construct") or ""
     trajectory = item.get("agent_trajectory") or []
-    labels = []
-    for index, path in enumerate(paths):
+
+    def step_tag(index: int) -> str:
         step = None
-        if index < len(trajectory) and trajectory[index].get("image_path") == path:
+        if index < len(trajectory) and trajectory[index].get("image_path") == paths[index]:
             step = trajectory[index].get("step")
-        role = ""
-        if index == 0:
-            role = " · encode"
-        elif index == len(paths) - 1:
-            role = " · query"
-        labels.append(f"t={step if step is not None else index}{role}")
-    return labels
+        if step is None and index == 0:
+            step = item.get("encoding_step")
+        if step is None and index == n - 1:
+            step = item.get("query_step")
+        return f"t={step}" if step is not None else f"frame {index}"
+
+    if construct == "perspective_taking":
+        tags = [
+            f"A · stand ({ctx.get('A') or '?'})",
+            f"B · face ({ctx.get('B') or '?'})",
+            f"C · locate ({ctx.get('C') or '?'})",
+        ]
+        return [tags[i] if i < len(tags) else step_tag(i) for i in range(n)]
+    if construct in ("route_knowledge", "survey_based_route_planning"):
+        src = ctx.get("source") or "?"
+        goal = ctx.get("goal") or "?"
+        if n == 1:
+            return [f"source/goal · {src} → {goal}"]
+        out = [f"source · {src}"]
+        if n >= 2:
+            out.append(f"goal · {goal}")
+        while len(out) < n:
+            out.append(step_tag(len(out)))
+        return out
+    if construct == "egocentric_encoding":
+        return [f"current view · {step_tag(0)}"]
+    if construct in _NAV_SEQUENCE_CONSTRUCTS:
+        if n == 1:
+            return [f"encode/query · {step_tag(0)}"]
+        out = [f"encode · {step_tag(0)}"]
+        for i in range(1, n - 1):
+            out.append(f"nav · {step_tag(i)}")
+        out.append(f"query · {step_tag(n - 1)}")
+        return out
+    return [step_tag(i) for i in range(n)]
+
+
+def _slide_readout(item: dict) -> str:
+    """Caption explaining what the images mean for this construct."""
+    construct = item.get("construct") or ""
+    ctx = _item_context(item)
+    if construct == "perspective_taking":
+        return (
+            f"Imagined pose: stand at {ctx.get('A', 'A')}, face {ctx.get('B', 'B')}, "
+            f"locate {ctx.get('C', 'C')} — not the camera’s egocentric answer."
+        )
+    if construct == "route_knowledge":
+        return (
+            f"Landmark stills of source ({ctx.get('source', '?')}) and goal "
+            f"({ctx.get('goal', '?')}). MC answer = walked turn sequence from GT "
+            "(not something these two frames alone depict)."
+        )
+    if construct == "survey_based_route_planning":
+        if ctx.get("template_mode") == "conditional_detour":
+            return (
+                f"Layout views {ctx.get('source', '?')} → {ctx.get('goal', '?')} "
+                f"under “{ctx.get('condition', 'closure')}”. Not a turn sequence."
+            )
+        return (
+            f"Layout views of {ctx.get('source', 'source')} and {ctx.get('goal', 'goal')}. "
+            "Allocentric direction/distance on an untraversed link."
+        )
+    if construct == "spatial_working_memory":
+        if "How many" in (item.get("question") or ""):
+            return "Ordered stream: count distinct category instances seen up to now."
+        return "Ordered stream: encode → navigate → recall earlier bearing (gone at query)."
+    if construct == "spatial_updating":
+        return "Ordered stream: encode → own motion → updated bearing at final pose."
+    if construct == "invisible_displacement":
+        return "Encode visible → hidden move → query while still absent (use destination cue)."
+    if construct == "egocentric_encoding":
+        return "Single current view: bearing in the camera/viewer frame."
+    return "Raw images shown to the model (same as evaluation input)."
 
 
 def add_sequence_slides(
@@ -381,6 +526,9 @@ def add_sequence_slides(
     *,
     frames_per_slide: int = 6,
 ) -> None:
+    """Only for true navigation-delay constructs (SWM / SU / ID)."""
+    if item.get("construct") not in _NAV_SEQUENCE_CONSTRUCTS:
+        return
     paths = list(item.get("image_paths") or [])
     if len(paths) <= 2:
         return
@@ -396,7 +544,7 @@ def add_sequence_slides(
             Inches(9.4),
             Inches(0.4),
             text=(
-                f"{construct_title} · Example {example_n} · ordered sequence "
+                f"{construct_title} · Example {example_n} · navigation sequence "
                 f"{page}/{total}"
             ),
             size=16,
@@ -409,10 +557,7 @@ def add_sequence_slides(
             Inches(0.63),
             Inches(9.3),
             Inches(0.35),
-            text=(
-                "Read left→right, top→bottom. The first frame encodes the fact; "
-                "intermediate frames create the navigation delay; the last frame is the query."
-            ),
+            text=_slide_readout(item),
             size=11,
             color=GRAY,
             align=PP_ALIGN.CENTER,
@@ -431,18 +576,18 @@ def add_sequence_slides(
                 x,
                 y,
                 cell_w,
-                Inches(0.25),
+                Inches(0.28),
                 text=labels[offset + local_index],
-                size=10,
+                size=9,
                 bold=offset + local_index in (0, len(paths) - 1),
                 color=TEAL,
                 align=PP_ALIGN.CENTER,
             )
-            w, h = _picture_size(path, int(cell_w), int(cell_h - Inches(0.25)))
+            w, h = _picture_size(path, int(cell_w), int(cell_h - Inches(0.28)))
             slide.shapes.add_picture(
                 path,
                 x + Emu(int((cell_w - w) / 2)),
-                y + Inches(0.27),
+                y + Inches(0.30),
                 width=w,
                 height=h,
             )
@@ -487,22 +632,39 @@ def add_example_slide(
         if not Path(p).exists():
             raise FileNotFoundError(p)
 
-    # Long sequences receive one or more preceding timeline slides. The Q&A
-    # slide repeats only the encoding and query endpoints as a compact recap.
-    display_paths = paths if len(paths) <= 2 else [paths[0], paths[-1]]
-    _fit_images(slide, display_paths, Inches(0.25), Inches(0.7), Inches(5.0), Inches(4.0))
-    if len(paths) > 2:
-        add_textbox(
-            slide,
-            Inches(0.35),
-            Inches(4.72),
-            Inches(4.8),
-            Inches(0.35),
-            text=f"Endpoint recap · full {len(paths)}-frame sequence on preceding slide(s)",
-            size=9,
-            color=GRAY,
-            align=PP_ALIGN.CENTER,
-        )
+    roles = _frame_labels(item)
+    construct = item.get("construct") or ""
+    # Nav-delay constructs with long sequences: endpoints on Q&A + prior strip.
+    # Landmark constructs (PT / RK / survey): show all role-labeled stills (≤3).
+    if construct in _NAV_SEQUENCE_CONSTRUCTS and len(paths) > 2:
+        display_paths = [paths[0], paths[-1]]
+        display_roles = [roles[0], roles[-1]]
+        recap = f"Endpoint recap · full {len(paths)}-frame navigation on preceding slide(s)"
+    else:
+        display_paths = paths[:3]
+        display_roles = roles[:3]
+        recap = None
+
+    _fit_images(
+        slide,
+        display_paths,
+        Inches(0.25),
+        Inches(0.62),
+        Inches(5.0),
+        Inches(3.55),
+        labels=display_roles,
+    )
+    add_textbox(
+        slide,
+        Inches(0.3),
+        Inches(4.22),
+        Inches(5.0),
+        Inches(0.55),
+        text=_slide_readout(item) + (f"\n{recap}" if recap else ""),
+        size=9,
+        color=GRAY,
+        align=PP_ALIGN.LEFT,
+    )
 
     # Q&A right
     rx, rw = Inches(5.4), Inches(4.3)

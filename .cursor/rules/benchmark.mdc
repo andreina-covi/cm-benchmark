@@ -132,9 +132,17 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   survey layout judgments (`survey_based_route_planning`: direction/distance or
   conditional first-hop under a recorded passage closure) — not full-trajectory
   memorization.
+- `route_knowledge` pairs follow **walk order** on the snapped trajectory (not
+  salience order); min hops are scene-calibrated (floor 2, not a fixed R2R 4–6);
+  landmarks snap to visited nodes within `ROUTE_LANDMARK_SNAP_M` (2.5 m).
+- `survey_based_route_planning` rejects candidates where the agent is within
+  `SURVEY_MIN_AGENT_SOURCE_DIST_M` (2.0 m) of the source landmark at any shown
+  frame — otherwise "goal relative to source" collapses to egocentric.
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.
+- Invisible-displacement encode uses the soft Q&A FOV bar (`ID_ENCODE_FOV_*`),
+  not the landmark `QUERY_FOV_*` bar — displaced props are Cup/Phone-sized.
 - Egocentric MC labels use ``angle_to_ego_label(ahead_half_width=…)``:
   FOV-constrained constructs (egocentric_encoding, disambiguator, SWM encode)
   use 20°; full-circle (spatial_updating, perspective_taking, ID query) use 45°.
