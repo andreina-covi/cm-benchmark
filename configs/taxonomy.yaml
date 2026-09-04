@@ -202,22 +202,32 @@ class_4:
         - the expected answer preserves the experienced order of turns, actions, or landmarks
         - INVALID if the queried source-goal route was not previously traversed by the agent.
 
-    survey_knowledge_route_planning:
+    survey_based_route_planning:
       class: 4
       frame_of_reference: allocentric          # configurational, map-like representation
-      definition: Infer a NOVEL route, shortcut, or alternative path between locations using
-      an integrated representation of the observed environment.
-      what_moves: none required # planning is performed over the represented environmental layout
-      answer_type: novel route, shortcut, path sequence, or next connection that was not previously traversed
+      definition: >
+        Infer relative direction and distance between observed landmarks using
+        survey (layout) knowledge. The graph path linking the landmarks must
+        NEVER have been traversed — answers are direction/distance judgments,
+        not turn sequences (those belong to route_knowledge).
+      what_moves: none required
+      answer_type: direction + distance of landmark B relative to landmark A
       required_temporal_fields: [agent_trajectory]   # to prove the path was NOT taken
-      question_template: "Using your knowledge of the environment's layout, what route should you take from {A} to {B}, given that {condition}?"
-      distractor_pattern: [known_route_answer, dead_end_path, longer_traversed_detour, route_violating_condition]
+      question_template: >-
+        Using your knowledge of the environment's layout,
+        where is the {goal} relative to the {source}?
+      distractor_pattern: [opposite_direction, wrong_distance, known_route_answer]
       discriminators:
-        - queried route or critical connection was NEVER previously traversed by the agent
-        - the route is inferable from spatial information previously observed about the environment
-        - solving the task requires integrating configurational or map-like spatial knowledge
-        - stated conditions or environmental changes must be incorporated when applicable
-        - INVALID if the answer can be obtained by simply recalling a previously experienced route
+      # existing:
+      - queried path/shortcut is absent from agent_trajectory (never directly traversed)
+      # NEW:
+      - the connection between {source} and {goal} must have been perceptually
+        evidenced in some shown frame — the connecting doorway/passage was visible,
+        or both regions were visible with a sightline between them — even though
+        the agent never walked through it. world_layout.connectivity truth that
+        was never perceptually available to the agent is NOT sufficient; this
+        construct tests inference from what was seen, not lookup from unseen
+        ground truth.
 
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
@@ -228,7 +238,7 @@ schema_hooks:
   displacement_event:  required_for: [invisible_displacement]
   displacement_candidates: required_for: [invisible_displacement]
   agent_trajectory:    required_for: [spatial_working_memory, spatial_updating,
-                                      route_knowledge, survey_knowledge]
+                                      route_knowledge, survey_based_route_planning]
   agent_actions:       required_for: [spatial_working_memory, spatial_updating,
                                       route_knowledge]
   reference_entity_facing_heading: required_for: [perspective_taking]

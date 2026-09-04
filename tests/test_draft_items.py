@@ -147,7 +147,11 @@ def test_invisible_displacement_swap_mode(folder_episode):
     swap_items = [
         i
         for i in items
-        if i.get('status') == 'ok' and 'used to be' in i['question']
+        if i.get('status') == 'ok'
+        and (
+            'used to be' in i['question']
+            or 'previous location' in i['question']
+        )
     ]
     assert swap_items
     for item in swap_items:
@@ -189,9 +193,11 @@ def test_invisible_displacement_dual_modes(folder_episode):
         assert any('you' in lab for lab in labels)
         # Destination cue required: landmark name or partner object
         q = item['question']
-        assert 'moved onto' in q or 'used to be' in q
+        assert 'moved onto' in q or 'moved to' in q or 'used to be' in q or 'previous location' in q
         assert not (
-            q.strip().endswith('now?') and 'moved onto' not in q and 'used to be' not in q
+            q.strip().endswith('now?')
+            and 'moved' not in q
+            and 'previous location' not in q
         )
 
 
@@ -367,38 +373,50 @@ def test_spatial_updating_delay_range_is_configurable(delayed_episode):
 
 
 def test_route_knowledge_is_retrace_not_plan(folder_episode):
-    """Class-4 route items retrace walked A→B; not full-episode turn dump."""
+    """Class-4 route items retrace walked A→B via derive_turns (not full dump)."""
     facts = plan_episode(
         folder_episode, constructs=['route_knowledge'], max_per_construct=2
     )
-    if facts and facts[0].status == 'unsupported':
-        assert 'source_goal' in (facts[0].reason or '') or 'region' in (facts[0].reason or '')
-        return
     assert facts
+    if facts[0].status == 'unsupported':
+        reason = facts[0].reason or ''
+        assert (
+            'nav_graph' in reason
+            or 'landmark' in reason
+            or 'trajectory' in reason
+            or 'walk' in reason
+        )
+        return
     fact = facts[0]
     assert fact.extra.get('source')
     assert fact.extra.get('goal')
-    assert fact.encoding_step is not None and fact.query_step is not None
-    assert fact.query_step - fact.encoding_step < 100
+    assert fact.extra.get('path_nodes')
     assert ' → ' in (fact.answer_label or '')
-    assert len((fact.answer_label or '').split(' → ')) <= 10
     q = _core_question(fact).lower()
-    assert 'retrace' in q
+    assert 'sequence of turns' in q or 'traveled' in q
     assert 'plan a route' not in q
 
 
-def test_survey_knowledge_unsupported_without_novel_path(folder_episode):
+def test_survey_based_route_planning_unsupported_without_novel_path(folder_episode):
     facts = plan_episode(
-        folder_episode, constructs=['survey_knowledge'], max_per_construct=1
+        folder_episode, constructs=['survey_based_route_planning'], max_per_construct=1
     )
     assert facts
-    assert facts[0].status == 'unsupported'
-    reason = facts[0].reason or ''
-    assert (
-        'connectivity' in reason
-        or 'novel' in reason
-        or 'regions' in reason
-        or 'untraversed' in reason
+    # Tiny fixture walk may cover all landmark pairs; accept unsupported reasons.
+    if facts[0].status == 'unsupported':
+        reason = facts[0].reason or ''
+        assert (
+            'nav_graph' in reason
+            or 'novel' in reason
+            or 'landmark' in reason
+            or 'untraversed' in reason
+        )
+        return
+    fact = facts[0]
+    assert fact.extra.get('direction')
+    assert fact.extra.get('distance_label')
+    assert 'turn left' not in (fact.answer_label or '').lower() or '@' not in (
+        fact.answer_label or ''
     )
 
 
@@ -434,7 +452,7 @@ def test_core_question_covers_active_template_placeholders():
         ('invisible_displacement', ['recall_direction', 'swap']),
         ('spatial_updating', [None]),
         ('route_knowledge', [None]),
-        ('survey_knowledge', [None]),
+        ('survey_based_route_planning', [None]),
         ('spatial_working_memory', ['recall_relation', 'recall_count']),
     ):
         for mode in modes:

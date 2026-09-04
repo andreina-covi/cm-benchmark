@@ -1,0 +1,38 @@
+{
+  "episode_id": "house_tiny_test",
+  "scene_id": "house_tiny",
+  "snapshots": {
+    "episode_start": {
+      "episode_id": "house_tiny_test",
+      "scene_id": "house_tiny",
+      "snapshot": "episode_start",
+      "coordinate_frame": {
+        "system": "ai2thor",
+        "y_up": true,
+        "horizontal_plane": "xz",
+        "units": "meters"
+      },
+      "params": {
+        "grid_size": 0.25,
+        "agent_move_m": 0.25,
+        "agent_rotation_deg": 45.0,
+        "edge_connectivity": "8"
+      },
+      "num_nodes": 9,
+      "num_edges": 0,
+      "nodes": [
+        {"node_id": "n0", "x": 0.0, "y": 1.0, "z": 0.0},
+        {"node_id": "n1", "x": 0.25, "y": 1.0, "z": 0.0},
+        {"node_id": "n2", "x": 0.5, "y": 1.0, "z": 0.0},
+        {"node_id": "n3", "x": 0.0, "y": 1.0, "z": 0.25},
+        {"node_id": "n4", "x": 0.25, "y": 1.0, "z": 0.25},
+        {"node_id": "n5", "x": 0.5, "y": 1.0, "z": 0.25},
+        {"node_id": "n6", "x": 0.0, "y": 1.0, "z": 0.5},
+        {"node_id": "n7", "x": 0.25, "y": 1.0, "z": 0.5},
+        {"node_id": "n8", "x": 0.5, "y": 1.0, "z": 0.5}
+      ],
+      "edges": []
+    }
+  },
+  "notes": "Tiny fixture; edges empty so build_nav_graph synthesizes 8-connected adjacency."
+}

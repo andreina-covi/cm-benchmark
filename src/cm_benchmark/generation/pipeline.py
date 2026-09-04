@@ -17,7 +17,7 @@ ALL_CONSTRUCTS = [
     'spatial_updating',
     'perspective_taking',
     'route_knowledge',
-    'survey_knowledge',
+    'survey_based_route_planning',
 ]
 
 

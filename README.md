@@ -344,7 +344,8 @@ SPOC layout:
 | **objects-*.csv** | Object catalog (type, pose, size, receptacles, optional color) |
 | **object_state-*.csv** | Per-timestep pose / `visible` / `in_camera_fov` (pickupables; may include hidden rows) |
 | **displacement_events-*.csv** | Hidden relocations (`hidden_during`, from/to receptacle + pose) |
-| **world_layout-*.json** | Regions, landmarks, passages, connectivity |
+| **world_layout-*.json** | Regions, landmarks, passages, connectivity (self-loop `from==to` rows dropped at ingest) |
+| **nav_graph-*.json** | Reachable-position grid + edges (`GetReachablePositions`; offline pathfinding) |
 | **passage_state-*.csv** | Door/passage open state over time |
 | **region_trajectory-*.csv** | Agent region each step |
 | **episode_meta-*.json** | `episode_id`, `scene_id`, `camera` (W/H/FOV), `agent` (step sizes), paths, counts |
@@ -498,8 +499,8 @@ flags are optional. Generation is deterministic.
 
 | Construct | What the draft asks | Evidence |
 |-----------|---------------------|----------|
-| `route_knowledge` | **Retrace** a short walked segment A→B (not invent a plan) | `region_trajectory` change points + turns between those steps; images near start/goal |
-| `survey_knowledge` | Novel path never walked (layout / BFS shortcut) | `world_layout.connectivity` + proof the path was not traversed; else `unsupported` |
+| `route_knowledge` | **Retrace** walked A→B as `derive_turns()` sequence (graph-snapped trajectory) | `nav_graph` + snapped `agent_trajectory`; landmarks for naming only |
+| `survey_based_route_planning` | Direction/distance between landmarks whose graph path was **never** walked | Landmark poses + `nav_graph` untraversed check (not turn sequences) |
 
 Do **not** emit a single question that expects recall of the full egomotion list across hundreds of steps.
 
@@ -515,7 +516,7 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 | `spatial_updating` | full when agent **translates** (position change), object static, not visible at final; rotate-only windows rejected |
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
 | `route_knowledge` | full (retrace walked A→B) |
-| `survey_knowledge` | full only for novel unwalked path; else unsupported |
+| `survey_based_route_planning` | full only for novel unwalked path; else unsupported |
 | `perspective_taking` | `unsupported` until trusted facing exists |
 
 ### Display names

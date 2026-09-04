@@ -72,7 +72,7 @@ CONSTRUCT_DEFS = {
         "Retrace a short source→goal route that was actually experienced.",
         "Use the start/goal views to identify the walked action sequence; this is not full-episode recall.",
     ),
-    "survey_knowledge": (
+    "survey_based_route_planning": (
         "Survey knowledge",
         "Infer a novel source→goal path from the learned layout.",
         "The correct path must be provably unwalked; otherwise the item is unsupported.",

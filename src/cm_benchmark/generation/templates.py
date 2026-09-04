@@ -26,7 +26,7 @@ _TRAJECTORY_HOOKS = frozenset(
         'spatial_working_memory',
         'spatial_updating',
         'route_knowledge',
-        'survey_knowledge',
+        'survey_based_route_planning',
     }
 )
 # Actions inside the item's encoding -> query window only. route_knowledge is
@@ -160,6 +160,8 @@ def _core_question(fact: PlannedFact) -> str:
     object_category = extra.get('object_category') or object_type
     new_location = extra.get('new_location') or extra.get('to_receptacle') or 'a surface'
     other_object_type = extra.get('other_object_type') or 'another object'
+    condition = extra.get('condition') or 'a new passage is available'
+    relation = extra.get('relation') or 'left'
 
     body = tmpl.format(
         object_type=object_type,
@@ -175,6 +177,8 @@ def _core_question(fact: PlannedFact) -> str:
         B=goal,
         k=k,
         new_location=new_location,
+        condition=condition,
+        relation=relation,
     )
     # Online sequential protocol: no multi-image "time order" cue; templates
     # already situate "now" / "{k} steps ago" relative to the live nav stream.
@@ -225,7 +229,7 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
             f'Retrace the walked route from {src} to {goal} based on the path '
             'you have followed so far.'
         )
-    elif fact.construct == 'survey_knowledge':
+    elif fact.construct == 'survey_based_route_planning':
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
         parts.append(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 from cm_benchmark.generation.constructs import (
     EGO_DIRECTION_OPTIONS,
@@ -957,351 +957,455 @@ def plan_allocentric_encoding(episode: dict, max_items: int = 1) -> list[Planned
     ][:max_items]
 
 
-def _collapse_action_labels(turns: list[dict], max_tokens: int = 8) -> list[str]:
-    """Compress consecutive identical actions: move_ahead ×3 → rotate_right."""
-    labels: list[str] = []
-    i = 0
-    while i < len(turns):
-        act = turns[i].get('action') or 'move'
-        deg = turns[i].get('degrees')
-        j = i + 1
-        while j < len(turns) and turns[j].get('action') == act and turns[j].get('degrees') == deg:
-            j += 1
-        count = j - i
-        if deg is not None and 'rotate' in str(act).lower():
-            unit = f'{act} {deg}°'
+
+def _rotation_deg(episode: dict) -> float:
+    meta = episode.get('episode_meta') or {}
+    agent = meta.get('agent') or {}
+    if agent.get('rotation_deg') is not None:
+        return float(agent['rotation_deg'])
+    return 45.0
+
+
+def _landmark_display_name(obj_id: str, episode: dict) -> str:
+    layout = episode.get('world_layout') or {}
+    for lm in layout.get('landmarks') or []:
+        if lm.get('landmark_id') == obj_id or lm.get('obj_id') == obj_id:
+            return object_type_from_id(
+                obj_id, {obj_id: {'category': lm.get('obj-type') or lm.get('category')}}
+            )
+    return object_type_from_id(obj_id)
+
+
+def _object_world_pos(episode: dict, obj_id: str) -> Optional[tuple]:
+    """Prefer layout landmark pose, else first distinguishable sighting pose."""
+    layout = episode.get('world_layout') or {}
+    for lm in layout.get('landmarks') or []:
+        lid = lm.get('landmark_id') or lm.get('obj_id')
+        if lid == obj_id:
+            pos = lm.get('position')
+            if isinstance(pos, dict):
+                return (float(pos['x']), float(pos.get('y', 0.0)), float(pos['z']))
+            if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                return (float(pos[0]), float(pos[1]), float(pos[2]))
+    for step in episode.get('steps') or []:
+        vis = step.get('visible_objects') or {}
+        if obj_id in vis:
+            pos = vis[obj_id].get('position')
+            if pos is not None:
+                return tuple(pos)
+    return None
+
+
+def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
+    """Objects that passed Q&A visibility (in some step's visible_objects).
+
+    Distinguishing filter already applied at GT build time for visible_objects.
+    Sample diversity: prefer world_layout landmarks when they are also visible.
+    """
+    seen: dict[str, dict] = {}
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        for oid, odata in (step.get('visible_objects') or {}).items():
+            if oid in seen:
+                continue
+            pos = odata.get('position')
+            if pos is None:
+                continue
+            seen[oid] = {
+                'obj_id': oid,
+                'name': object_type_from_id(oid, {oid: odata}),
+                'position': tuple(pos) if not isinstance(pos, tuple) else pos,
+                'first_seen_step': si,
+                'from_layout': False,
+            }
+    layout_ids = set()
+    for lm in (episode.get('world_layout') or {}).get('landmarks') or []:
+        lid = lm.get('landmark_id') or lm.get('obj_id')
+        if not lid:
+            continue
+        layout_ids.add(lid)
+        if lid in seen:
+            seen[lid]['from_layout'] = True
+            seen[lid]['name'] = _landmark_display_name(lid, episode)
+            # Prefer catalog/layout pose for snapping (may be on receptacle)
+            wp = _object_world_pos(episode, lid)
+            if wp is not None:
+                seen[lid]['position'] = wp
+    # Layout-first ordering, then by first_seen_step for diversity
+    items = list(seen.values())
+    items.sort(key=lambda r: (not r['from_layout'], r['first_seen_step'], r['obj_id']))
+    return items
+
+
+def _nearest_landmark_name(
+    graph, node_id: str, landmarks_by_node: dict[str, str]
+) -> Optional[str]:
+    if node_id in landmarks_by_node:
+        return landmarks_by_node[node_id]
+    return None
+
+
+def _build_landmark_node_map(
+    graph,
+    landmarks: list[dict],
+    *,
+    candidate_nodes: Optional[Sequence[str]] = None,
+) -> tuple[dict[str, str], dict[str, str], dict[str, dict]]:
+    """Map landmark_id -> snapped graph node (naming vs math stay separate).
+
+    If ``candidate_nodes`` is set (e.g. traversed walk for route_knowledge),
+    snap each landmark to the nearest *visited* node within landmark radius.
+    Otherwise snap to the nearest navigable graph node (survey endpoints).
+    """
+    from cm_benchmark.generation.nav_graph import (
+        snap_landmark_to_graph,
+        snap_to_nearest_of,
+    )
+
+    id_to_node: dict[str, str] = {}
+    node_to_name: dict[str, str] = {}
+    meta: dict[str, dict] = {}
+    for lm in landmarks:
+        oid = lm['obj_id']
+        if candidate_nodes is not None:
+            nid = snap_to_nearest_of(graph, lm['position'], candidate_nodes)
         else:
-            unit = str(act)
-        labels.append(f'{unit} ×{count}' if count > 1 else unit)
-        i = j
-    if len(labels) > max_tokens:
-        head = labels[: max_tokens - 1]
-        head.append('…')
-        return head
-    return labels
+            nid = snap_landmark_to_graph(graph, lm['position'])
+        if nid is None:
+            continue
+        id_to_node[oid] = nid
+        # Prefer first landmark name if several share a node
+        node_to_name.setdefault(nid, lm['name'])
+        meta[oid] = {**lm, 'node_id': nid}
+    return id_to_node, node_to_name, meta
 
 
-def _region_label(row: dict) -> str:
-    return str(row.get('region_type') or row.get('region_id') or 'a room')
+def _load_nav_graph_or_none(episode: dict):
+    from cm_benchmark.generation.nav_graph import build_nav_graph
+
+    raw = episode.get('nav_graph')
+    if not raw:
+        return None
+    try:
+        return build_nav_graph(raw, snapshot='episode_start')
+    except Exception:
+        return None
+
+
+def _traversed_subpath(traversed: list[str], start_node: str, end_node: str) -> Optional[list[str]]:
+    """First contiguous walk from start_node to a later end_node."""
+    try:
+        i0 = traversed.index(start_node)
+    except ValueError:
+        return None
+    for j in range(i0 + 1, len(traversed)):
+        if traversed[j] == end_node:
+            return traversed[i0 : j + 1]
+    return None
 
 
 def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Retrace an EXPERIENCED source→goal segment (not full-episode recall)."""
-    traj = episode.get('region_trajectory') or []
-    turns = (episode.get('route') or {}).get('turns') or []
-    if not turns:
-        turns = [
-            {'step': a.get('step'), 'action': a.get('action'), 'degrees': a.get('degrees')}
-            for a in (episode.get('agent_actions') or [])
-        ]
-    if len(traj) < 2 or not turns:
+    """Retrace an EXPERIENCED path as derive_turns() sequence (graph-backed)."""
+    from cm_benchmark.generation.nav_graph import (
+        derive_turns,
+        format_turn_sequence,
+        perturb_turn_sequence,
+        snap_trajectory_to_graph,
+        traversed_node_ids,
+        was_traversed,
+    )
+
+    graph = _load_nav_graph_or_none(episode)
+    if graph is None:
         return [
             PlannedFact(
                 construct='route_knowledge',
                 status='unsupported',
-                reason='need_region_segments_and_actions_for_source_goal_route',
+                reason='missing_or_invalid_nav_graph',
             )
         ]
 
-    out: list[PlannedFact] = []
-    for i in range(len(traj) - 1):
-        start, end = traj[i], traj[i + 1]
-        if start.get('region_id') == end.get('region_id'):
-            continue
-        t0, t1 = int(start['timestep']), int(end['timestep'])
-        if t1 <= t0:
-            continue
-        segment = [t for t in turns if t0 <= int(t.get('step', -1)) < t1]
-        if len(segment) < 1:
-            continue
-        if (t1 - t0) > 40 and len(segment) > 20:
-            continue
-
-        collapsed = _collapse_action_labels(segment, max_tokens=8)
-        answer = ' → '.join(collapsed)
-        source = _region_label(start)
-        goal = _region_label(end)
-
-        rev = ' → '.join(reversed(collapsed))
-        swapped = collapsed[:]
-        if len(swapped) >= 2:
-            swapped[0], swapped[-1] = swapped[-1], swapped[0]
-        swap_s = ' → '.join(swapped)
-
-        pool: list[str] = []
-        seeds: list[str] = []
-        for lab, mode in (
-            (answer, 'correct'),
-            (rev, 'reversed_sequence'),
-            (swap_s, 'swapped_two_turns'),
-        ):
-            if lab and lab not in pool:
-                pool.append(lab)
-                if mode != 'correct':
-                    seeds.append(mode)
-                    seeds.append(_mode_seed(mode, lab))
-        # Another walked segment as decoy if available
-        for j in range(len(traj) - 1):
-            if j == i:
-                continue
-            s2, e2 = traj[j], traj[j + 1]
-            if s2.get('region_id') == e2.get('region_id'):
-                continue
-            u0, u1 = int(s2['timestep']), int(e2['timestep'])
-            seg2 = [t for t in turns if u0 <= int(t.get('step', -1)) < u1]
-            if not seg2:
-                continue
-            decoy = ' → '.join(_collapse_action_labels(seg2, max_tokens=8))
-            if decoy and decoy not in pool:
-                pool.append(decoy)
-                seeds.append('plausible_but_unwalked_route')
-                seeds.append(_mode_seed('plausible_but_unwalked_route', decoy))
-                break
-        if len(pool) < 2:
-            continue
-
-        start_step = step_by_index(episode, t0)
-        end_step = step_by_index(episode, t1)
-        images = _img(start_step) + _img(end_step)
-
-        out.append(
+    snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
+    traversed = traversed_node_ids(snapped)
+    if len(traversed) < 3:
+        return [
             PlannedFact(
                 construct='route_knowledge',
-                status='ok' if (t1 - t0) <= 25 else 'thin',
-                query_step=t1,
-                encoding_step=t0,
-                answer_label=answer,
-                answer_source=[
-                    f'region_trajectory[{i}:{i + 1}]',
-                    f'route.turns[step>={t0} and step<{t1}]',
-                ],
-                image_paths=images,
-                options_pool=pool[:4],
-                distractor_seeds=seeds,
-                extra={
-                    'source': source,
-                    'goal': goal,
-                    'A': source,
-                    'B': goal,
-                    'source_region_id': start.get('region_id'),
-                    'goal_region_id': end.get('region_id'),
-                    'turn_labels': collapsed,
-                    'object_type': goal,
-                    'frame_of_reference': 'egocentric',
-                },
+                status='unsupported',
+                reason='trajectory_too_short_after_snap',
             )
-        )
-        if len(out) >= max_items:
-            break
+        ]
+
+    landmarks = _distinguishable_landmark_candidates(episode)
+    id_to_node, node_to_name, meta = _build_landmark_node_map(
+        graph, landmarks, candidate_nodes=traversed
+    )
+    if len(id_to_node) < 2:
+        return [
+            PlannedFact(
+                construct='route_knowledge',
+                status='unsupported',
+                reason='need_ge2_distinguishable_landmarks_snapped',
+            )
+        ]
+
+    rot = _rotation_deg(episode)
+    # Candidate pairs: landmarks whose nodes appear in order on the walk.
+    ordered_ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
+    out: list[PlannedFact] = []
+    for i, src_id in enumerate(ordered_ids):
+        for goal_id in ordered_ids[i + 1 :]:
+            if src_id == goal_id:
+                continue
+            n0, n1 = id_to_node[src_id], id_to_node[goal_id]
+            if n0 == n1:
+                continue
+            source = meta[src_id]['name']
+            goal = meta[goal_id]['name']
+            if source == goal:
+                continue
+            sub = _traversed_subpath(traversed, n0, n1)
+            if sub is None or len(sub) < 2:
+                continue
+            # Keep MC routes short: decision-point sequences, not full-episode dumps
+            if len(sub) > 25:
+                continue
+            if not was_traversed(sub, traversed):
+                continue
+            # Require some real translation along the walk
+            if not _has_real_move_between(
+                episode,
+                int(meta[src_id]['first_seen_step']),
+                max(int(meta[goal_id]['first_seen_step']), int(meta[src_id]['first_seen_step']) + 1),
+            ):
+                # Still OK if subpath has multiple distinct nodes (walked)
+                if len(sub) < 3:
+                    continue
+
+            turns = derive_turns(
+                sub, graph, rotation_deg=rot, landmark_at_node=node_to_name
+            )
+            if not turns:
+                continue
+            # Route knowledge needs at least one heading change (not landmark parade)
+            if not any((t.get('label') or 'straight') != 'straight' for t in turns):
+                continue
+            answer = format_turn_sequence(turns)
+            if not answer or answer.count('→') > 12:
+                continue
+            pool = [answer]
+            seeds: list[str] = []
+            for mode in (
+                'opposite_direction',
+                'wrong_decision_point',
+                'extra_turn',
+                'no_turn',
+            ):
+                pert = perturb_turn_sequence(turns, mode)
+                if not pert:
+                    continue
+                lab = format_turn_sequence(pert)
+                if lab and lab not in pool:
+                    pool.append(lab)
+                    seeds.append(mode)
+                    seeds.append(_mode_seed(mode, lab))
+                if len(pool) >= 4:
+                    break
+            if len(pool) < 2:
+                continue
+
+            t0 = int(meta[src_id]['first_seen_step'])
+            t1 = int(meta[goal_id]['first_seen_step'])
+            if t1 < t0:
+                t0, t1 = t1, t0
+            images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+            out.append(
+                PlannedFact(
+                    construct='route_knowledge',
+                    status='ok',
+                    query_step=t1,
+                    encoding_step=t0,
+                    answer_label=answer,
+                    answer_source=[
+                        f'nav_graph.snap_trajectory[{n0}→{n1}]',
+                        'derive_turns(traversed_subpath)',
+                    ],
+                    image_paths=images,
+                    options_pool=pool[:4],
+                    distractor_seeds=seeds,
+                    extra={
+                        'source': source,
+                        'goal': goal,
+                        'A': source,
+                        'B': goal,
+                        'source_landmark_id': src_id,
+                        'goal_landmark_id': goal_id,
+                        'source_node': n0,
+                        'goal_node': n1,
+                        'path_nodes': sub,
+                        'turn_labels': [t.get('label') for t in turns],
+                        'object_type': goal,
+                        'frame_of_reference': 'egocentric',
+                    },
+                )
+            )
+            if len(out) >= max_items:
+                return out
 
     if not out:
         return [
             PlannedFact(
                 construct='route_knowledge',
                 status='unsupported',
-                reason='no_short_source_goal_region_segment',
+                reason='no_experienced_landmark_to_landmark_walk',
             )
         ]
     return out
 
 
-def _bfs_region_path(
-    connectivity: list[dict], start: str, goal: str
-) -> Optional[tuple[list[str], list[str]]]:
-    if start == goal:
-        return [start], []
-    adj: dict[str, list[tuple[str, str]]] = {}
-    for c in connectivity:
-        a, b = c.get('from_region'), c.get('to_region')
-        pid = c.get('passage_id') or f'{a}-{b}'
-        if not a or not b:
-            continue
-        adj.setdefault(a, []).append((b, pid))
-        if c.get('bidirectional', True):
-            adj.setdefault(b, []).append((a, pid))
-    q = deque([(start, [start], [])])
-    seen = {start}
-    while q:
-        node, path, passages = q.popleft()
-        for nxt, pid in adj.get(node, []):
-            if nxt in seen:
-                continue
-            npath = path + [nxt]
-            npass = passages + [pid]
-            if nxt == goal:
-                return npath, npass
-            seen.add(nxt)
-            q.append((nxt, npath, npass))
-    return None
+def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
+    """Direction/distance between landmarks whose graph path was never walked."""
+    from cm_benchmark.generation.nav_graph import (
+        direction_distance_between_landmarks,
+        format_survey_relation,
+        is_valid_untraversed_shortcut,
+        sanitize_world_layout,
+        shortest_path,
+        snap_trajectory_to_graph,
+        traversed_node_ids,
+    )
+    import networkx as nx
 
+    # Guard: drop invalid same-region connectivity rows if layout present.
+    if episode.get('world_layout'):
+        episode = dict(episode)
+        episode['world_layout'] = sanitize_world_layout(episode['world_layout'])
 
-def _walked_region_sequences(traj: list[dict]) -> set[tuple[str, ...]]:
-    """All contiguous region-id subsequences the agent actually walked."""
-    ids = [row.get('region_id') for row in traj if row.get('region_id')]
-    # Collapse consecutive duplicates
-    collapsed: list[str] = []
-    for rid in ids:
-        if not collapsed or collapsed[-1] != rid:
-            collapsed.append(rid)
-    seqs: set[tuple[str, ...]] = set()
-    for i in range(len(collapsed)):
-        for j in range(i + 1, len(collapsed) + 1):
-            seqs.add(tuple(collapsed[i:j]))
-    return seqs
-
-
-def plan_survey_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Layout-based novel shortcut; INVALID if it reduces to a walked route."""
-    layout = episode.get('world_layout') or {}
-    conn = layout.get('connectivity') or []
-    regions = layout.get('regions') or []
-    traj = episode.get('region_trajectory') or []
-
-    if not conn or len(regions) < 2:
+    graph = _load_nav_graph_or_none(episode)
+    if graph is None:
         return [
             PlannedFact(
-                construct='survey_knowledge',
+                construct='survey_based_route_planning',
                 status='unsupported',
-                reason='weak_or_missing_layout_connectivity',
+                reason='missing_or_invalid_nav_graph',
             )
         ]
 
-    visited = []
-    for row in traj:
-        rid = row.get('region_id')
-        if rid and rid not in visited:
-            visited.append(rid)
-    if len(visited) < 2:
+    snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
+    traversed = traversed_node_ids(snapped)
+    landmarks = _distinguishable_landmark_candidates(episode)
+    id_to_node, _node_to_name, meta = _build_landmark_node_map(graph, landmarks)
+    ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
+    if len(ids) < 2:
         return [
             PlannedFact(
-                construct='survey_knowledge',
+                construct='survey_based_route_planning',
                 status='unsupported',
-                reason='need_ge2_observed_regions_for_survey',
+                reason='need_ge2_distinguishable_landmarks_snapped',
             )
         ]
-
-    id_to_label = {
-        r.get('region_id'): (r.get('label') or r.get('region_id'))
-        for r in regions
-        if r.get('region_id')
-    }
-    walked = _walked_region_sequences(traj)
 
     out: list[PlannedFact] = []
-    pairs = []
-    for i, a in enumerate(visited):
-        for b in visited[i + 1 :]:
-            if a != b:
-                pairs.append((a, b))
-
-    # Known walked hop for distractor
-    known_route_answer = None
-    if len(visited) >= 2:
-        result0 = _bfs_region_path(conn, visited[0], visited[1])
-        if result0:
-            pr, passages = result0
-            if passages:
-                known_route_answer = (
-                    f'use {passages[0]} toward '
-                    f'{id_to_label.get(pr[1], pr[1])}'
-                )
-
-    for a, b in pairs:
-        result = _bfs_region_path(conn, a, b)
-        if not result:
-            continue
-        path_regions, passages = result
-        if len(path_regions) < 2:
-            continue
-        # Discriminator: path must NEVER have been traversed
-        if tuple(path_regions) in walked:
-            continue
-        # Also reject direct one-hop that appears as consecutive visit
-        if len(path_regions) == 2 and (path_regions[0], path_regions[1]) in {
-            (visited[i], visited[i + 1]) for i in range(len(visited) - 1)
-        }:
-            continue
-
-        source = id_to_label.get(a, a)
-        goal = id_to_label.get(b, b)
-        first_pass = passages[0] if passages else None
-        if first_pass:
-            answer = f'use {first_pass} toward {id_to_label.get(path_regions[1], path_regions[1])}'
-        else:
-            answer = f'go to {id_to_label.get(path_regions[1], path_regions[1])}'
-
-        pool = [answer]
-        seeds: list[str] = []
-        if known_route_answer and known_route_answer != answer:
-            pool.append(known_route_answer)
-            seeds.append('known_route_answer')
-            seeds.append(_mode_seed('known_route_answer', known_route_answer))
-
-        for c in conn:
-            pid = c.get('passage_id')
-            to = c.get('to_region')
-            if not pid or pid == first_pass:
+    for i, src_id in enumerate(ids):
+        for goal_id in ids[i + 1 :]:
+            n0, n1 = id_to_node[src_id], id_to_node[goal_id]
+            if n0 == n1:
                 continue
-            decoy = f'use {pid} toward {id_to_label.get(to, to)}'
-            if decoy not in pool:
-                pool.append(decoy)
-                seeds.append('dead_end_path')
-                seeds.append(_mode_seed('dead_end_path', decoy))
-            if len(pool) >= 4:
-                break
-        if len(pool) < 2:
-            continue
-
-        img_paths: list[str] = []
-        for row in traj:
-            if row.get('region_id') == a:
-                img_paths.extend(_img(step_by_index(episode, int(row['timestep']))))
-                break
-        for row in traj:
-            if row.get('region_id') == b:
-                img_paths.extend(_img(step_by_index(episode, int(row['timestep']))))
-                break
-        dedup: list[str] = []
-        for p in img_paths:
-            if p not in dedup:
-                dedup.append(p)
-
-        out.append(
-            PlannedFact(
-                construct='survey_knowledge',
-                status='ok',
-                query_step=int(traj[-1]['timestep']) if traj else None,
-                encoding_step=int(traj[0]['timestep']) if traj else None,
-                answer_label=answer,
-                answer_source=[
-                    'world_layout.connectivity',
-                    f'plan_path[{a}→{b}]={path_regions}',
-                    'agent_trajectory (proves path not traversed)',
-                ],
-                image_paths=dedup[:2],
-                options_pool=pool[:4],
-                distractor_seeds=seeds,
-                extra={
-                    'source': source,
-                    'goal': goal,
-                    'A': source,
-                    'B': goal,
-                    'path_regions': path_regions,
-                    'passages': passages,
-                    'object_type': goal,
-                    'frame_of_reference': 'allocentric',
-                },
+            try:
+                cand = shortest_path(graph, n0, n1)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                continue
+            if not is_valid_untraversed_shortcut(cand, traversed, graph):
+                continue
+            rel = direction_distance_between_landmarks(
+                meta[src_id]['position'], meta[goal_id]['position'], episode=episode
             )
-        )
-        if len(out) >= max_items:
-            break
+            if not rel:
+                continue
+            direction, distance = rel
+            source = meta[src_id]['name']
+            goal = meta[goal_id]['name']
+            answer = format_survey_relation(direction, distance, source_name=source)
+
+            # Distractors: flip direction / alternate distance labels
+            opp = {
+                'ahead of': 'behind',
+                'behind': 'ahead of',
+                'to the left of': 'to the right of',
+                'to the right of': 'to the left of',
+            }.get(direction, direction)
+            alt_dists = [
+                d
+                for d in ('within_reach', 'nearby', 'far', 'beyond')
+                if d != distance
+            ]
+            pool = [answer]
+            seeds: list[str] = []
+            decoy1 = format_survey_relation(opp, distance, source_name=source)
+            if decoy1 not in pool:
+                pool.append(decoy1)
+                seeds.append('opposite_direction')
+                seeds.append(_mode_seed('opposite_direction', decoy1))
+            if alt_dists:
+                decoy2 = format_survey_relation(
+                    direction, alt_dists[0], source_name=source
+                )
+                if decoy2 not in pool:
+                    pool.append(decoy2)
+                    seeds.append('wrong_distance')
+                    seeds.append(_mode_seed('wrong_distance', decoy2))
+            if alt_dists and opp != direction:
+                decoy3 = format_survey_relation(opp, alt_dists[-1], source_name=source)
+                if decoy3 not in pool:
+                    pool.append(decoy3)
+                    seeds.append('known_route_answer')
+                    seeds.append(_mode_seed('known_route_answer', decoy3))
+            if len(pool) < 2:
+                continue
+
+            t0 = int(meta[src_id]['first_seen_step'])
+            t1 = int(meta[goal_id]['first_seen_step'])
+            images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+            out.append(
+                PlannedFact(
+                    construct='survey_based_route_planning',
+                    status='ok',
+                    query_step=max(t0, t1),
+                    encoding_step=min(t0, t1),
+                    answer_label=answer,
+                    answer_source=[
+                        f'landmarks[{src_id}].position',
+                        f'landmarks[{goal_id}].position',
+                        f'nav_graph.shortest_path[{n0}→{n1}] (untraversed)',
+                    ],
+                    image_paths=images,
+                    options_pool=pool[:4],
+                    distractor_seeds=seeds,
+                    extra={
+                        'source': source,
+                        'goal': goal,
+                        'A': source,
+                        'B': goal,
+                        'condition': 'the queried shortcut was never walked',
+                        'source_landmark_id': src_id,
+                        'goal_landmark_id': goal_id,
+                        'path_nodes': cand,
+                        'direction': direction,
+                        'distance_label': distance,
+                        'object_type': goal,
+                        'frame_of_reference': 'allocentric',
+                    },
+                )
+            )
+            if len(out) >= max_items:
+                return out
 
     if not out:
         return [
             PlannedFact(
-                construct='survey_knowledge',
+                construct='survey_based_route_planning',
                 status='unsupported',
-                reason='no_novel_untraversed_layout_path',
+                reason='no_novel_untraversed_landmark_pair',
             )
         ]
     return out
@@ -1324,7 +1428,7 @@ PLANNERS = {
     'spatial_updating': plan_spatial_updating,
     'allocentric_encoding': plan_allocentric_encoding,
     'route_knowledge': plan_route_knowledge,
-    'survey_knowledge': plan_survey_knowledge,
+    'survey_based_route_planning': plan_survey_based_route_planning,
     'perspective_taking': plan_perspective_taking,
 }
 
