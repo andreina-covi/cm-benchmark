@@ -431,6 +431,190 @@ def test_swm_encoding_uses_last_distinguishable_not_weak_last_seen():
     assert any(f.query_step >= 3 for f in ok)
 
 
+def test_id_encode_accepts_soft_fov_prop_not_query_landmark_bar():
+    """ID props (Cup-sized) use soft FOV encode; QUERY_FOV landmark bar would reject them."""
+    from cm_benchmark.generation.planner import (
+        _ID_ENCODE_FOV,
+        _last_distinguishable_sighting,
+    )
+
+    cup = {
+        'category': 'Cup',
+        'position': [0.2, 0.9, 0.5],
+        'bbox_area': 493.0,
+        'min_side': 17.0,
+        'visible_pixels': 282.0,
+    }
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/img_0.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'Cup|1': cup},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'Cup|1',
+                        'angle_relation': ['', '', 'front'],
+                    }
+                ],
+            }
+        ]
+    }
+    # Landmark QUERY bar: reject; ID soft bar: accept.
+    assert _last_distinguishable_sighting(episode, 'Cup|1', 1) is None
+    assert _last_distinguishable_sighting(episode, 'Cup|1', 1, **_ID_ENCODE_FOV) == 0
+
+
+def test_survey_rejects_when_agent_near_source_landmark():
+    """Allocentric survey collapses if agent stands at the source landmark."""
+    from cm_benchmark.generation.planner import (
+        SURVEY_MIN_AGENT_SOURCE_DIST_M,
+        _agent_near_landmark,
+    )
+
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'agent': {'position': [1.0, 1.0, 1.0], 'rotation': [0, 0, 0]},
+            }
+        ],
+        'agent_trajectory': [
+            {'step': 0, 'position': [1.0, 1.0, 1.0], 'rotation': [0, 0, 0]}
+        ],
+    }
+    near = {'x': 1.2, 'y': 0.5, 'z': 1.1}  # ~0.22 m
+    far = {'x': 5.0, 'y': 0.5, 'z': 5.0}
+    assert _agent_near_landmark(episode, near, [0])
+    assert not _agent_near_landmark(episode, far, [0])
+    assert not _agent_near_landmark(episode, near, [0], min_dist_m=0.1)
+    assert SURVEY_MIN_AGENT_SOURCE_DIST_M >= 1.5
+
+
+def test_scene_min_hop_floor_is_two_not_hardcoded_four():
+    """Route hop minimum is scene-calibrated with floor=2 (not a fixed R2R 4–6)."""
+    import networkx as nx
+    from cm_benchmark.generation.planner import _scene_min_hop_count
+
+    g = nx.Graph()
+    for i in range(3):
+        g.add_node(f'n{i}')
+    g.add_edge('n0', 'n1')
+    g.add_edge('n1', 'n2')
+    assert _scene_min_hop_count(g, ['n0', 'n1', 'n2']) == 2
+    g2 = nx.path_graph([f'n{i}' for i in range(10)])
+    hops = _scene_min_hop_count(g2, ['n0', 'n9'])
+    assert 2 <= hops <= 8
+
+
+def test_swm_reserves_recall_count_slots():
+    """Count/load mode must not be starved by relation filling max_items first."""
+    from cm_benchmark.generation.planner import plan_spatial_working_memory
+
+    # Minimal episode: two Chairs seen early, then navigate so delay+move hold.
+    def step(i, visible, non_vis=None, edges=None, x=None):
+        return {
+            'step': i,
+            'image_path': f'/img_{i}.png',
+            'agent': {
+                'position': [float(x if x is not None else i), 1.0, 0.0],
+                'rotation': [0, 0, 0],
+            },
+            'visible_objects': visible,
+            'non_visible_objects': non_vis or {},
+            'edges_egocentric': edges or [],
+        }
+
+    chair = lambda oid, z: {
+        'category': 'Chair',
+        'position': [0.0, 1.0, float(z)],
+        'bbox_area': 2000.0,
+        'min_side': 40.0,
+        'visible_pixels': 500.0,
+    }
+    episode = {
+        'steps': [
+            step(
+                0,
+                {'Chair|1': chair('Chair|1', 1.0), 'Chair|2': chair('Chair|2', 2.0)},
+                edges=[
+                    {
+                        'source': 'agent',
+                        'target': 'Chair|1',
+                        'angle_relation': ['', '', 'front'],
+                    },
+                    {
+                        'source': 'agent',
+                        'target': 'Chair|2',
+                        'angle_relation': ['right', '', ''],
+                    },
+                ],
+            ),
+            step(1, {}, non_vis={
+                'Chair|1': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 1]},
+                'Chair|2': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 2]},
+            }),
+            step(2, {}, non_vis={
+                'Chair|1': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 1]},
+                'Chair|2': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 2]},
+            }),
+        ],
+        'agent_trajectory': [
+            {
+                'step': i,
+                'position': [float(i), 1.0, 0.0],
+                'rotation': [0, 0, 0],
+                'image_path': f'/img_{i}.png',
+            }
+            for i in range(3)
+        ],
+        'agent_actions': [
+            {'step': i, 'action': 'MoveAhead', 'degrees': None} for i in range(1, 3)
+        ],
+        'displacement_events': [],
+    }
+    facts = plan_spatial_working_memory(episode, max_items=3, min_delay=2)
+    modes = {(f.extra or {}).get('template_mode') for f in facts if f.status == 'ok'}
+    assert 'recall_count' in modes, f'expected recall_count among {facts}'
+    count = next(f for f in facts if (f.extra or {}).get('template_mode') == 'recall_count')
+    assert count.answer_label == '2'
+    assert count.extra.get('load_n_objects') == 2
+
+
+def test_merge_role_images_dedupes_with_combined_labels():
+    from cm_benchmark.generation.planner import merge_role_images
+
+    paths, roles = merge_role_images(
+        [
+            (['/a.png'], 'A · stand (Table)'),
+            (['/a.png'], 'B · face (Sofa)'),
+            (['/c.png'], 'C · locate (Fridge)'),
+        ]
+    )
+    assert paths == ['/a.png', '/c.png']
+    assert roles[0] == 'A · stand (Table) + B · face (Sofa)'
+    assert roles[1] == 'C · locate (Fridge)'
+
+
+def test_draft_item_persists_image_roles_and_context(folder_episode):
+    items = draft_items_for_episode(
+        folder_episode,
+        constructs=['perspective_taking'],
+        max_per_construct=1,
+        styles=('concise',),
+    )
+    ok = [i for i in items if i.get('status') == 'ok']
+    if not ok:
+        pytest.skip('no perspective_taking on tiny fixture')
+    item = ok[0]
+    assert item.get('image_roles')
+    assert len(item['image_roles']) == len(item.get('image_paths') or [])
+    ctx = item.get('context') or {}
+    assert ctx.get('A') and ctx.get('B') and ctx.get('C')
+
+
 def test_swm_question_states_explicit_delay_k(delayed_episode):
     facts = plan_episode(
         delayed_episode, constructs=['spatial_working_memory'], max_per_construct=2

@@ -460,6 +460,140 @@ def _window_actions(episode: dict, fact: PlannedFact) -> list:
     return out
 
 
+def _slide_context(fact: PlannedFact) -> dict:
+    """Compact construct-specific fields for slides / review (not scored)."""
+    extra = fact.extra or {}
+    keys = (
+        'A',
+        'B',
+        'C',
+        'source',
+        'goal',
+        'object_type',
+        'object_category',
+        'template_mode',
+        'new_location',
+        'other_object_type',
+        'disambiguator',
+        'k',
+        'load_n_objects',
+        'condition',
+        'direction',
+        'distance_label',
+        'hop_count',
+        'min_hop_count',
+    )
+    ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
+    return ctx
+
+
+def infer_image_roles(fact: PlannedFact) -> list[str]:
+    """Human-readable captions aligned with ``fact.image_paths`` for slides."""
+    extra = fact.extra or {}
+    paths = list(fact.image_paths or [])
+    n = len(paths)
+    if n == 0:
+        return []
+    preset = extra.get('image_roles')
+    if isinstance(preset, list) and len(preset) == n:
+        return [str(r) for r in preset]
+
+    c = fact.construct
+    ot = extra.get('object_type') or 'object'
+    if c == 'perspective_taking':
+        tags = [
+            f"A · stand here ({extra.get('A') or 'landmark'})",
+            f"B · face toward ({extra.get('B') or 'landmark'})",
+            f"C · locate ({extra.get('C') or ot})",
+        ]
+        return [tags[i] if i < len(tags) else f'view {i}' for i in range(n)]
+    if c in ('route_knowledge', 'survey_based_route_planning'):
+        src = extra.get('source') or 'source'
+        goal = extra.get('goal') or 'goal'
+        if n == 1:
+            return [f'source/goal · {src} → {goal}']
+        roles = [f'source · {src}']
+        if n >= 2:
+            roles.append(f'goal · {goal}')
+        while len(roles) < n:
+            roles.append(f'view {len(roles)}')
+        return roles
+    if c == 'egocentric_encoding':
+        return [f'current view · find {ot}']
+    if c == 'allocentric_encoding':
+        ref = extra.get('reference_object') or extra.get('B') or 'reference'
+        return [f'current view · {ot} relative to {ref}']
+    if c in (
+        'spatial_working_memory',
+        'spatial_updating',
+        'invisible_displacement',
+    ):
+        if n == 1:
+            return [f'encode/query · {ot}']
+        roles = [f'encode · last clear view of {ot}']
+        for i in range(1, n - 1):
+            roles.append(f'navigation · frame {i}')
+        roles.append('query · now')
+        return roles
+    return [f'frame {i}' for i in range(n)]
+
+
+def slide_readout(construct: str, context: Optional[dict] = None) -> str:
+    """One-line how-to-read the images for a construct (slide caption)."""
+    ctx = context or {}
+    if construct == 'perspective_taking':
+        a, b, c = ctx.get('A'), ctx.get('B'), ctx.get('C')
+        return (
+            f'Imagined pose: stand at {a}, face {b}, report where {c} is — '
+            'not the camera’s egocentric answer.'
+        )
+    if construct == 'route_knowledge':
+        return (
+            f"Landmark views of source ({ctx.get('source')}) and goal "
+            f"({ctx.get('goal')}). The answer is the walked turn sequence, "
+            'not something readable from these two stills alone.'
+        )
+    if construct == 'survey_based_route_planning':
+        mode = ctx.get('template_mode') or 'direction_distance'
+        if mode == 'conditional_detour':
+            return (
+                f"Layout views of {ctx.get('source')} → {ctx.get('goal')}. "
+                f"Answer uses the recorded closure ({ctx.get('condition')}); "
+                'not a turn sequence.'
+            )
+        return (
+            f"Layout views of source ({ctx.get('source')}) and goal "
+            f"({ctx.get('goal')}). Judge allocentric direction/distance on an "
+            'untraversed link — not egocentric from the camera.'
+        )
+    if construct == 'spatial_working_memory':
+        if ctx.get('template_mode') == 'recall_count':
+            return (
+                'Ordered navigation frames. Count how many distinct instances of '
+                f"{ctx.get('object_category') or ctx.get('object_type')} you saw "
+                'along the stream up to now.'
+            )
+        return (
+            'Ordered navigation: encode the object in the first frame, then recall '
+            'its earlier bearing at query (object is gone from the final view).'
+        )
+    if construct == 'spatial_updating':
+        return (
+            'Ordered navigation: encode early, track your own motion through '
+            'intermediate frames, report the updated bearing at the final pose.'
+        )
+    if construct == 'invisible_displacement':
+        return (
+            'Encode while visible, then the object moves while hidden; query when '
+            'still absent — use the destination cue in the question.'
+        )
+    if construct == 'egocentric_encoding':
+        return 'Single current view: report the object’s bearing in the camera frame.'
+    if construct == 'allocentric_encoding':
+        return 'Single view: object–object relation in a trusted object-centered frame.'
+    return 'Raw images shown to the model (same as evaluation input).'
+
+
 def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) -> None:
     if fact.construct in _TRAJECTORY_HOOKS:
         item.agent_trajectory = _frame_poses(episode, fact) or None
@@ -536,6 +670,8 @@ def fact_to_items(
             paired_item_id=paired,
             displacement_event=fact.displacement_event,
             difficulty=(fact.extra or {}).get('k'),
+            image_roles=infer_image_roles(fact) or None,
+            context=_slide_context(fact) or None,
         )
         _attach_schema_hooks(episode, fact, item)
         items.append(item)

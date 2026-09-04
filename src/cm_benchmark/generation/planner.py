@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
@@ -10,9 +11,15 @@ from cm_benchmark.generation.constructs import (
     AHEAD_HALF_WIDTH_FOV,
     AHEAD_HALF_WIDTH_FULL,
     EGO_DIRECTION_OPTIONS,
+    ID_ENCODE_FOV_MIN_BBOX_AREA,
+    ID_ENCODE_FOV_MIN_SIDE,
+    ID_ENCODE_FOV_MIN_VISIBLE_PIXELS,
     MIRRORED_LR,
     OPPOSITE,
     ORTHOGONAL,
+    QUERY_FOV_MIN_BBOX_AREA,
+    QUERY_FOV_MIN_SIDE,
+    QUERY_FOV_MIN_VISIBLE_PIXELS,
     find_ego_edge,
     fov_metrics_ok,
     humanize_receptacle,
@@ -64,6 +71,32 @@ def _img(step: Optional[dict]) -> list[str]:
         return []
     p = step.get('image_path')
     return [p] if p else []
+
+
+def merge_role_images(
+    pairs: Sequence[tuple[Sequence[str], str]],
+) -> tuple[list[str], list[str]]:
+    """Dedup image paths in order; merge role labels when the same path repeats.
+
+    ``pairs`` is ``[(paths, role), ...]``. Returns ``(paths, roles)`` aligned.
+    """
+    paths: list[str] = []
+    roles: list[str] = []
+    index: dict[str, int] = {}
+    for imgs, role in pairs:
+        label = str(role or '').strip() or 'view'
+        for p in imgs:
+            if not p:
+                continue
+            if p in index:
+                i = index[p]
+                if label not in roles[i]:
+                    roles[i] = f'{roles[i]} + {label}'
+            else:
+                index[p] = len(paths)
+                paths.append(p)
+                roles.append(label)
+    return paths, roles
 
 
 def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
@@ -215,16 +248,35 @@ def _referring_disambiguator(
 
 
 def _distinguishable_encoding_sighting(
-    episode: dict, step_idx: int, obj_id: str
+    episode: dict,
+    step_idx: int,
+    obj_id: str,
+    *,
+    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
+    min_side: float = QUERY_FOV_MIN_SIDE,
+    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
 ) -> bool:
     """Object must be clearly visible at encode (metrics + ego edge), not just listed."""
     step = step_by_index(episode, int(step_idx))
     if step is None:
         return False
     odata = (step.get('visible_objects') or {}).get(obj_id)
-    if not fov_metrics_ok(odata):
+    if not fov_metrics_ok(
+        odata,
+        min_bbox_area=min_bbox_area,
+        min_side=min_side,
+        min_visible_pixels=min_visible_pixels,
+    ):
         return False
     return find_ego_edge(step, obj_id) is not None
+
+
+# Soft FOV kwargs for invisible-displacement prop encoding (not landmark QUERY bar).
+_ID_ENCODE_FOV = dict(
+    min_bbox_area=ID_ENCODE_FOV_MIN_BBOX_AREA,
+    min_side=ID_ENCODE_FOV_MIN_SIDE,
+    min_visible_pixels=ID_ENCODE_FOV_MIN_VISIBLE_PIXELS,
+)
 
 
 def _ego_label_at(
@@ -338,11 +390,20 @@ def plan_spatial_working_memory(
 
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
+    # Taxonomy lists both relation and count. Relation used to fill ``max_items``
+    # and return early, so recall_count never ran. Reserve count slots when
+    # the budget allows more than one item.
+    count_budget = 0 if max_items < 2 else max(1, max_items // 3)
+    relation_budget = max_items - count_budget
 
     for step in episode.get('steps') or []:
+        if len(out) >= relation_budget:
+            break
         step_idx = int(step['step'])
         non_vis = step.get('non_visible_objects') or {}
         for obj_id, mem in non_vis.items():
+            if len(out) >= relation_budget:
+                break
             if obj_id in displaced:
                 continue
             # Encode at last distinguishable sighting, not last FOV scrape.
@@ -428,12 +489,14 @@ def plan_spatial_working_memory(
                     },
                 )
             )
-            if len(out) >= max_items:
-                return out
 
-    # Optional count / load mode when category counts are computable from GT
+    # Count / load mode (taxonomy: "How many {objects} have you seen so far?").
+    # Uses leftover budget, including slots reserved above when max_items >= 2.
     if len(out) < max_items:
+        seen_cats: set[str] = set()
         for step in episode.get('steps') or []:
+            if len(out) >= max_items:
+                break
             step_idx = int(step['step'])
             if step_idx < min_delay:
                 continue
@@ -443,9 +506,18 @@ def plan_spatial_working_memory(
                 if int(s['step']) <= step_idx
                 for oid, odata in (s.get('visible_objects') or {}).items()
             }
-            for cat in sorted(categories):
-                n = _count_category_seen(episode, cat, step_idx)
-                if n < 1:
+            # Prefer multi-instance categories (load); skip trivial n=1.
+            ranked = sorted(
+                (
+                    (_count_category_seen(episode, cat, step_idx), cat)
+                    for cat in categories
+                ),
+                key=lambda pair: (-pair[0], pair[1]),
+            )
+            for n, cat in ranked:
+                if len(out) >= max_items:
+                    break
+                if n < 2 or cat in seen_cats:
                     continue
                 answer = str(n)
                 off1 = str(max(0, n - 1))
@@ -499,8 +571,7 @@ def plan_spatial_working_memory(
                         },
                     )
                 )
-                if len(out) >= max_items:
-                    return out
+                seen_cats.add(cat)
                 break  # one count item per query step
     return out
 
@@ -514,6 +585,40 @@ def _is_floor_receptacle(receptacle_id: Optional[str]) -> bool:
 
 # Floor destinations need a nearby distinguishable landmark for the question cue.
 FLOOR_ANCHOR_RADIUS_M = 1.2
+
+# Survey direction/distance must stay allocentric: if the agent stands at the
+# source landmark, "goal relative to source" collapses to "goal relative to me".
+SURVEY_MIN_AGENT_SOURCE_DIST_M = 2.0
+
+# Route-knowledge: snap landmarks onto the walked path with a slightly larger
+# radius than the default 1.5 m so room-scale furniture near the trajectory
+# still becomes an endpoint; MC sequence length caps stay explicit (not R2R).
+ROUTE_LANDMARK_SNAP_M = 2.5
+ROUTE_MAX_SUBPATH_NODES = 32
+ROUTE_MAX_TURN_ARROWS = 16
+
+
+def _agent_near_landmark(
+    episode: dict,
+    landmark_pos,
+    steps: Sequence[Optional[int]],
+    *,
+    min_dist_m: float = SURVEY_MIN_AGENT_SOURCE_DIST_M,
+) -> bool:
+    """True if agent XZ is within ``min_dist_m`` of the landmark at any step."""
+    sp = xyz_as_dict(landmark_pos)
+    if sp is None:
+        return False
+    for t in steps:
+        if t is None:
+            continue
+        pos, _ = agent_pose_at_step(episode, int(t))
+        ap = xyz_as_dict(pos)
+        if ap is None:
+            continue
+        if math.hypot(sp['x'] - ap['x'], sp['z'] - ap['z']) < float(min_dist_m):
+            return True
+    return False
 
 
 def _xz_from_any(pos) -> Optional[tuple[float, float]]:
@@ -622,20 +727,33 @@ def _object_hidden_through(
 
 
 def _last_distinguishable_sighting(
-    episode: dict, obj_id: str, before_step: int
+    episode: dict,
+    obj_id: str,
+    before_step: int,
+    *,
+    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
+    min_side: float = QUERY_FOV_MIN_SIDE,
+    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
 ) -> Optional[int]:
     """Latest step < before_step where the object is FOV-distinguishable.
 
     Uses ``_distinguishable_encoding_sighting`` (size metrics + ego edge), not
     merely membership in ``visible_objects`` / ``last_seen_step`` (which can be
-    a weak scrape of a large mesh).
+    a weak scrape of a large mesh). Pass softer thresholds for ID props.
     """
     best = None
     for step in episode.get('steps') or []:
         si = int(step['step'])
         if si >= int(before_step):
             break
-        if _distinguishable_encoding_sighting(episode, si, obj_id):
+        if _distinguishable_encoding_sighting(
+            episode,
+            si,
+            obj_id,
+            min_bbox_area=min_bbox_area,
+            min_side=min_side,
+            min_visible_pixels=min_visible_pixels,
+        ):
             best = si
     return best
 
@@ -913,10 +1031,14 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
         at_t = ev.get('at_timestep')
         if not obj_id or at_t is None:
             continue
-        enc_idx = _last_distinguishable_sighting(episode, obj_id, int(at_t))
+        enc_idx = _last_distinguishable_sighting(
+            episode, obj_id, int(at_t), **_ID_ENCODE_FOV
+        )
         if enc_idx is None:
             continue
-        if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
+        if not _distinguishable_encoding_sighting(
+            episode, enc_idx, obj_id, **_ID_ENCODE_FOV
+        ):
             continue
         if not _object_visible_before(episode, obj_id, int(at_t)):
             continue
@@ -939,7 +1061,7 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
             if not partner_id or not _partner_event(episode, ev):
                 continue
             partner_enc = _last_distinguishable_sighting(
-                episode, partner_id, int(at_t)
+                episode, partner_id, int(at_t), **_ID_ENCODE_FOV
             )
             if partner_enc is None:
                 continue
@@ -1350,12 +1472,13 @@ def select_landmark_candidates(
 
 
 def _scene_min_hop_count(
-    graph, landmark_nodes: list[str], *, floor: int = 3, default: int = 4, cap: int = 8
+    graph, landmark_nodes: list[str], *, floor: int = 2, default: int = 4, cap: int = 8
 ) -> int:
     """Calibrate min hop count from this scene's landmark-pair shortest paths.
 
     Uses ~25th percentile of pairwise lengths, capped so MC routes stay short
-    (not R2R's fixed 4–6, and not the house-wide diameter).
+    (not R2R's fixed 4–6, and not the house-wide diameter). Floor is 2 so
+    short but real walks in compact houses are not rejected by a hard 3–4.
     """
     import networkx as nx
 
@@ -1391,6 +1514,7 @@ def _build_landmark_node_map(
     landmarks: list[dict],
     *,
     candidate_nodes: Optional[Sequence[str]] = None,
+    max_distance_m: Optional[float] = None,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, dict]]:
     """Map landmark_id -> snapped graph node (naming vs math stay separate).
 
@@ -1409,7 +1533,9 @@ def _build_landmark_node_map(
     for lm in landmarks:
         oid = lm['obj_id']
         if candidate_nodes is not None:
-            nid = snap_to_nearest_of(graph, lm['position'], candidate_nodes)
+            nid = snap_to_nearest_of(
+                graph, lm['position'], candidate_nodes, max_distance_m=max_distance_m
+            )
         else:
             nid = snap_landmark_to_graph(graph, lm['position'])
         if nid is None:
@@ -1479,7 +1605,10 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
 
     landmarks = select_landmark_candidates(episode)
     id_to_node, node_to_name, meta = _build_landmark_node_map(
-        graph, landmarks, candidate_nodes=traversed
+        graph,
+        landmarks,
+        candidate_nodes=traversed,
+        max_distance_m=ROUTE_LANDMARK_SNAP_M,
     )
     if len(id_to_node) < 2:
         return [
@@ -1492,8 +1621,22 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
 
     rot = _rotation_deg(episode)
     min_hops = _scene_min_hop_count(graph, list(id_to_node.values()))
-    # Candidate pairs: landmarks whose nodes appear in order on the walk.
-    ordered_ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
+    # Order pairs by walk appearance so source→goal follows the experienced path
+    # (salience order alone often tries the reverse and rejects every pair).
+    def _walk_index(oid: str) -> int:
+        try:
+            return traversed.index(id_to_node[oid])
+        except ValueError:
+            return 10**9
+
+    ordered_ids = sorted(
+        [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node],
+        key=lambda oid: (
+            _walk_index(oid),
+            int(meta[oid].get('first_seen_step') or 0),
+            oid,
+        ),
+    )
     out: list[PlannedFact] = []
     for i, src_id in enumerate(ordered_ids):
         for goal_id in ordered_ids[i + 1 :]:
@@ -1513,7 +1656,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             if hops < min_hops:
                 continue
             # Keep MC routes short: decision-point sequences, not full-episode dumps
-            if len(sub) > 25:
+            if len(sub) > ROUTE_MAX_SUBPATH_NODES:
                 continue
             if not was_traversed(sub, traversed):
                 continue
@@ -1534,7 +1677,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             if not any((t.get('label') or 'straight') != 'straight' for t in turns):
                 continue
             answer = format_turn_sequence(turns)
-            if not answer or answer.count('→') > 12:
+            if not answer or answer.count('→') > ROUTE_MAX_TURN_ARROWS:
                 continue
             pool = [answer]
             seeds: list[str] = []
@@ -1560,7 +1703,18 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             t1 = int(meta[goal_id]['first_seen_step'])
             if t1 < t0:
                 t0, t1 = t1, t0
-            images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+            images, image_roles = merge_role_images(
+                [
+                    (
+                        _img(step_by_index(episode, int(meta[src_id]['first_seen_step']))),
+                        f'source · {source}',
+                    ),
+                    (
+                        _img(step_by_index(episode, int(meta[goal_id]['first_seen_step']))),
+                        f'goal · {goal}',
+                    ),
+                ]
+            )
             out.append(
                 PlannedFact(
                     construct='route_knowledge',
@@ -1590,6 +1744,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'turn_labels': [t.get('label') for t in turns],
                         'object_type': goal,
                         'frame_of_reference': 'egocentric',
+                        'image_roles': image_roles,
                     },
                 )
             )
@@ -1777,7 +1932,14 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             return
         t0 = int(meta[src_id]['first_seen_step'])
         t1 = int(meta[goal_id]['first_seen_step'])
-        images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+        if _agent_near_landmark(episode, meta[src_id]['position'], [t0, t1]):
+            return
+        images, image_roles = merge_role_images(
+            [
+                (_img(step_by_index(episode, t0)), f'source · {source}'),
+                (_img(step_by_index(episode, t1)), f'goal · {goal}'),
+            ]
+        )
         out.append(
             PlannedFact(
                 construct='survey_based_route_planning',
@@ -1806,6 +1968,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'distance_label': distance,
                     'object_type': goal,
                     'frame_of_reference': 'allocentric',
+                    'image_roles': image_roles,
                 },
             )
         )
@@ -1868,7 +2031,14 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         condition = f'the {object_type_from_id(pid)} is closed'
         t0 = int(meta[src_id]['first_seen_step'])
         t1 = int(meta[goal_id]['first_seen_step'])
-        images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+        if _agent_near_landmark(episode, meta[src_id]['position'], [t0, t1]):
+            return
+        images, image_roles = merge_role_images(
+            [
+                (_img(step_by_index(episode, t0)), f'source · {source}'),
+                (_img(step_by_index(episode, t1)), f'goal · {goal}'),
+            ]
+        )
         out.append(
             PlannedFact(
                 construct='survey_based_route_planning',
@@ -1897,6 +2067,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'path_nodes': detour,
                     'object_type': goal,
                     'frame_of_reference': 'allocentric',
+                    'image_roles': image_roles,
                 },
             )
         )
@@ -2024,18 +2195,23 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                         _math.atan2(pos_b['x'] - pos_a['x'], pos_b['z'] - pos_a['z'])
                     )
                     shift = abs((imag_h - pose['heading'] + 180) % 360 - 180)
-                images = (
-                    _img(step_by_index(episode, a['first_seen_step']))
-                    + _img(step_by_index(episode, b['first_seen_step']))
-                    + _img(step_by_index(episode, c['first_seen_step']))
+                images = merge_role_images(
+                    [
+                        (
+                            _img(step_by_index(episode, a['first_seen_step'])),
+                            f"A · stand here ({a['name']})",
+                        ),
+                        (
+                            _img(step_by_index(episode, b['first_seen_step'])),
+                            f"B · face toward ({b['name']})",
+                        ),
+                        (
+                            _img(step_by_index(episode, c['first_seen_step'])),
+                            f"C · locate ({c['name']})",
+                        ),
+                    ]
                 )
-                # Deduplicate image paths while preserving order
-                seen_paths = set()
-                uniq_images = []
-                for p in images:
-                    if p not in seen_paths:
-                        seen_paths.add(p)
-                        uniq_images.append(p)
+                uniq_images, image_roles = images
                 out.append(
                     PlannedFact(
                         construct='perspective_taking',
@@ -2070,6 +2246,7 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                             'landmark_c_id': c['obj_id'],
                             'perspective_shift_magnitude': shift,
                             'frame_of_reference': 'allocentric',
+                            'image_roles': image_roles,
                         },
                     )
                 )
