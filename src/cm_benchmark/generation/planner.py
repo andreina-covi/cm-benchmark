@@ -14,10 +14,12 @@ from cm_benchmark.generation.constructs import (
     angle_relation_to_ego_label,
     find_ego_edge,
     find_inferred_edge,
+    fov_metrics_ok,
     humanize_receptacle,
     imagined_perspective_label,
     net_pose_changed,
     object_type_from_id,
+    resolve_referring_disambiguator,
     step_by_index,
     xyz_as_dict,
 )
@@ -200,17 +202,47 @@ def _object_visible_before(episode: dict, obj_id: str, at_t: int) -> bool:
     return False
 
 
+def _referring_disambiguator(
+    episode: dict, step_idx: int, obj_id: str
+) -> Optional[str]:
+    """'' if unique; phrase if duplicate+landmark; None to skip candidate."""
+    step = step_by_index(episode, int(step_idx))
+    if step is None:
+        return None
+    return resolve_referring_disambiguator(
+        step, obj_id, _agent_pose_dict(episode, int(step_idx))
+    )
+
+
+def _distinguishable_encoding_sighting(
+    episode: dict, step_idx: int, obj_id: str
+) -> bool:
+    """Object must be clearly visible at encode (metrics + ego edge), not just listed."""
+    step = step_by_index(episode, int(step_idx))
+    if step is None:
+        return False
+    odata = (step.get('visible_objects') or {}).get(obj_id)
+    if not fov_metrics_ok(odata):
+        return False
+    return find_ego_edge(step, obj_id) is not None
+
+
 def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     out = []
     for step in episode.get('steps') or []:
         step_idx = int(step['step'])
         visible = step.get('visible_objects') or {}
         for obj_id in visible:
+            if not fov_metrics_ok(visible.get(obj_id)):
+                continue
             edge = find_ego_edge(step, obj_id)
             if not edge:
                 continue
             label = angle_relation_to_ego_label(edge.get('angle_relation'))
             if not label or label not in EGO_DIRECTION_OPTIONS:
+                continue
+            disambiguator = _referring_disambiguator(episode, step_idx, obj_id)
+            if disambiguator is None:
                 continue
             pool, seeds = _ego_pool_with_diagnostics(label)
             if len(pool) < 2 or label not in pool:
@@ -233,6 +265,7 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
                         'object_type': object_type_from_id(obj_id, visible),
                         'angle_relation': edge.get('angle_relation'),
                         'frame_of_reference': 'egocentric',
+                        'disambiguator': disambiguator,
                     },
                 )
             )
@@ -290,6 +323,8 @@ def plan_spatial_working_memory(
             enc = step_by_index(episode, enc_idx)
             if enc is None:
                 continue
+            if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
+                continue
             # Answer only from encoding-step ego edge (not inferred-now)
             edge = find_ego_edge(enc, obj_id)
             if not edge:
@@ -319,6 +354,10 @@ def plan_spatial_working_memory(
             if len(pool) < 2:
                 continue
 
+            disambiguator = _referring_disambiguator(episode, enc_idx, obj_id)
+            if disambiguator is None:
+                continue
+
             out.append(
                 PlannedFact(
                     construct='spatial_working_memory',
@@ -339,6 +378,7 @@ def plan_spatial_working_memory(
                         'k': k,
                         'template_mode': 'recall_relation',
                         'frame_of_reference': 'egocentric',
+                        'disambiguator': disambiguator,
                     },
                 )
             )
@@ -762,6 +802,9 @@ def _try_ego_direction_fact(
     answer_source: list[str],
     extra_fields: dict,
 ) -> Optional[PlannedFact]:
+    disambiguator = _referring_disambiguator(episode, enc_idx, obj_id)
+    if disambiguator is None:
+        return None
     answer_dir, dir_pool, dir_seeds = _ego_pool_from_specs(episode, specs, query_step)
     if not answer_dir or answer_dir not in dir_pool or len(dir_pool) < 2:
         return None
@@ -782,6 +825,7 @@ def _try_ego_direction_fact(
             'template_mode': template_mode,
             'frame_of_reference': 'egocentric',
             'k': max(1, int(query_step) - int(at_t)),
+            'disambiguator': disambiguator,
             **extra_fields,
         },
     )
@@ -810,6 +854,8 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
             continue
         enc_idx = _last_distinguishable_sighting(episode, obj_id, int(at_t))
         if enc_idx is None:
+            continue
+        if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
             continue
         if not _object_visible_before(episode, obj_id, int(at_t)):
             continue
@@ -1043,6 +1089,8 @@ def plan_spatial_updating(
                 continue
             if not _object_static_between(episode, obj_id, enc_idx, step_idx):
                 continue
+            if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
+                continue
             # Queried object must NOT be visible at final pose
             if obj_id in (step.get('visible_objects') or {}):
                 continue
@@ -1078,6 +1126,9 @@ def plan_spatial_updating(
                 seeds.append(_mode_seed('pre_move_bearing', pre))
             if len(pool) < 2:
                 continue
+            disambiguator = _referring_disambiguator(episode, enc_idx, obj_id)
+            if disambiguator is None:
+                continue
             seen_answers[key] = label
             out.append(
                 PlannedFact(
@@ -1100,6 +1151,7 @@ def plan_spatial_updating(
                         'pre_move_label': pre,
                         'k': k,
                         'frame_of_reference': 'egocentric',
+                        'disambiguator': disambiguator,
                     },
                 )
             )
@@ -1983,6 +2035,14 @@ def plan_episode(
     su_min_delay: int = 2,
     su_max_delay: Optional[int] = None,
 ) -> list[PlannedFact]:
+    from cm_benchmark.generator.visibility_filters import (
+        apply_question_visibility_to_episode,
+    )
+
+    # Draft-time safety net: drop tiny/indistinct FOV blobs even if the episode
+    # JSON was exported with question_visibility all-null / no joblib model.
+    episode = apply_question_visibility_to_episode(episode, inplace=False)
+
     keys = constructs or list(PLANNERS.keys())
     facts: list[PlannedFact] = []
     for key in keys:

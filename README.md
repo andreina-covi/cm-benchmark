@@ -155,11 +155,23 @@ Tests expect `src` on the path (see `pyproject.toml` → `pythonpath = ["src"]`)
 SPOC exports **named non-structural** FOV detections with visibility metrics
 (`obj-distance`, `visible-pixels`, `bbox-area`, `min-side`, `occupancy-ratio`).
 Tiny or barely filled blobs may still appear. For Q&A, `Ai2ThorNavGenerator`
-can drop them via tunable `question_visibility` (defaults **off** until you set them).
+drops them via `question_visibility` hard thresholds that are **on by default**
+(even when you do not pass a `visibility_filter.joblib`). Drafting also re-applies
+the same filter as a safety net on already-exported episodes.
 
-This path is **optional tooling** around the main product (exported CSVs → GT → questions).
-You can set hard thresholds by hand, or train a DecisionTree and filter with
-``predict_proba`` + calibrated low/high bands (preferred).
+Default keep rules (override per episode / CLI as needed):
+
+| Key | Default |
+|-----|---------|
+| `min_bbox_area` | `100` |
+| `min_side` | `8` |
+| `min_visible_pixels` | `40` |
+| `min_occupancy_ratio` | off (`null`) |
+| `max_obj_distance` | off (`null`) |
+
+Pass `question_visibility=False` to disable hard thresholds. Prefer a trained
+DecisionTree (`visibility_model_path=...`) when available — the model path wins
+over hard thresholds at export time.
 
 ```text
 navigation-*.csv
@@ -174,7 +186,7 @@ navigation-*.csv
            Ai2ThorNavGenerator(visibility_model_path=...)
 ```
 
-Hard AND thresholds (``question_visibility``) remain available when no model is set.
+Hard AND thresholds (``question_visibility``) are the default when no model is set.
 
 ```text
 navigation-*.csv
@@ -358,7 +370,7 @@ Walls / floors / ceilings / rooms are excluded from nav FOV edges (room membersh
 
 **Visibility split**
 
-- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame). Collection may include tiny/occluded blobs; Q&A FOV filtering uses tunable `question_visibility` on `Ai2ThorNavGenerator` (see [Visibility filtering & threshold calibration](#visibility-filtering--threshold-calibration)).
+- **Navigation detections** → `visible_objects` / spatial edges (what is in the RGB frame). Collection may include tiny/occluded blobs; Q&A FOV filtering uses `question_visibility` defaults on `Ai2ThorNavGenerator` (and again at draft time) — see [Visibility filtering & threshold calibration](#visibility-filtering--threshold-calibration).
 - **`object_state.in_camera_fov` + pose** → displacement tracks and true pose after moves (catalog poses can be stale).
 
 ---
@@ -478,7 +490,7 @@ python -m cm_benchmark.generation.draft_items \
 | Style | Form |
 |-------|------|
 | `concise` | Short construct template |
-| `verbose` | GT-grounded scene preamble (other objects first), then the same query — **must not leak the answer** |
+| `verbose` | Optional GT-grounded preamble + same query — **must not leak the answer**. For `spatial_working_memory` / `invisible_displacement` only, verbose may also name other static scene objects **without** direction/distance/relation (taxonomy shared_rules exception). |
 
 Paired items share `answer` / `answer_source` and link via `paired_item_id`.
 

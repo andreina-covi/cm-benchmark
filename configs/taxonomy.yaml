@@ -26,6 +26,22 @@ analysis_breakdowns: [per_construct, "per_construct_x_frame_of_reference"]
 shared_rules:
   - question text names only the queried object(s) and asks the relation;
     it must never state the answer, a direction, or any move/event
+  # EXCEPTION (spatial_working_memory | invisible_displacement, verbose only):
+    # may additionally name other static, non-queried objects present in the
+    # scene for verbosity/robustness testing (e.g. "you can see a Window, a
+    # CounterTop, a Chair, and a Fridge"). Named objects must NEVER be paired
+    # with a direction, distance, or any relation to the queried object or to
+    # each other — naming without relating. This tests tolerance to added scene
+    # detail, not distractor resistance; see invisible_displacement
+    # difficulty_axis (verbosity) below.
+  # EXCEPTION (any construct with duplicate-label objects): the queried
+    # object's name may be extended with a disambiguating reference to ONE
+    # other, already-unambiguous object (e.g. "the Chair close to the
+    # Bread"), when multiple instances of the same category are visible.
+    # This is a referring expression, not the tested relation — it must
+    # never state the viewer-relative direction being asked about. If no
+    # unique disambiguator exists, the object is excluded from query
+    # candidates entirely.
   - all spatial facts come from frames + CSV metadata, never from text
   - every item has a non-null answer_source tracing to metadata field(s)
   - frame_of_reference must be unambiguous (stated or fixed by construct)
@@ -107,7 +123,10 @@ class_2:
         (destination landmark or partner object's prior place); without that cue
         the item is unanswerable from the frames alone.
       what_moves: object (while hidden)
-      difficulty_axis: [relation_shift_magnitude]  # same_side | flipped_side at query pose
+      difficulty_axis: [delay_steps, load_n_objects, verbosity]  # verbosity:
+        concise | verbose — verbose names other static scene objects (no
+        relations) per the shared_rules exception; report separately from
+        delay/load, don't pool with them
       answer_type:
         - recall_direction: egocentric direction at query pose; question names the destination cue
         - swap: egocentric direction; question names a previously seen partner object as the spatial anchor

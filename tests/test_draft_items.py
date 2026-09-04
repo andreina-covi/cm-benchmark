@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cm_benchmark.generator.ai2thor_nav_generator import Ai2ThorNavGenerator
-from cm_benchmark.generation.constructs import select_template
+from cm_benchmark.generation.constructs import object_type_from_id, select_template
 from cm_benchmark.generation.pipeline import draft_items_for_episode
 from cm_benchmark.generation.planner import plan_episode
 from cm_benchmark.generation.templates import _core_question, build_verbose_preamble
@@ -469,6 +469,42 @@ def test_verbose_preamble_does_not_leak_answer(tiny_episode):
     assert fact.answer_label.lower() not in preamble.lower()
 
 
+def test_verbose_preamble_omits_spatial_relations(delayed_episode):
+    """SWM/ID verbose may name co-visible types — never ego bearings/relations."""
+    facts = plan_episode(
+        delayed_episode, constructs=['spatial_working_memory'], max_per_construct=1
+    )
+    if not facts or facts[0].status != 'ok':
+        pytest.skip('no SWM fact on delayed episode')
+    fact = facts[0]
+    preamble = build_verbose_preamble(delayed_episode, fact).lower()
+    assert 'you can see' in preamble or 'also visible' in preamble
+    assert '(to your' not in preamble
+    assert 'ahead of you' not in preamble
+    assert 'behind you' not in preamble
+    assert 'to your left' not in preamble
+    assert 'to your right' not in preamble
+
+
+def test_verbose_scene_detail_scoped_to_taxonomy_exception(tiny_episode):
+    """Class-1 verbose must not dump other object names (shared_rules default)."""
+    facts = plan_episode(tiny_episode, constructs=['egocentric_encoding'], max_per_construct=1)
+    fact = facts[0]
+    if fact.status != 'ok':
+        pytest.skip('no egocentric fact')
+    step = tiny_episode['steps'][fact.query_step]
+    other_types = [
+        object_type_from_id(oid, {oid: odata}).lower()
+        for oid, odata in (step.get('visible_objects') or {}).items()
+        if oid != fact.queried_object_id
+    ]
+    preamble = build_verbose_preamble(tiny_episode, fact).lower()
+    assert 'you can see' not in preamble
+    assert 'also visible' not in preamble
+    for typ in other_types:
+        assert typ not in preamble, f'unexpected other-object name {typ!r} in class-1 verbose'
+
+
 def test_core_question_covers_active_template_placeholders():
     """Guard against KeyError when formatting templates."""
     from cm_benchmark.generation.planner import PlannedFact
@@ -506,15 +542,103 @@ def test_core_question_covers_active_template_placeholders():
                     'condition': 'the door is closed',
                     'k': 3,
                     'template_mode': mode,
+                    'disambiguator': '',
                 },
             )
             q = _core_question(fact)
             assert '{object' not in q
             assert '{k}' not in q
+            assert '{disambiguator}' not in q
             assert '{new_location}' not in q
             assert '{other_object_type}' not in q
             assert '{A}' not in q and '{C}' not in q
             assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q or 'Armchair' in q
+            # Unique category → no referring phrase / no double spaces around type.
+            if '{disambiguator}' in tmpl:
+                assert 'Cup  ' not in q
+                assert 'close to' not in q.lower()
+
+
+def test_core_question_includes_disambiguator_only_when_set():
+    from cm_benchmark.generation.planner import PlannedFact
+
+    fact = PlannedFact(
+        construct='egocentric_encoding',
+        status='ok',
+        query_step=0,
+        encoding_step=0,
+        queried_object_id='Chair|1',
+        answer_label='ahead of you',
+        extra={
+            'object_type': 'Chair',
+            'disambiguator': ' close to the Bread',
+        },
+    )
+    q = _core_question(fact)
+    assert 'the Chair close to the Bread relative to you' in q
+
+
+def test_resolve_referring_disambiguator_unique_and_duplicate():
+    from cm_benchmark.generation.constructs import resolve_referring_disambiguator
+
+    def _vis(cat, pos, *, area=2000, side=40, pix=500):
+        return {
+            'category': cat,
+            'position': pos,
+            'bbox_area': area,
+            'min_side': side,
+            'visible_pixels': pix,
+        }
+
+    unique_step = {
+        'visible_objects': {
+            'Cup|1': _vis('Cup', [0.0, 0.0, 1.0]),
+            'Bread|1': _vis('Bread', [0.5, 0.0, 1.0]),
+        }
+    }
+    assert resolve_referring_disambiguator(unique_step, 'Cup|1') == ''
+
+    # Clear margin: Chair|1 next to Bread, Chair|2 far away
+    dup_step = {
+        'visible_objects': {
+            'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+            'Chair|2': _vis('Chair', [3.0, 0.0, 1.0]),
+            'Bread|1': _vis('Bread', [0.1, 0.0, 1.0]),
+        }
+    }
+    phrase = resolve_referring_disambiguator(
+        dup_step, 'Chair|1', {'heading': 0.0}
+    )
+    assert phrase == ' close to the Bread'
+
+    # Tiny margin only — reject (sibling almost as close)
+    tight = {
+        'visible_objects': {
+            'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+            'Chair|2': _vis('Chair', [0.4, 0.0, 1.0]),
+            'Bread|1': _vis('Bread', [0.1, 0.0, 1.0]),
+        }
+    }
+    assert resolve_referring_disambiguator(tight, 'Chair|1') is None
+
+    # Landmark too small in FOV — reject
+    tiny_lm = {
+        'visible_objects': {
+            'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+            'Chair|2': _vis('Chair', [3.0, 0.0, 1.0]),
+            'Bread|1': _vis('Bread', [0.1, 0.0, 1.0], area=50, side=5, pix=20),
+        }
+    }
+    assert resolve_referring_disambiguator(tiny_lm, 'Chair|1') is None
+
+    # No unique landmark → exclude
+    bare_dups = {
+        'visible_objects': {
+            'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+            'Chair|2': _vis('Chair', [2.0, 0.0, 1.0]),
+        }
+    }
+    assert resolve_referring_disambiguator(bare_dups, 'Chair|1') is None
 
 
 @pytest.mark.parametrize(
@@ -535,13 +659,21 @@ def test_trajectory_hooks_are_scoped_to_item_frames(delayed_episode, construct):
     poses = item.get('agent_trajectory')
     assert poses, 'expected pose per item frame'
     assert len(poses) == len(item['image_paths'])
-    assert [p.get('image_path') for p in poses] == item['image_paths']
     assert len(poses) <= len(delayed_episode['agent_trajectory'])
+    for pose in poses:
+        assert set(pose) <= {'step', 'x', 'z', 'heading'}
+        assert {'x', 'z', 'heading'} <= set(pose)
+        assert 'position' not in pose and 'rotation' not in pose
+        assert 'image_path' not in pose
 
     actions = item.get('agent_actions') or []
     steps = [a['step'] for a in actions]
     assert all(item['encoding_step'] < s <= item['query_step'] for s in steps)
     assert len(actions) <= item['query_step'] - item['encoding_step']
+    for act in actions:
+        assert 'action' in act
+        assert set(act) <= {'step', 'action', 'degrees'}
+        assert 'position' not in act and 'rotation' not in act
 
 
 def test_route_knowledge_does_not_leak_action_list(folder_episode):

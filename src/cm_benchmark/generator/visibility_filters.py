@@ -2,16 +2,19 @@
 
 SPOC navigation rows export visibility metrics. Q&A FOV filtering can use:
 
-1. Optional hard thresholds (``question_visibility``) — all default off.
+1. Hard thresholds (``question_visibility``) — **on by default** so tiny /
+   barely-visible blobs are dropped even when no joblib model is configured.
 2. A trained DecisionTree bundle (``visibility_filter.joblib``) via
    ``predict_proba`` + probability bands (preferred when a model exists).
 
+Pass ``question_visibility=False`` to disable hard thresholds entirely.
 The model path is configuration, not code: replace the ``.joblib`` file to
 update filtering without changing this module.
 """
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,13 +60,23 @@ LABEL_AMBIGUOUS = 'ambiguo'
 DEFAULT_PROBA_LOW = 0.3
 DEFAULT_PROBA_HIGH = 0.7
 
+# Built-in keep rules when no visibility_filter.joblib is provided.
+# Tuned to drop speck detections (Potato/Wrench ~10px) while keeping furniture.
 DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
-    'min_bbox_area': None,
-    'min_side': None,
+    'min_bbox_area': 100.0,
+    'min_side': 8.0,
     'min_occupancy_ratio': None,
-    'min_visible_pixels': None,
+    'min_visible_pixels': 40.0,
     'max_obj_distance': None,
 }
+
+
+def _all_none_visibility(thresholds: Mapping[str, Any]) -> bool:
+    """True if mapping only disables criteria (legacy export / explicit nulls)."""
+    vals = [thresholds.get(k) for k in QUESTION_VISIBILITY_KEYS]
+    if not any(k in thresholds for k in QUESTION_VISIBILITY_KEYS):
+        return False
+    return all(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals)
 
 
 def _finite(val) -> bool:
@@ -154,11 +167,27 @@ def metrics_from_nav_row(row: Mapping[str, Any], *, frame_w: int = 396, frame_h:
 
 
 def normalize_question_visibility_thresholds(
-    thresholds: Optional[Mapping[str, Any]] = None,
+    thresholds: Optional[Mapping[str, Any] | bool] = None,
 ) -> dict[str, Optional[float]]:
+    """Resolve Q&A FOV thresholds.
+
+    - ``None`` / omitted → built-in defaults (filter **on**)
+    - ``False`` → all criteria off (legacy unfiltered behaviour)
+    - ``True`` → built-in defaults
+    - mapping → merge onto defaults; explicit ``null`` disables that criterion
+    - mapping of only nulls (legacy episode export) → restore defaults so
+      drafts still filter without a joblib model
+    """
+    if thresholds is False:
+        return {k: None for k in QUESTION_VISIBILITY_KEYS}
+    if thresholds is None or thresholds is True:
+        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+    if not isinstance(thresholds, Mapping):
+        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+    if _all_none_visibility(thresholds):
+        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+
     out = dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
-    if not thresholds:
-        return out
     aliases = {
         'min_bbox_side': 'min_side',
         'min_unoccluded_ratio': 'min_occupancy_ratio',
@@ -168,13 +197,10 @@ def normalize_question_visibility_thresholds(
     remapped = {}
     for k, v in thresholds.items():
         key = aliases.get(k, k)
-        if key is None:
+        if key is None or key not in QUESTION_VISIBILITY_KEYS:
             continue
         remapped[key] = v
-    for key in QUESTION_VISIBILITY_KEYS:
-        if key not in remapped:
-            continue
-        val = remapped[key]
+    for key, val in remapped.items():
         if val is None or (isinstance(val, float) and math.isnan(val)):
             out[key] = None
         else:
@@ -227,6 +253,58 @@ def passes_question_visibility_filter(
             return False
 
     return True
+
+
+def filter_visible_objects_map(
+    visible_objects: Optional[Mapping[str, Any]],
+    thresholds: Optional[Mapping[str, Any] | bool] = None,
+) -> dict[str, Any]:
+    """Drop detections that fail ``question_visibility`` (metrics already on values)."""
+    thr = normalize_question_visibility_thresholds(thresholds)
+    if not question_visibility_active(thr):
+        return dict(visible_objects or {})
+    kept: dict[str, Any] = {}
+    for oid, odata in (visible_objects or {}).items():
+        if not isinstance(odata, Mapping):
+            kept[oid] = odata
+            continue
+        metrics = {
+            'bbox_area': odata.get('bbox_area'),
+            'min_side': odata.get('min_side'),
+            'occupancy_ratio': odata.get('occupancy_ratio'),
+            'visible_pixels': odata.get('visible_pixels'),
+            'obj_distance': odata.get('obj_distance'),
+        }
+        if passes_question_visibility_filter(metrics, thr):
+            kept[oid] = odata
+    return kept
+
+
+def apply_question_visibility_to_episode(
+    episode: dict,
+    *,
+    thresholds: Optional[Mapping[str, Any] | bool] = None,
+    inplace: bool = False,
+) -> dict:
+    """Filter each step's ``visible_objects`` for Q&A drafting.
+
+    Uses ``thresholds`` if given, else episode ``question_visibility``, else
+    built-in defaults. Ensures drafts drop tiny blobs even when the episode
+    was exported without a visibility joblib / with all-null thresholds.
+    """
+    ep = episode if inplace else copy.deepcopy(episode)
+    if thresholds is None:
+        thr = normalize_question_visibility_thresholds(ep.get('question_visibility'))
+    else:
+        thr = normalize_question_visibility_thresholds(thresholds)
+    ep['question_visibility'] = dict(thr)
+    for step in ep.get('steps') or []:
+        if not isinstance(step, dict):
+            continue
+        step['visible_objects'] = filter_visible_objects_map(
+            step.get('visible_objects'), thr
+        )
+    return ep
 
 
 def classify_visibility_proba(

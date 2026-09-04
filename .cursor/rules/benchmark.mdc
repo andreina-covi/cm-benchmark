@@ -116,7 +116,15 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - Answers and answer_source are [CODE]-only from episode GT; an LLM may
   only paraphrase question text later (never change the answer).
 - Items may use concise or verbose question styles; verbose text must not
-  leak the answer.
+  leak the answer. Only SWM / invisible_displacement verbose may name other
+  static scene objects, and never with a spatial relation (naming without
+  relating — taxonomy shared_rules).
+- When multiple same-category objects are visible, the queried name may use a
+  referring disambiguator to one unique, clearly visible landmark only when
+  proximity margin is large enough to be obvious in the image (≥0.6 m and
+  ≥1.5× sibling distance); otherwise exclude the candidate. Unique categories
+  omit the phrase. Recalled / queried objects must also pass FOV size gates
+  at the encoding step (not merely appear in ``non_visible_objects`` memory).
 - Temporal items use online sequential wording (`{k} steps ago` / `now`); do not
   bundle a multi-image “time order” cue with the question.
 - Class 4 asks source→goal route recall (`route_knowledge` / `derive_turns`) or
