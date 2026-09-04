@@ -1,49 +1,61 @@
-# ============================================================
-# GENERATOR CONFIG — Invisible displacement  (Class 2: Spatial memory)
-# Discriminators: configs/taxonomy.yaml (single source of truth)
-# ============================================================
+# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
+# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+invisible_displacement:
+  class: 2
+  frame_of_reference: egocentric
+  definition: 'Track an object''s location after it is hidden AND relocated out of view (Piaget
+    Stage 6: the move itself is never witnessed, only inferred). The question MUST supply
+    a spatial cue naming where the object went (destination landmark or partner object''s
+    prior place); without that cue the item is unanswerable from the frames alone.
 
-construct_id: invisible_displacement
-class: 2
-frame_of_reference: egocentric
+    '
+  what_moves: object (while hidden)
+  difficulty_axis:
+  - relation_shift_magnitude
+  answer_type:
+  - recall_direction: egocentric direction at query pose; question names the destination cue
+  - swap: egocentric direction; question names a previously seen partner object as the spatial
+      anchor
+  required_temporal_fields:
+  - object_state_track
+  - displacement_event
+  - displacement_candidates
+  question_template:
+    recall_direction: While out of view, the {object_type} was moved onto {new_location}.
+      Where is it relative to you now?
+    swap: The {object_type} was moved to where the {other_object_type} used to be. Where is
+      the {object_type} relative to you now?
+  ground_truth_method: 'Exporter (e.g. SPOC) logs the hidden move plus trial-teleport distractor
+    poses (then restores). This repo computes egocentric labels from agent_pose@query_step
+    and world poses (chosen / from / candidate positions). Floor destinations are checked
+    per-instance, not rejected wholesale: if to_receptacle == Floor, search for a nearest_landmark
+    within FLOOR_ANCHOR_RADIUS (default 1.2m, calibrate per scene) of the object''s true final
+    position; reject only that specific candidate if none is found. {new_location} resolves
+    to either the receptacle name (non-Floor) or "the floor near the {landmark}" (Floor case)
+    — never a bare "Floor" cue. Swap items use a distinguishable partner object seen before
+    the swap instead — never both cue types in one question. Do not emit receptacle-name-only
+    or bare-Floor questions (no destination cue).
 
-task_description: >
-  Hidden relocation while the object is out of nav FOV. The question always
-  supplies a destination cue: a named receptacle landmark (direct) or a
-  previously seen partner object (swap). Answers are egocentric bearings at
-  the query pose, computed here from exported poses — never invented.
-  Do not ask receptacle names alone (unanswerable if the move was unwitnessed).
+    '
+  distractor_pattern:
+  - original_location
+  - nearby_receptacle
+  - salient_decoy_location
+  discriminators:
+  - queried object was distinguishable, then hidden, before it moved
+  - displacement_event.hidden_during == true
+  - queried object NOT in nav FOV on any shown frame from move through query_step t
+  - one draft item per displacement_events object row (a swap logs two rows → two items)
+  - question always names a destination cue (landmark OR partner object)
+  - 'direct move (moved_via != swap): destination cue is distinguishable in >=1 shown frame
+    — either the named receptacle (non-Floor) or, for Floor destinations, a landmark within
+    FLOOR_ANCHOR_RADIUS of the true final position (reject only that Floor candidate if no
+    such landmark exists — Floor is no longer excluded as a category); emit recall_direction
+    only
 
-modes:
-  recall_direction:
-    frame_of_reference: egocentric
-    when: direct hidden place (moved_via != swap)
-    question_templates:
-      - >-
-        The {object_type} was moved onto {new_location}.
-        Where is it relative to you now?
-  swap:
-    frame_of_reference: egocentric
-    when: moved_via == swap with distinguishable swap_partner_id
-    question_templates:
-      - >-
-        The {object_type} was moved to where the {other_object_type} used to be.
-        Where is the {object_type} relative to you now?
-    note: Never combine with recall_direction on the same row;
-      question must not name a receptacle.
+    '
+  - 'swap (moved_via == swap): swap_partner_id set; partner object distinguishable in >=1
+    shown frame at its pre-swap position; emit swap template only (never name a receptacle
+    in the question — object anchor OR receptacle anchor, not both)
 
-source_data:
-  displacement_events:
-    - event_id, obj_id, at_timestep, from/to_receptacle, from/to_pos
-    - hidden_during, FOV flags, moved_via, swap_partner_id, notes
-  displacement_candidates:
-    - candidate_role, candidate_receptacle, candidate_pos, is_persisted
-  object_state, navigation: visibility + distinguishability filter (shared with other constructs)
-
-must_hold:
-  - distinguishable sighting → hidden → move while hidden
-  - object not in FOV on shown frames from move through query_step t
-  - question names destination cue (landmark OR partner)
-  - direct: to_receptacle != Floor; landmark distinguishable in ≥1 shown frame
-  - swap: partner distinguishable in ≥1 shown frame before swap; swap template only
-  - unique option labels per item
+    '

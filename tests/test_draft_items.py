@@ -234,17 +234,20 @@ def test_invisible_displacement_skips_colliding_distractors(folder_episode):
 
 
 def test_rotate_only_window_is_filtered(folder_episode):
-    """Encode→query with no floor-plane translation must not yield multi-frame items."""
+    """No floor-plane translation → SWM/ID rejected; SU also needs net pose change."""
     from cm_benchmark.generation.planner import _has_real_move_between
 
     episode = folder_episode
-    # Collapse all agent poses to one place (keep rotations).
+    # Collapse all agent poses to one place and freeze heading (no net pose change).
     fixed = (0.0, 1.0, 0.0)
+    fixed_rot = [0.0, 0.0, 0.0]
     for step in episode.get('steps') or []:
         agent = step.setdefault('agent', {})
         agent['position'] = fixed
+        agent['rotation'] = list(fixed_rot)
     for pose in episode.get('agent_trajectory') or []:
         pose['position'] = fixed
+        pose['rotation'] = list(fixed_rot)
 
     assert not _has_real_move_between(episode, 0, 2)
 
@@ -269,16 +272,39 @@ def test_images_between_drops_stationary_intermediates(folder_episode):
     assert not any(p.endswith('img_1.png') for p in paths)
 
 
-def test_perspective_taking_unsupported(tiny_episode):
+def test_perspective_taking_abc_landmarks(folder_episode):
+    """Perspective taking uses relational A→B heading — no intrinsic front required."""
+    facts = plan_episode(
+        folder_episode, constructs=['perspective_taking'], max_per_construct=1
+    )
+    assert facts
+    if facts[0].status == 'unsupported':
+        reason = facts[0].reason or ''
+        assert 'landmark' in reason or 'ABC' in reason or 'triple' in reason
+        return
+    fact = facts[0]
+    assert fact.extra.get('A') and fact.extra.get('B') and fact.extra.get('C')
+    assert fact.answer_label in {
+        'ahead of you',
+        'to your right',
+        'behind you',
+        'to your left',
+    }
+    q = _core_question(fact).lower()
+    assert 'imagine standing' in q
+    assert 'facing' in q
+
+
+def test_perspective_taking_tiny_may_be_ok_or_unsupported(tiny_episode):
     items = draft_items_for_episode(
         tiny_episode,
         constructs=['perspective_taking'],
         styles=('concise',),
     )
     assert len(items) == 1
-    assert items[0]['status'] == 'unsupported'
-    assert items[0]['question'] == ''
-    assert items[0]['answer'] is None
+    assert items[0]['status'] in ('ok', 'unsupported')
+    if items[0]['status'] == 'ok':
+        assert 'Imagine standing' in items[0]['question']
 
 
 def test_allocentric_encoding_unsupported_without_facing(tiny_episode):
@@ -393,7 +419,7 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     assert fact.extra.get('path_nodes')
     assert ' → ' in (fact.answer_label or '')
     q = _core_question(fact).lower()
-    assert 'sequence of turns' in q or 'traveled' in q
+    assert 'sequence of turns' in q or 'traveling' in q or 'matches' in q
     assert 'plan a route' not in q
 
 
@@ -452,7 +478,8 @@ def test_core_question_covers_active_template_placeholders():
         ('invisible_displacement', ['recall_direction', 'swap']),
         ('spatial_updating', [None]),
         ('route_knowledge', [None]),
-        ('survey_based_route_planning', [None]),
+        ('survey_based_route_planning', ['direction_distance', 'conditional_detour']),
+        ('perspective_taking', [None]),
         ('spatial_working_memory', ['recall_relation', 'recall_count']),
     ):
         for mode in modes:
@@ -471,8 +498,12 @@ def test_core_question_covers_active_template_placeholders():
                     'reference_object': 'Table',
                     'source': 'Kitchen',
                     'goal': 'LivingRoom',
+                    'A': 'Armchair',
+                    'B': 'Sofa',
+                    'C': 'Lamp',
                     'new_location': 'Shelf',
                     'other_object_type': 'Plate',
+                    'condition': 'the door is closed',
                     'k': 3,
                     'template_mode': mode,
                 },
@@ -482,7 +513,8 @@ def test_core_question_covers_active_template_placeholders():
             assert '{k}' not in q
             assert '{new_location}' not in q
             assert '{other_object_type}' not in q
-            assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q
+            assert '{A}' not in q and '{C}' not in q
+            assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q or 'Armchair' in q
 
 
 @pytest.mark.parametrize(

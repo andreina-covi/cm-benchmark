@@ -8,14 +8,18 @@ from typing import Optional, Sequence
 
 from cm_benchmark.generation.constructs import (
     EGO_DIRECTION_OPTIONS,
+    MIRRORED_LR,
     OPPOSITE,
     ORTHOGONAL,
     angle_relation_to_ego_label,
     find_ego_edge,
     find_inferred_edge,
     humanize_receptacle,
+    imagined_perspective_label,
+    net_pose_changed,
     object_type_from_id,
     step_by_index,
+    xyz_as_dict,
 )
 from cm_benchmark.generation.geometry import (
     agent_pose_at_step,
@@ -422,6 +426,72 @@ def _is_floor_receptacle(receptacle_id: Optional[str]) -> bool:
     return stem in ('floor', 'wall', 'ceiling', 'room')
 
 
+# Floor destinations need a nearby distinguishable landmark for the question cue.
+FLOOR_ANCHOR_RADIUS_M = 1.2
+
+
+def _xz_from_any(pos) -> Optional[tuple[float, float]]:
+    d = xyz_as_dict(pos)
+    if d is None:
+        return None
+    return (d['x'], d['z'])
+
+
+def _nearest_floor_anchor(
+    episode: dict,
+    final_pos,
+    frame_steps: list[int],
+    *,
+    radius_m: float = FLOOR_ANCHOR_RADIUS_M,
+) -> Optional[tuple[str, str]]:
+    """Nearest distinguishable landmark within radius of a Floor destination.
+
+    Returns ``(landmark_id, display_name)`` or None (reject that Floor candidate).
+    """
+    target = _xz_from_any(final_pos)
+    if target is None:
+        return None
+    best = None
+    best_d = float('inf')
+    for si in frame_steps:
+        step = step_by_index(episode, si)
+        if not step:
+            continue
+        for oid, odata in (step.get('visible_objects') or {}).items():
+            if _is_floor_receptacle(oid):
+                continue
+            pos = odata.get('position')
+            xz = _xz_from_any(pos)
+            if xz is None:
+                continue
+            d = ((xz[0] - target[0]) ** 2 + (xz[1] - target[1]) ** 2) ** 0.5
+            if d <= radius_m and d < best_d:
+                best_d = d
+                best = (oid, object_type_from_id(oid, {oid: odata}))
+    return best
+
+
+def _relation_shift_magnitude(
+    episode: dict, from_pos, to_pos, query_step: int
+) -> Optional[str]:
+    """same_side | flipped_side from left/right at query pose (difficulty axis)."""
+    ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+    if ag_pos is None or ag_rot is None:
+        return None
+    pre = ego_label_from_world_pose(ag_pos, ag_rot, from_pos, episode)
+    post = ego_label_from_world_pose(ag_pos, ag_rot, to_pos, episode)
+    if not pre or not post:
+        return None
+    left_right = {'to your left', 'to your right'}
+    if pre not in left_right or post not in left_right:
+        return 'same_side' if pre == post else 'flipped_side'
+    if pre == post:
+        return 'same_side'
+    if {pre, post} == left_right:
+        return 'flipped_side'
+    return 'same_side'
+
+
 def _object_in_fov_at_step(episode: dict, obj_id: str, step_idx: int) -> bool:
     step = step_by_index(episode, step_idx)
     if step and obj_id in (step.get('visible_objects') or {}):
@@ -806,20 +876,37 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                 out.append(fact)
             continue
 
-        # Direct hidden place onto a receptacle landmark
-        if _is_floor_receptacle(to_r):
-            continue
+        # Direct hidden place onto a receptacle landmark (or Floor + nearby anchor)
         frame_steps = _build_id_frame_steps(enc_idx, int(at_t), int(query_step))
-        if not _landmark_distinguishable_in_frames(episode, to_r, frame_steps):
-            continue
+        floor_anchor_name = None
+        floor_anchor_id = None
+        if _is_floor_receptacle(to_r):
+            anchor = _nearest_floor_anchor(
+                episode, ev.get('to_position'), frame_steps
+            )
+            if anchor is None:
+                continue
+            floor_anchor_id, floor_anchor_name = anchor
+            loc = humanize_receptacle(to_r, floor_anchor_landmark=floor_anchor_name)
+            if loc is None:
+                continue
+            new_location = loc
+        else:
+            if not _landmark_distinguishable_in_frames(episode, to_r, frame_steps):
+                continue
+            loc = humanize_receptacle(to_r)
+            if loc is None:
+                continue
+            new_location = loc.replace('on/in the ', '')
         images = _images_for_steps(episode, frame_steps)
         if not images:
             continue
-        new_location = humanize_receptacle(to_r).replace('on/in the ', '')
 
-        # Direct moves: name the destination landmark, ask ego bearing.
-        # Do NOT emit receptacle-only "Where is X now?" — that is unanswerable
-        # when the move was never witnessed and the question gives no cue.
+        shift = _relation_shift_magnitude(
+            episode, ev.get('from_position'), ev.get('to_position'), int(query_step)
+        )
+
+        # Direct moves: name the destination cue, ask ego bearing.
         fact = _try_ego_direction_fact(
             episode,
             ev,
@@ -840,6 +927,9 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                 'new_location': new_location,
                 'to_receptacle': to_r,
                 'from_receptacle': ev.get('from_receptacle'),
+                'floor_anchor_id': floor_anchor_id,
+                'floor_anchor_landmark': floor_anchor_name,
+                'relation_shift_magnitude': shift,
             },
         )
         if fact is not None:
@@ -858,6 +948,58 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
     return out
 
 
+def _agent_pose_dict(episode: dict, step_idx: int) -> Optional[dict]:
+    pos, rot = agent_pose_at_step(episode, step_idx)
+    if pos is None or rot is None:
+        return None
+    d = xyz_as_dict(pos)
+    if d is None:
+        return None
+    try:
+        heading = float(rot[1] if len(rot) > 1 else rot[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return {'x': d['x'], 'y': d['y'], 'z': d['z'], 'heading': heading}
+
+
+def _object_static_between(
+    episode: dict, obj_id: str, t0: int, t1: int, *, eps: float = 0.05
+) -> bool:
+    """Confirm object position unchanged via object_state_track (when present)."""
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    entries = track.get('entries') or []
+    if not entries:
+        # No track and not in displacement_events → treat as static
+        return obj_id not in _displaced_ids(episode)
+    positions = []
+    for entry in entries:
+        t = entry.get('step', entry.get('timestep'))
+        if t is None:
+            continue
+        if int(t0) <= int(t) <= int(t1):
+            xz = _xz_from_any(entry.get('position'))
+            if xz is not None:
+                positions.append(xz)
+    if len(positions) < 2:
+        return True
+    x0, z0 = positions[0]
+    for x, z in positions[1:]:
+        if abs(x - x0) > eps or abs(z - z0) > eps:
+            return False
+    return True
+
+
+def _net_pose_changed_between(
+    episode: dict, t0: int, t1: int, *, pos_tol: float = 0.1, heading_tol_deg: float = 5.0
+) -> bool:
+    """True if encode→query has real position OR heading change (not action count)."""
+    a = _agent_pose_dict(episode, int(t0))
+    b = _agent_pose_dict(episode, int(t1))
+    if a is None or b is None:
+        return False
+    return net_pose_changed(a, b, pos_tol=pos_tol, heading_tol_deg=heading_tol_deg)
+
+
 def plan_spatial_updating(
     episode: dict,
     max_items: int = 2,
@@ -867,7 +1009,9 @@ def plan_spatial_updating(
 ) -> list[PlannedFact]:
     """Bearing at NEW pose after real agent motion; object static and not visible now.
 
-    Includes every navigation frame from encoding through query (same window as SWM).
+    Net pose change is verified from agent_trajectory (position OR heading), never
+    from action count alone. Duplicate (object, encode) pairs with identical answers
+    across query steps are dropped.
     """
     if min_delay < 1:
         raise ValueError('spatial_updating min_delay must be at least 1')
@@ -878,6 +1022,8 @@ def plan_spatial_updating(
 
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
+    # (obj_id, encode_step) -> answer_label of first emitted item
+    seen_answers: dict[tuple[str, int], str] = {}
     for step in episode.get('steps') or []:
         step_idx = int(step['step'])
         for obj_id, mem in (step.get('non_visible_objects') or {}).items():
@@ -893,18 +1039,32 @@ def plan_spatial_updating(
             enc = step_by_index(episode, enc_idx)
             if enc is None:
                 continue
-            if not _has_real_move_between(episode, enc_idx, step_idx):
+            if not _net_pose_changed_between(episode, enc_idx, step_idx):
+                continue
+            if not _object_static_between(episode, obj_id, enc_idx, step_idx):
                 continue
             # Queried object must NOT be visible at final pose
             if obj_id in (step.get('visible_objects') or {}):
                 continue
-            now_edge = find_inferred_edge(step, obj_id)
-            past_edge = find_ego_edge(enc, obj_id)
-            if not now_edge:
-                continue
-            label = angle_relation_to_ego_label(now_edge.get('angle_relation'))
+            # Recompute bearing from poses when possible; fall back to inferred edge
+            label = None
+            ag_pos, ag_rot = agent_pose_at_step(episode, step_idx)
+            obj_pos = mem.get('position') or (mem.get('last_known') or {}).get('position')
+            if obj_pos is None:
+                obj_pos = _object_world_pos(episode, obj_id)
+            if ag_pos is not None and ag_rot is not None and obj_pos is not None:
+                label = ego_label_from_world_pose(ag_pos, ag_rot, obj_pos, episode)
+            if not label:
+                now_edge = find_inferred_edge(step, obj_id)
+                if not now_edge:
+                    continue
+                label = angle_relation_to_ego_label(now_edge.get('angle_relation'))
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
+            key = (obj_id, enc_idx)
+            if key in seen_answers and seen_answers[key] == label:
+                continue  # duplicate encode/answer across query steps
+            past_edge = find_ego_edge(enc, obj_id)
             pre = (
                 angle_relation_to_ego_label(past_edge.get('angle_relation'))
                 if past_edge
@@ -918,6 +1078,7 @@ def plan_spatial_updating(
                 seeds.append(_mode_seed('pre_move_bearing', pre))
             if len(pool) < 2:
                 continue
+            seen_answers[key] = label
             out.append(
                 PlannedFact(
                     construct='spatial_updating',
@@ -927,8 +1088,9 @@ def plan_spatial_updating(
                     queried_object_id=obj_id,
                     answer_label=label,
                     answer_source=[
-                        f"steps[{step_idx}].edges_inferred[target={obj_id}].angle_relation",
-                        f"agent_trajectory[{step_idx}]",
+                        f"agent_trajectory[{enc_idx}→{step_idx}] (net pose change)",
+                        f"object_state_track[{obj_id}] (static)",
+                        f"agent_pose@[{step_idx}] + object_position",
                     ],
                     image_paths=_images_between(episode, enc_idx, step_idx),
                     options_pool=pool,
@@ -1000,12 +1162,14 @@ def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
     """Objects that passed Q&A visibility (in some step's visible_objects).
 
     Distinguishing filter already applied at GT build time for visible_objects.
-    Sample diversity: prefer world_layout landmarks when they are also visible.
+    Prefer world_layout landmarks when they are also visible.
     """
     seen: dict[str, dict] = {}
+    sighting_count: dict[str, int] = {}
     for step in episode.get('steps') or []:
         si = int(step['step'])
         for oid, odata in (step.get('visible_objects') or {}).items():
+            sighting_count[oid] = sighting_count.get(oid, 0) + 1
             if oid in seen:
                 continue
             pos = odata.get('position')
@@ -1017,6 +1181,8 @@ def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
                 'position': tuple(pos) if not isinstance(pos, tuple) else pos,
                 'first_seen_step': si,
                 'from_layout': False,
+                'region_id': None,
+                'salience': 1.0,
             }
     layout_ids = set()
     for lm in (episode.get('world_layout') or {}).get('landmarks') or []:
@@ -1027,14 +1193,74 @@ def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
         if lid in seen:
             seen[lid]['from_layout'] = True
             seen[lid]['name'] = _landmark_display_name(lid, episode)
+            seen[lid]['region_id'] = lm.get('region_id')
             # Prefer catalog/layout pose for snapping (may be on receptacle)
             wp = _object_world_pos(episode, lid)
             if wp is not None:
                 seen[lid]['position'] = wp
-    # Layout-first ordering, then by first_seen_step for diversity
+            # Layout landmarks get a salience boost; more sightings → higher weight
+            seen[lid]['salience'] = 2.0 + 0.1 * sighting_count.get(lid, 1)
+        else:
+            # Layout-only landmarks are not distinguishable — skip (filter first)
+            continue
+    for oid, row in seen.items():
+        if not row['from_layout']:
+            row['salience'] = 1.0 + 0.05 * sighting_count.get(oid, 1)
     items = list(seen.values())
-    items.sort(key=lambda r: (not r['from_layout'], r['first_seen_step'], r['obj_id']))
+    items.sort(key=lambda r: (-r['salience'], r['first_seen_step'], r['obj_id']))
     return items
+
+
+def select_landmark_candidates(
+    episode: dict, *, top_n_per_region: int = 5, max_total: int = 40
+) -> list[dict]:
+    """Salience-filtered landmarks: visibility first, then top-N weighted per region.
+
+    Never nearest-distance-only and never uniform-random — matches taxonomy
+    ``select_landmark_candidates()`` for class-4 endpoints.
+    """
+    candidates = _distinguishable_landmark_candidates(episode)
+    if not candidates:
+        return []
+    by_region: dict[str, list[dict]] = {}
+    for lm in candidates:
+        rid = lm.get('region_id') or '_unknown'
+        by_region.setdefault(rid, []).append(lm)
+    selected: list[dict] = []
+    for _rid, rows in by_region.items():
+        rows = sorted(rows, key=lambda r: (-r['salience'], r['first_seen_step']))
+        selected.extend(rows[:top_n_per_region])
+    selected.sort(key=lambda r: (-r['salience'], r['first_seen_step'], r['obj_id']))
+    return selected[:max_total]
+
+
+def _scene_min_hop_count(
+    graph, landmark_nodes: list[str], *, floor: int = 3, default: int = 4, cap: int = 8
+) -> int:
+    """Calibrate min hop count from this scene's landmark-pair shortest paths.
+
+    Uses ~25th percentile of pairwise lengths, capped so MC routes stay short
+    (not R2R's fixed 4–6, and not the house-wide diameter).
+    """
+    import networkx as nx
+
+    nodes = list(dict.fromkeys(landmark_nodes))
+    if len(nodes) < 2:
+        return default
+    lengths: list[int] = []
+    for i, a in enumerate(nodes):
+        for b in nodes[i + 1 :]:
+            if a not in graph or b not in graph:
+                continue
+            try:
+                lengths.append(len(nx.shortest_path(graph, a, b)) - 1)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                continue
+    if not lengths:
+        return default
+    lengths.sort()
+    idx = max(0, int(0.25 * (len(lengths) - 1)))
+    return max(floor, min(int(lengths[idx]), cap))
 
 
 def _nearest_landmark_name(
@@ -1136,7 +1362,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
 
-    landmarks = _distinguishable_landmark_candidates(episode)
+    landmarks = select_landmark_candidates(episode)
     id_to_node, node_to_name, meta = _build_landmark_node_map(
         graph, landmarks, candidate_nodes=traversed
     )
@@ -1150,6 +1376,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
         ]
 
     rot = _rotation_deg(episode)
+    min_hops = _scene_min_hop_count(graph, list(id_to_node.values()))
     # Candidate pairs: landmarks whose nodes appear in order on the walk.
     ordered_ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
     out: list[PlannedFact] = []
@@ -1167,6 +1394,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             sub = _traversed_subpath(traversed, n0, n1)
             if sub is None or len(sub) < 2:
                 continue
+            hops = len(sub) - 1
+            if hops < min_hops:
+                continue
             # Keep MC routes short: decision-point sequences, not full-episode dumps
             if len(sub) > 25:
                 continue
@@ -1178,7 +1408,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 int(meta[src_id]['first_seen_step']),
                 max(int(meta[goal_id]['first_seen_step']), int(meta[src_id]['first_seen_step']) + 1),
             ):
-                # Still OK if subpath has multiple distinct nodes (walked)
                 if len(sub) < 3:
                     continue
 
@@ -1187,7 +1416,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
             if not turns:
                 continue
-            # Route knowledge needs at least one heading change (not landmark parade)
             if not any((t.get('label') or 'straight') != 'straight' for t in turns):
                 continue
             answer = format_turn_sequence(turns)
@@ -1196,10 +1424,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             pool = [answer]
             seeds: list[str] = []
             for mode in (
-                'opposite_direction',
-                'wrong_decision_point',
-                'extra_turn',
-                'no_turn',
+                'reversed_sequence',
+                'swapped_two_turns',
+                'plausible_but_unwalked_route',
             ):
                 pert = perturb_turn_sequence(turns, mode)
                 if not pert:
@@ -1243,6 +1470,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'source_node': n0,
                         'goal_node': n1,
                         'path_nodes': sub,
+                        'min_hop_count': min_hops,
+                        'hop_count': hops,
                         'turn_labels': [t.get('label') for t in turns],
                         'object_type': goal,
                         'frame_of_reference': 'egocentric',
@@ -1263,12 +1492,96 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
     return out
 
 
+def _passage_was_visible(episode: dict, passage_id: Optional[str]) -> bool:
+    if not passage_id:
+        return False
+    for step in episode.get('steps') or []:
+        for oid in (step.get('visible_objects') or {}):
+            if _landmark_matches(oid, passage_id):
+                return True
+    return False
+
+
+def _connection_perceptually_evidenced(
+    episode: dict, src_id: str, goal_id: str, meta: dict
+) -> bool:
+    """Taxonomy: connection must be seen (doorway/passage or both regions), not layout-only."""
+    layout = episode.get('world_layout') or {}
+    src_region = meta.get(src_id, {}).get('region_id')
+    goal_region = meta.get(goal_id, {}).get('region_id')
+    # Passage connecting the two regions visible in some frame
+    for row in layout.get('connectivity') or []:
+        a, b = row.get('from_region'), row.get('to_region')
+        pid = row.get('passage_id')
+        if not pid or a is None or b is None or a == b:
+            continue
+        pair = {a, b}
+        if src_region and goal_region and pair == {src_region, goal_region}:
+            if _passage_was_visible(episode, pid):
+                return True
+    # Both landmarks distinguishable in frames (already true) + any doorway seen
+    for step in episode.get('steps') or []:
+        for oid in (step.get('visible_objects') or {}):
+            if str(oid).lower().startswith('door'):
+                return True
+    # Same-region pairs: sightline via shared region observation
+    if src_region and goal_region and src_region == goal_region:
+        return True
+    return False
+
+
+def _recorded_passage_closures(episode: dict) -> list[dict]:
+    """Passages observed closed at some timestep (real passage_state, never invented)."""
+    layout = episode.get('world_layout') or {}
+    passage_meta = {
+        p.get('passage_id'): p for p in (layout.get('passages') or []) if p.get('passage_id')
+    }
+    closed: list[dict] = []
+    seen = set()
+    for row in episode.get('passage_state') or []:
+        if row.get('is_open') is not False:
+            continue
+        pid = row.get('passage_id')
+        if not pid or pid in seen:
+            continue
+        meta = passage_meta.get(pid) or {}
+        fr = row.get('from_region') or meta.get('from_region')
+        tr = row.get('to_region') or meta.get('to_region')
+        if fr is None or tr is None or fr == tr:
+            continue
+        # Need a pose for the door to remove nearby edges
+        pos = None
+        for step in episode.get('steps') or []:
+            vis = step.get('visible_objects') or {}
+            for oid, odata in vis.items():
+                if _landmark_matches(oid, pid):
+                    pos = odata.get('position')
+                    break
+            if pos is not None:
+                break
+        if pos is None:
+            continue
+        seen.add(pid)
+        closed.append(
+            {
+                'passage_id': pid,
+                'from_region': fr,
+                'to_region': tr,
+                'position': pos,
+                'timestep': row.get('timestep'),
+            }
+        )
+    return closed
+
+
 def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Direction/distance between landmarks whose graph path was never walked."""
+    """Survey layout judgments: direction/distance and optional conditional_detour."""
     from cm_benchmark.generation.nav_graph import (
         direction_distance_between_landmarks,
+        first_hop_direction_label,
         format_survey_relation,
         is_valid_untraversed_shortcut,
+        remove_edges_near_position,
         sanitize_world_layout,
         shortest_path,
         snap_trajectory_to_graph,
@@ -1276,7 +1589,6 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     )
     import networkx as nx
 
-    # Guard: drop invalid same-region connectivity rows if layout present.
     if episode.get('world_layout'):
         episode = dict(episode)
         episode['world_layout'] = sanitize_world_layout(episode['world_layout'])
@@ -1293,7 +1605,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
 
     snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
     traversed = traversed_node_ids(snapped)
-    landmarks = _distinguishable_landmark_candidates(episode)
+    landmarks = select_landmark_candidates(episode)
     id_to_node, _node_to_name, meta = _build_landmark_node_map(graph, landmarks)
     ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
     if len(ids) < 2:
@@ -1305,7 +1617,175 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         ]
 
+    closures = _recorded_passage_closures(episode)
     out: list[PlannedFact] = []
+
+    def _emit_direction_distance(src_id, goal_id, n0, n1, cand):
+        nonlocal out
+        if not _connection_perceptually_evidenced(episode, src_id, goal_id, meta):
+            return
+        rel = direction_distance_between_landmarks(
+            meta[src_id]['position'], meta[goal_id]['position'], episode=episode
+        )
+        if not rel:
+            return
+        direction, distance = rel
+        source = meta[src_id]['name']
+        goal = meta[goal_id]['name']
+        if source == goal:
+            return
+        answer = format_survey_relation(direction, distance, source_name=source)
+        opp = {
+            'ahead of': 'behind',
+            'behind': 'ahead of',
+            'to the left of': 'to the right of',
+            'to the right of': 'to the left of',
+        }.get(direction, direction)
+        alt_dists = [d for d in ('within_reach', 'nearby', 'far', 'beyond') if d != distance]
+        pool = [answer]
+        seeds: list[str] = []
+        decoy1 = format_survey_relation(opp, distance, source_name=source)
+        if decoy1 not in pool:
+            pool.append(decoy1)
+            seeds += ['opposite_direction', _mode_seed('opposite_direction', decoy1)]
+        if alt_dists:
+            decoy2 = format_survey_relation(direction, alt_dists[0], source_name=source)
+            if decoy2 not in pool:
+                pool.append(decoy2)
+                seeds += ['wrong_distance', _mode_seed('wrong_distance', decoy2)]
+        if alt_dists and opp != direction:
+            decoy3 = format_survey_relation(opp, alt_dists[-1], source_name=source)
+            if decoy3 not in pool:
+                pool.append(decoy3)
+                seeds += ['known_route_answer', _mode_seed('known_route_answer', decoy3)]
+        if len(pool) < 2:
+            return
+        t0 = int(meta[src_id]['first_seen_step'])
+        t1 = int(meta[goal_id]['first_seen_step'])
+        images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+        out.append(
+            PlannedFact(
+                construct='survey_based_route_planning',
+                status='ok',
+                query_step=max(t0, t1),
+                encoding_step=min(t0, t1),
+                answer_label=answer,
+                answer_source=[
+                    f'landmarks[{src_id}].position',
+                    f'landmarks[{goal_id}].position',
+                    f'nav_graph.shortest_path[{n0}→{n1}] (untraversed)',
+                ],
+                image_paths=images,
+                options_pool=pool[:4],
+                distractor_seeds=seeds,
+                extra={
+                    'source': source,
+                    'goal': goal,
+                    'A': source,
+                    'B': goal,
+                    'template_mode': 'direction_distance',
+                    'source_landmark_id': src_id,
+                    'goal_landmark_id': goal_id,
+                    'path_nodes': cand,
+                    'direction': direction,
+                    'distance_label': distance,
+                    'object_type': goal,
+                    'frame_of_reference': 'allocentric',
+                },
+            )
+        )
+
+    def _emit_conditional_detour(src_id, goal_id, n0, n1, closure):
+        nonlocal out
+        blocked = remove_edges_near_position(graph, closure['position'])
+        try:
+            detour = shortest_path(blocked, n0, n1)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return
+        if len(detour) < 2:
+            return
+        # Must differ from open-graph first hop (otherwise condition is inert)
+        try:
+            open_path = shortest_path(graph, n0, n1)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return
+        if len(open_path) >= 2 and open_path[1] == detour[1]:
+            return
+        label = first_hop_direction_label(
+            blocked,
+            detour,
+            source_pos=meta[src_id]['position'],
+            goal_pos=meta[goal_id]['position'],
+        )
+        if not label or label not in EGO_DIRECTION_OPTIONS:
+            return
+        open_label = first_hop_direction_label(
+            graph,
+            open_path,
+            source_pos=meta[src_id]['position'],
+            goal_pos=meta[goal_id]['position'],
+        )
+        source = meta[src_id]['name']
+        goal = meta[goal_id]['name']
+        if source == goal:
+            return
+        pool = [label]
+        seeds: list[str] = []
+        opp = OPPOSITE.get(label)
+        if opp and opp not in pool:
+            pool.append(opp)
+            seeds += ['opposite_direction', _mode_seed('opposite_direction', opp)]
+        if open_label and open_label not in pool:
+            pool.append(open_label)
+            seeds += ['known_route_answer', _mode_seed('known_route_answer', open_label)]
+        mir = MIRRORED_LR.get(label)
+        if mir and mir not in pool:
+            pool.append(mir)
+            seeds += ['wrong_distance', _mode_seed('wrong_distance', mir)]
+        for filler in EGO_DIRECTION_OPTIONS:
+            if len(pool) >= 4:
+                break
+            if filler not in pool:
+                pool.append(filler)
+        if len(pool) < 2:
+            return
+        pid = closure['passage_id']
+        condition = f'the {object_type_from_id(pid)} is closed'
+        t0 = int(meta[src_id]['first_seen_step'])
+        t1 = int(meta[goal_id]['first_seen_step'])
+        images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
+        out.append(
+            PlannedFact(
+                construct='survey_based_route_planning',
+                status='ok',
+                query_step=max(t0, t1),
+                encoding_step=min(t0, t1),
+                answer_label=label,
+                answer_source=[
+                    f'passage_state[{pid}].is_open=false',
+                    f'nav_graph.shortest_path[{n0}→{n1}] (edge removed near {pid})',
+                    'first_hop_direction_label',
+                ],
+                image_paths=images,
+                options_pool=pool[:4],
+                distractor_seeds=seeds,
+                extra={
+                    'source': source,
+                    'goal': goal,
+                    'A': source,
+                    'B': goal,
+                    'condition': condition,
+                    'template_mode': 'conditional_detour',
+                    'passage_id': pid,
+                    'source_landmark_id': src_id,
+                    'goal_landmark_id': goal_id,
+                    'path_nodes': detour,
+                    'object_type': goal,
+                    'frame_of_reference': 'allocentric',
+                },
+            )
+        )
+
     for i, src_id in enumerate(ids):
         for goal_id in ids[i + 1 :]:
             n0, n1 = id_to_node[src_id], id_to_node[goal_id]
@@ -1317,88 +1797,15 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 continue
             if not is_valid_untraversed_shortcut(cand, traversed, graph):
                 continue
-            rel = direction_distance_between_landmarks(
-                meta[src_id]['position'], meta[goal_id]['position'], episode=episode
-            )
-            if not rel:
-                continue
-            direction, distance = rel
-            source = meta[src_id]['name']
-            goal = meta[goal_id]['name']
-            answer = format_survey_relation(direction, distance, source_name=source)
-
-            # Distractors: flip direction / alternate distance labels
-            opp = {
-                'ahead of': 'behind',
-                'behind': 'ahead of',
-                'to the left of': 'to the right of',
-                'to the right of': 'to the left of',
-            }.get(direction, direction)
-            alt_dists = [
-                d
-                for d in ('within_reach', 'nearby', 'far', 'beyond')
-                if d != distance
-            ]
-            pool = [answer]
-            seeds: list[str] = []
-            decoy1 = format_survey_relation(opp, distance, source_name=source)
-            if decoy1 not in pool:
-                pool.append(decoy1)
-                seeds.append('opposite_direction')
-                seeds.append(_mode_seed('opposite_direction', decoy1))
-            if alt_dists:
-                decoy2 = format_survey_relation(
-                    direction, alt_dists[0], source_name=source
-                )
-                if decoy2 not in pool:
-                    pool.append(decoy2)
-                    seeds.append('wrong_distance')
-                    seeds.append(_mode_seed('wrong_distance', decoy2))
-            if alt_dists and opp != direction:
-                decoy3 = format_survey_relation(opp, alt_dists[-1], source_name=source)
-                if decoy3 not in pool:
-                    pool.append(decoy3)
-                    seeds.append('known_route_answer')
-                    seeds.append(_mode_seed('known_route_answer', decoy3))
-            if len(pool) < 2:
-                continue
-
-            t0 = int(meta[src_id]['first_seen_step'])
-            t1 = int(meta[goal_id]['first_seen_step'])
-            images = _img(step_by_index(episode, t0)) + _img(step_by_index(episode, t1))
-            out.append(
-                PlannedFact(
-                    construct='survey_based_route_planning',
-                    status='ok',
-                    query_step=max(t0, t1),
-                    encoding_step=min(t0, t1),
-                    answer_label=answer,
-                    answer_source=[
-                        f'landmarks[{src_id}].position',
-                        f'landmarks[{goal_id}].position',
-                        f'nav_graph.shortest_path[{n0}→{n1}] (untraversed)',
-                    ],
-                    image_paths=images,
-                    options_pool=pool[:4],
-                    distractor_seeds=seeds,
-                    extra={
-                        'source': source,
-                        'goal': goal,
-                        'A': source,
-                        'B': goal,
-                        'condition': 'the queried shortcut was never walked',
-                        'source_landmark_id': src_id,
-                        'goal_landmark_id': goal_id,
-                        'path_nodes': cand,
-                        'direction': direction,
-                        'distance_label': distance,
-                        'object_type': goal,
-                        'frame_of_reference': 'allocentric',
-                    },
-                )
-            )
-            if len(out) >= max_items:
+            before = len(out)
+            _emit_direction_distance(src_id, goal_id, n0, n1, cand)
+            if len(out) > before and len(out) >= max_items:
                 return out
+            for closure in closures:
+                before = len(out)
+                _emit_conditional_detour(src_id, goal_id, n0, n1, closure)
+                if len(out) > before and len(out) >= max_items:
+                    return out
 
     if not out:
         return [
@@ -1411,14 +1818,147 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     return out
 
 
-def plan_perspective_taking(episode: dict, max_items: int = 1) -> list[PlannedFact]:
-    return [
-        PlannedFact(
-            construct='perspective_taking',
-            status='unsupported',
-            reason='edges_object_frame_empty_no_trusted_facing',
-        )
-    ][:max_items]
+def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
+    """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C."""
+    import math as _math
+
+    landmarks = select_landmark_candidates(episode, top_n_per_region=4, max_total=18)
+    if len(landmarks) < 3:
+        return [
+            PlannedFact(
+                construct='perspective_taking',
+                status='unsupported',
+                reason='need_ge3_distinguishable_landmarks',
+            )
+        ]
+
+    out: list[PlannedFact] = []
+    # Prefer a late query step where all three have been seen
+    for i, a in enumerate(landmarks):
+        for j, b in enumerate(landmarks):
+            if i == j:
+                continue
+            for k, c in enumerate(landmarks):
+                if k in (i, j):
+                    continue
+                pos_a = xyz_as_dict(a['position'])
+                pos_b = xyz_as_dict(b['position'])
+                pos_c = xyz_as_dict(c['position'])
+                if not pos_a or not pos_b or not pos_c:
+                    continue
+                if a['name'] == b['name'] or a['name'] == c['name'] or b['name'] == c['name']:
+                    continue
+                label = imagined_perspective_label(pos_a, pos_b, pos_c)
+                if not label or label not in EGO_DIRECTION_OPTIONS:
+                    continue
+                query_step = max(
+                    int(a['first_seen_step']),
+                    int(b['first_seen_step']),
+                    int(c['first_seen_step']),
+                )
+                # Camera-frame distractor: C relative to actual agent pose
+                ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+                cam = (
+                    ego_label_from_world_pose(ag_pos, ag_rot, c['position'], episode)
+                    if ag_pos is not None
+                    else None
+                )
+                mirrored = MIRRORED_LR.get(label)
+                # Wrong facing: stand at A facing away from B (toward -B)
+                wrong_b = {
+                    'x': pos_a['x'] - (pos_b['x'] - pos_a['x']),
+                    'y': pos_a['y'],
+                    'z': pos_a['z'] - (pos_b['z'] - pos_a['z']),
+                }
+                wrong = imagined_perspective_label(pos_a, wrong_b, pos_c)
+                pool = [label]
+                seeds: list[str] = []
+                if cam and cam not in pool:
+                    pool.append(cam)
+                    seeds += ['camera_frame_answer', _mode_seed('camera_frame_answer', cam)]
+                if mirrored and mirrored not in pool:
+                    pool.append(mirrored)
+                    seeds += ['mirrored_left_right', _mode_seed('mirrored_left_right', mirrored)]
+                if wrong and wrong not in pool:
+                    pool.append(wrong)
+                    seeds += [
+                        'wrong_facing_assumption',
+                        _mode_seed('wrong_facing_assumption', wrong),
+                    ]
+                for filler in EGO_DIRECTION_OPTIONS:
+                    if len(pool) >= 4:
+                        break
+                    if filler not in pool:
+                        pool.append(filler)
+                if len(pool) < 2:
+                    continue
+                shift = None
+                pose = _agent_pose_dict(episode, query_step)
+                if pose is not None:
+                    imag_h = _math.degrees(
+                        _math.atan2(pos_b['x'] - pos_a['x'], pos_b['z'] - pos_a['z'])
+                    )
+                    shift = abs((imag_h - pose['heading'] + 180) % 360 - 180)
+                images = (
+                    _img(step_by_index(episode, a['first_seen_step']))
+                    + _img(step_by_index(episode, b['first_seen_step']))
+                    + _img(step_by_index(episode, c['first_seen_step']))
+                )
+                # Deduplicate image paths while preserving order
+                seen_paths = set()
+                uniq_images = []
+                for p in images:
+                    if p not in seen_paths:
+                        seen_paths.add(p)
+                        uniq_images.append(p)
+                out.append(
+                    PlannedFact(
+                        construct='perspective_taking',
+                        status='ok',
+                        query_step=query_step,
+                        encoding_step=min(
+                            int(a['first_seen_step']),
+                            int(b['first_seen_step']),
+                            int(c['first_seen_step']),
+                        ),
+                        queried_object_id=c['obj_id'],
+                        reference_object_id=a['obj_id'],
+                        answer_label=label,
+                        answer_source=[
+                            f'landmarks[{a["obj_id"]}].position (A)',
+                            f'landmarks[{b["obj_id"]}].position (B)',
+                            f'landmarks[{c["obj_id"]}].position (C)',
+                            'imagined_perspective_label(A, A→B, C)',
+                        ],
+                        image_paths=uniq_images,
+                        options_pool=pool[:4],
+                        distractor_seeds=seeds,
+                        extra={
+                            'A': a['name'],
+                            'B': b['name'],
+                            'C': c['name'],
+                            'source': a['name'],
+                            'goal': b['name'],
+                            'object_type': c['name'],
+                            'landmark_a_id': a['obj_id'],
+                            'landmark_b_id': b['obj_id'],
+                            'landmark_c_id': c['obj_id'],
+                            'perspective_shift_magnitude': shift,
+                            'frame_of_reference': 'allocentric',
+                        },
+                    )
+                )
+                if len(out) >= max_items:
+                    return out
+    if not out:
+        return [
+            PlannedFact(
+                construct='perspective_taking',
+                status='unsupported',
+                reason='no_valid_ABC_landmark_triple',
+            )
+        ]
+    return out
 
 
 PLANNERS = {

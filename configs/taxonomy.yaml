@@ -1,8 +1,12 @@
 # ============================================================
 # taxonomy.yaml  —  configs/taxonomy.yaml
 # Single source of truth for the capability axis of the benchmark.
-# Every per-construct generator config and every pipeline node reads
-# construct specifics FROM HERE. Do not redefine constructs elsewhere.
+# Every per-construct file under configs/constructs/ for classes 2–4
+# (invisible_displacement, spatial_updating, perspective_taking,
+# route_knowledge, survey_based_route_planning) is a synced excerpt of the
+# matching block below. Prefer editing THIS file, then re-export excerpts.
+# Class-1 and spatial_working_memory still use longer generator-style YAMLs.
+# Do not redefine construct semantics elsewhere.
 # ============================================================
 
 version: 0.1
@@ -96,36 +100,41 @@ class_2:
     invisible_displacement:
       class: 2
       frame_of_reference: egocentric  # both modes ask ego bearing at query pose
-      definition:
+      definition: >
         Track an object's location after it is hidden AND relocated out of view
         (Piaget Stage 6: the move itself is never witnessed, only inferred).
         The question MUST supply a spatial cue naming where the object went
         (destination landmark or partner object's prior place); without that cue
         the item is unanswerable from the frames alone.
       what_moves: object (while hidden)
+      difficulty_axis: [relation_shift_magnitude]  # same_side | flipped_side at query pose
       answer_type:
-        - recall_direction: egocentric direction at query pose; question names the destination landmark
+        - recall_direction: egocentric direction at query pose; question names the destination cue
         - swap: egocentric direction; question names a previously seen partner object as the spatial anchor
       required_temporal_fields:
         [object_state_track, displacement_event, displacement_candidates]
       question_template:
         recall_direction: >-
-          The {object_type} was moved onto {new_location}.
+          While out of view, the {object_type} was moved onto {new_location}.
           Where is it relative to you now?
         swap: >-
           The {object_type} was moved to where the {other_object_type} used to be.
           Where is the {object_type} relative to you now?
-      ground_truth_method:
+      ground_truth_method: >
         Exporter (e.g. SPOC) logs the hidden move plus trial-teleport distractor poses
         (then restores). This repo computes egocentric labels from agent_pose@query_step
         and world poses (chosen / from / candidate positions). Floor destinations are
-        rejected. Direct-move items require a distinguishable destination landmark in
-        ≥1 shown frame and name it in the question; swap items use a distinguishable
-        partner object seen before the swap instead — never both in one question.
-        Do not emit receptacle-name-only questions (no destination cue).
+        checked per-instance, not rejected wholesale: if to_receptacle == Floor,
+        search for a nearest_landmark within FLOOR_ANCHOR_RADIUS (default 1.2m,
+        calibrate per scene) of the object's true final position; reject only
+        that specific candidate if none is found. {new_location} resolves to
+        either the receptacle name (non-Floor) or "the floor near the
+        {landmark}" (Floor case) — never a bare "Floor" cue. Swap items use a
+        distinguishable partner object seen before the swap instead — never
+        both cue types in one question. Do not emit receptacle-name-only or
+        bare-Floor questions (no destination cue).
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
-      # original_location = A-not-B (from_pos on the event row).
-      # nearby / salient decoy = displacement_candidates trial teleports.
+      # original_location = A-not-B (from_pos). nearby/salient = trial teleports.
       # Reject if any two options share the same ego label.
       discriminators:
         - queried object was distinguishable, then hidden, before it moved
@@ -133,10 +142,15 @@ class_2:
         - queried object NOT in nav FOV on any shown frame from move through query_step t
         - one draft item per displacement_events object row (a swap logs two rows → two items)
         - question always names a destination cue (landmark OR partner object)
-        - direct move (moved_via != swap): to_receptacle != Floor and that landmark
-          distinguishable in ≥1 shown frame; emit recall_direction only
-        - swap (moved_via == swap): swap_partner_id set; partner object distinguishable
-          in ≥1 shown frame at its pre-swap position; emit swap template only (never
+        - >
+          direct move (moved_via != swap): destination cue is distinguishable in
+          >=1 shown frame — either the named receptacle (non-Floor) or, for Floor
+          destinations, a landmark within FLOOR_ANCHOR_RADIUS of the true final
+          position (reject only that Floor candidate if no such landmark exists —
+          Floor is no longer excluded as a category); emit recall_direction only
+        - >
+          swap (moved_via == swap): swap_partner_id set; partner object distinguishable
+          in >=1 shown frame at its pre-swap position; emit swap template only (never
           name a receptacle in the question — object anchor OR receptacle anchor, not both)
 # ============================================================
 # CLASS 3 — OPERATION ON THE COGNITIVE MAP  (answer requires a pose
@@ -153,92 +167,187 @@ class_3:
       definition: Update own position/heading after REAL movement; report a static object's bearing.
       what_moves: observer (real, executed actions)
       answer_type: egocentric direction at the post-move pose
-      required_temporal_fields: [agent_trajectory, agent_actions]
+      required_temporal_fields: [agent_trajectory, agent_actions, object_state_track]
       question_template: >-
-        Considering the last {k} navigation steps, where is the {object} relative to you now?
+        Considering the last {k} navigation steps, where is the {object_type} relative to you now?
+      ground_truth_method: >
+        Net pose change between encode_step and query_step is verified from
+        real agent_trajectory positions/headings, never from action count
+        alone — a logged action can be a no-op (blocked move, an in-place
+        rotation reversed by a later step) and produce no real pose delta.
+        Reject the item if position delta AND heading delta between
+        agent_pose@encode_step and agent_pose@query_step both fall under a
+        minimum tolerance. If two candidate items on the same object share the
+        same encode_step and produce an identical computed answer at two
+        different query_steps, that signals no real bearing change occurred —
+        drop the later one rather than emitting both (this is the exact
+        pattern the original house_007514 review flagged on the HousePlant
+        pair). Object position confirmed UNCHANGED via object_state, not
+        assumed. Bearing recomputed independently from agent_pose@query_step +
+        object_position, never trusted from a cached value.
       distractor_pattern: [pre_move_bearing, opposite_turn_bearing, over_rotation_bearing]
       discriminators:
-        - object position UNCHANGED (only the agent moves)
-        - agent executes >=1 real movement action between encode and query
+        - object position UNCHANGED (only the agent moves) — confirmed via object_state
+        - net pose change (position delta OR heading delta) between encode_step
+          and query_step exceeds the calibrated minimum tolerance — action
+          count alone is not sufficient evidence of movement
         - queried object NOT visible at the final pose
-        - answer computed from agent_pose@final + object_position
+        - answer computed from agent_pose@final + object_position, recomputed
+          independently rather than trusted from any cached field
+        - reject duplicate items on the same object/encode_step pair whose
+          computed answers are identical across two query_steps
 
     perspective_taking:
       class: 3
-      frame_of_reference: allocentric         # another entity's frame
-      definition: Compute a relation from an IMAGINED viewpoint (another location or object).
+      frame_of_reference: allocentric         # an IMAGINED viewpoint's frame
+      definition: >
+        Compute a relation from an imagined viewpoint: standing at landmark A,
+        facing landmark B (heading = direction A->B), report where a third
+        landmark C is. This is the Object Perspective/Spatial Orientation Test
+        paradigm (Kozhevnikov & Hegarty, 2001) — heading is defined RELATIONALLY
+        by two positions, not by any object's intrinsic front, which removes the
+        prior blocker (reference_entity_facing_heading unavailable in AI2-THOR)
+        with zero new metadata needed.
       what_moves: observer (imagined; viewpoint adopted, not executed)
-      answer_type: relation as seen from the reference entity's frame
-      required_temporal_fields: []            # needs reference-entity FACING metadata
-      requires_metadata: [reference_entity_facing_heading]
-      question_template: "From where the {reference_entity} faces, which object is on its left?"
+      # Difficulty: angle between agent heading and imagined A-facing-B heading (0-180 deg).
+      difficulty_axis: [perspective_shift_magnitude]
+      answer_type: >
+        direction of landmark C from the imagined viewpoint (standing at A, facing B)
+      required_temporal_fields: []
+      question_template: >-
+        Imagine standing at the {A}, facing the {B}. From that position, where is the {C}?
+      ground_truth_method: >
+        A, B, C are three distinct landmarks, each distinguishable in >=1 shown
+        frame (same visibility-grounding standard as every other construct).
+        Imagined heading = normalize(pos(B) - pos(A)). Answer = C's position
+        transformed into the egocentric frame defined by (pos(A), imagined
+        heading) — a standard 2D rotation, computed from real positions only.
       distractor_pattern: [camera_frame_answer, mirrored_left_right, wrong_facing_assumption]
+      # camera_frame_answer = C relative to agent's ACTUAL pose (most common shortcut).
+      # mirrored_left_right = correct axis, flipped sign (Kozhevnikov & Hegarty, 2001).
+      # wrong_facing_assumption = heading toward the wrong reference object.
       discriminators:
-        - agent does NOT actually move to that viewpoint (no real action)
-        - answer is in the REFERENCE ENTITY's frame, not the camera's
-        - reference entity has a defined front/heading in metadata
+        - A, B, C are three distinct landmarks, each distinguishable in >=1 shown frame
+        - agent does NOT actually move to viewpoint A (no real action — imagined only)
+        - answer is in the imagined (A, A->B heading) frame, never the agent's actual current frame
+        - heading is computed relationally from A and B positions — no
+          object-intrinsic-front metadata required or used
 
 # ============================================================
 # CLASS 4 — NAVIGATION / WAYFINDING  (answer is a multi-step path)
 # ============================================================
 class_4:
   name: Navigation / wayfinding
-  summary: Use acquired environmental spatial knowledge to recall an 
-  experienced route or infer a novel path to a goal.
+  summary: >
+    Use acquired environmental spatial knowledge to recall an
+    experienced route or infer a novel path to a goal.
   constructs:
 
     route_knowledge:
       class: 4
       frame_of_reference: egocentric          # procedural, sequential route representation
       definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
-      what_moves: observer (along a previouslytraversed route)
-      answer_type: ordered sequence of turns, actions, or landmarks along a previously traversed route
-      required_temporal_fields: [agent_trajectory, agent_actions]
-      question_template: "What was the sequence of turns along the route you traveled from{A} to {B}?"
+      what_moves: observer (along a previously traversed route)
+      answer_type: ordered sequence of turns (graded as MCQ over full candidate sequences, not free text)
+      required_temporal_fields: [agent_trajectory, agent_actions, nav_graph]
+      question_template: "Which of these matches the sequence of turns you made traveling from {source} to {goal}?"
+      ground_truth_method: >
+        Source/goal are landmarks chosen via select_landmark_candidates()
+        (salience-filtered through the visibility classifier, top-N weighted
+        sample per region — never nearest-distance, never uniform-random).
+        For route_knowledge each landmark is snapped to the nearest *visited*
+        nav_graph node via snap_to_nearest_of(graph, pose, traversed_nodes)
+        (naming stays on the landmark; pathfinding uses the node). Candidate
+        path = the real traversed node sequence between those nodes. Reject
+        any candidate below a minimum hop count calibrated per-scene from that
+        scene's own distribution of landmark-pair shortest-path lengths
+        (capped for MC length) — do not import R2R's 4-6 edge figure as a fixed
+        target. Correct answer = derive_turns() on the traversed node sequence,
+        binned to episode_meta.agent.rotation_deg, each turn labeled with its
+        nearest landmark.
       distractor_pattern: [reversed_sequence, swapped_two_turns, plausible_but_unwalked_route]
+      # All three are mechanical perturbations of the real derive_turns()
+      # output (order reversal, turn-node reassignment, turn count changed)
+      # — never separately hand-authored sequences.
       discriminators:
         - the queried route WAS previously traversed by the agent
-        - the answer requires retrieval of sequential/procedural route information
+        - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
+        - path length >= the scene-calibrated minimum hop count
+        - answer requires retrieval of sequential/procedural route information
         - the expected answer preserves the experienced order of turns, actions, or landmarks
-        - INVALID if the queried source-goal route was not previously traversed by the agent.
+        - INVALID if the queried source-goal route was not previously traversed by the agent
+        - graded as multiple-choice over full candidate sequences, never free-text
+          (keeps scoring deterministic, consistent with the rest of the pipeline)
 
     survey_based_route_planning:
       class: 4
       frame_of_reference: allocentric          # configurational, map-like representation
       definition: >
         Infer relative direction and distance between observed landmarks using
-        survey (layout) knowledge. The graph path linking the landmarks must
-        NEVER have been traversed — answers are direction/distance judgments,
-        not turn sequences (those belong to route_knowledge).
+        survey (layout) knowledge. The graph path linking them must NEVER have
+        been traversed — answers are direction/distance judgments, not turn
+        sequences (those belong to route_knowledge). A second, conditional
+        mode tests flexible replanning under a recorded passage closure
+        (Tolman's 1948 blocked-path paradigm).
       what_moves: none required
-      answer_type: direction + distance of landmark B relative to landmark A
-      required_temporal_fields: [agent_trajectory]   # to prove the path was NOT taken
-      question_template: >-
-        Using your knowledge of the environment's layout,
-        where is the {goal} relative to the {source}?
+      answer_type:
+        direction_distance: >
+          direction + distance of landmark B relative to landmark A
+        conditional_detour: >
+          initial direction of travel required to reach B from A on the graph
+          with the relevant passage's nearby edges removed — NOT the raw static
+          bearing; requires re-running shortest_path() on the modified graph
+      required_temporal_fields: [agent_trajectory, nav_graph, passage_state]
+      question_template:
+        direction_distance: >-
+          Using your knowledge of the environment's layout,
+          where is the {goal} relative to the {source}?
+        conditional_detour: >-
+          Using your knowledge of the environment's layout, where would you
+          first head to reach the {goal} from the {source}, given that {condition}?
+      ground_truth_method: >
+        Source/goal selected via select_landmark_candidates() and snapped with
+        snap_landmark_to_graph() (nearest navigable node). direction_distance
+        mode: computed directly from source/goal positions (no path search for
+        the label); nav_graph only confirms the path was never traversed.
+        conditional_detour mode: {condition} comes from a real recorded
+        passage_state closure (never invented); ground truth =
+        first_hop_direction_label of shortest_path() on nav_graph after
+        remove_edges_near_position(passage).
       distractor_pattern: [opposite_direction, wrong_distance, known_route_answer]
       discriminators:
-      # existing:
-      - queried path/shortcut is absent from agent_trajectory (never directly traversed)
-      # NEW:
-      - the connection between {source} and {goal} must have been perceptually
-        evidenced in some shown frame — the connecting doorway/passage was visible,
-        or both regions were visible with a sightline between them — even though
-        the agent never walked through it. world_layout.connectivity truth that
-        was never perceptually available to the agent is NOT sufficient; this
-        construct tests inference from what was seen, not lookup from unseen
-        ground truth.
+        - queried path/shortcut is absent from agent_trajectory (never directly traversed)
+        - >
+          the connection between {source} and {goal} must have been perceptually
+          evidenced in some shown frame — the connecting doorway/passage was visible,
+          or both regions were visible with a sightline between them — even though
+          the agent never walked through it. world_layout.connectivity truth that
+          was never perceptually available to the agent is NOT sufficient
+        - >
+          conditional_detour mode only: {condition} must correspond to a real
+          passage_state closure actually recorded in the episode, never an
+          invented hypothetical
+        - >
+          conditional_detour mode only: answer is the modified-graph initial
+          direction, never a full turn sequence (that would duplicate route_knowledge)
 
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
 # (Core fields are always present; these are the construct-dependent ones.)
 # ============================================================
 schema_hooks:
-  object_state_track:  required_for: [invisible_displacement]
-  displacement_event:  required_for: [invisible_displacement]
-  displacement_candidates: required_for: [invisible_displacement]
-  agent_trajectory:    required_for: [spatial_working_memory, spatial_updating,
-                                      route_knowledge, survey_based_route_planning]
-  agent_actions:       required_for: [spatial_working_memory, spatial_updating,
-                                      route_knowledge]
-  reference_entity_facing_heading: required_for: [perspective_taking]
+  object_state_track:
+    required_for: [invisible_displacement, spatial_updating]
+  displacement_event:
+    required_for: [invisible_displacement]
+  displacement_candidates:
+    required_for: [invisible_displacement]
+  agent_trajectory:
+    required_for:
+      [spatial_working_memory, spatial_updating, route_knowledge, survey_based_route_planning]
+  agent_actions:
+    required_for: [spatial_working_memory, spatial_updating, route_knowledge]
+  nav_graph:
+    required_for: [route_knowledge, survey_based_route_planning]
+  passage_state:
+    required_for: [survey_based_route_planning]

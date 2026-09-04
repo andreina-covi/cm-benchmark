@@ -64,18 +64,18 @@ CONSTRUCT_DEFS = {
     ),
     "perspective_taking": (
         "Perspective-taking",
-        "Compute a relation from another entity's viewpoint rather than the camera frame.",
-        "Requires trusted reference-entity facing; without it the construct remains unsupported.",
+        "Imagine standing at landmark A facing B; report where landmark C is.",
+        "Heading is relational (A→B) from positions — no object-intrinsic front required.",
     ),
     "route_knowledge": (
         "Route knowledge",
-        "Retrace a short source→goal route that was actually experienced.",
-        "Use the start/goal views to identify the walked action sequence; this is not full-episode recall.",
+        "Choose the matching turn sequence for a walked source→goal route.",
+        "MCQ over derive_turns() on the graph-snapped trajectory; not full-episode recall.",
     ),
     "survey_based_route_planning": (
-        "Survey knowledge",
-        "Infer a novel source→goal path from the learned layout.",
-        "The correct path must be provably unwalked; otherwise the item is unsupported.",
+        "Survey-based route planning",
+        "Judge layout direction/distance (or first-hop under a recorded passage closure).",
+        "Path must be untraversed; answers are not turn sequences (those are route_knowledge).",
     ),
 }
 
