@@ -107,6 +107,9 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - distance_label (how far) ≠ angle_relation front/behind (local +Z).
   "beyond" + "front" means ahead of the agent but far.
 - Do not invent object facing from obj-rot unless a trusted source exists.
+  `perspective_taking` does **not** need intrinsic facing: it uses relational
+  A→B heading from landmark positions (`imagined_perspective_label`).
+  `allocentric_encoding` still needs trusted object-frame edges when enabled.
 - Collector field brief: prompts/ai2thor_collection_extension.md.
 
 ## First-draft Q&A notes (`src/cm_benchmark/generation/`)
@@ -116,10 +119,17 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   leak the answer.
 - Temporal items use online sequential wording (`{k} steps ago` / `now`); do not
   bundle a multi-image “time order” cue with the question.
-- Class 4 asks source→goal route / layout planning, not full-trajectory
+- Class 4 asks source→goal route recall (`route_knowledge` / `derive_turns`) or
+  survey layout judgments (`survey_based_route_planning`: direction/distance or
+  conditional first-hop under a recorded passage closure) — not full-trajectory
   memorization.
-- Constructs that lack required metadata (e.g. object facing) stay
-  unsupported rather than inventing facts.
+- Floor destinations in invisible_displacement need a distinguishable anchor
+  within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
+  rejected per-candidate.
+- Spatial updating verifies net pose change from trajectory (position or
+  heading), never action count alone.
+- Constructs that lack required metadata (e.g. object facing for
+  allocentric_encoding) stay unsupported rather than inventing facts.
 
 ## How to review / suggest
 - Start by mapping files → architecture nodes; name any node with no

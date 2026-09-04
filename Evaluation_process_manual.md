@@ -43,11 +43,11 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `egocentric_encoding` → recompute viewer→object direction from `agent_pose@shown_step` + object position.
 - `allocentric_encoding` → recompute object→object relation using the reference object's intrinsic frame.
 - `spatial_working_memory` → recompute recalled relation/location/count at the stated `k` steps back; confirm object was static across shown frames.
-- `invisible_displacement` → confirm `displacement_event.hidden_during == true` and object is not visible at its true final location in the last frame; recompute final container.
-- `spatial_updating` → confirm ≥1 real movement action between encode and query steps; confirm object position unchanged; recompute bearing from `agent_pose@final`.
-- `perspective_taking` → confirm `reference_entity_facing_heading` exists and is used (not the camera frame); recompute relation in that frame. **Currently `status: unsupported`** — do not promote items for this construct until facing metadata is trusted.
-- `route_knowledge` → confirm the queried path is actually present in `agent_trajectory` (was traversed); recompute turn order.
-- `survey_based_route_planning` → confirm the queried path/shortcut is **absent** from `agent_trajectory` (never traversed) and is derivable from `world_layout.connectivity`; reject if it reduces to an experienced route.
+- `invisible_displacement` → confirm `displacement_event.hidden_during == true` and object is not visible from move through query; recompute ego bearing at query pose. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
+- `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers.
+- `perspective_taking` → confirm three distinguishable landmarks A/B/C; recompute `imagined_perspective_label(A, B, C)` (relational A→B heading — no intrinsic-front metadata). Distractors: camera frame, mirrored L/R, wrong facing.
+- `route_knowledge` → confirm the queried path is present in snapped `agent_trajectory`; recompute `derive_turns()` MCQ sequence; check scene-calibrated min hop count.
+- `survey_based_route_planning` → confirm path absent from trajectory and connection was perceptually evidenced; for `direction_distance` recompute pose relation; for `conditional_detour` confirm `{condition}` matches a recorded `passage_state` closure and recompute first-hop on the modified graph.
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
@@ -79,8 +79,8 @@ This is the part you flagged as necessary because some judgments (construct-fait
 
 ### 3.2 What each reviewer judges, per item
 A checklist derived directly from the construct's `discriminators` in `taxonomy.yaml` — this is the key move: **the taxonomy already tells you the rubric**, you don't need to invent a separate one. For example, for `spatial_updating` the reviewer checklist is literally:
-- [ ] Object position is unchanged across the shown frames (only the agent moved)
-- [ ] The agent visibly executes ≥1 real movement action between encode and query
+- [ ] Object position is unchanged across the shown frames (only the agent moved) — confirmed via object_state
+- [ ] Net pose change (position or heading) between encode and query exceeds tolerance — action count alone is not enough
 - [ ] The queried object is not visible at the final pose
 - [ ] The question is answerable from the shown frames + geometry alone, not world knowledge
 
@@ -115,7 +115,7 @@ Every rejection (Layer A or B) should carry a **reason code** that maps to one o
 - a specific `discriminators` line (construct-faithfulness bug),
 - a `shared_rules` line (leakage / ambiguity bug),
 - a `distractor_pattern` entry (weak distractor bug),
-- a metadata/data gap (e.g., missing `reference_entity_facing_heading` — expected right now for `perspective_taking`).
+- a metadata/data gap (e.g., missing `nav_graph` for class-4, or no recorded `passage_state` closure for `conditional_detour`).
 
 Aggregate reason codes per construct per generator version. This turns human review from a one-off gate into the mechanism that tells you *which template to fix next*, which is more useful to you right now (early, iterating on `templates.py`/`constructs.py`) than a single pass/fail number.
 
@@ -126,7 +126,7 @@ An item is eligible for the immutable frozen set only when:
 2. Layer B: `status: verified` (or adjudicated to verified) with no open discrepancy, and
 3. `vision_necessary == true` is recorded, satisfying invariant #4.
 
-`perspective_taking` items should not be promoted to FREEZE while `status: unsupported` — Layer B review can still run on them to unblock the metadata work, but treat any current draft output for this construct as *template debugging*, not benchmark content.
+`allocentric_encoding` remains `unsupported` until trusted object-facing / `edges_object_frame` exists — do not promote those items to FREEZE.
 
 ## 6. Open decisions for you to set (not code-decidable)
 

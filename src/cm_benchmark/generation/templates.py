@@ -153,6 +153,9 @@ def _core_question(fact: PlannedFact) -> str:
     )
     source = extra.get('source') or extra.get('A') or 'the start'
     goal = extra.get('goal') or extra.get('B') or 'the goal'
+    landmark_a = extra.get('A') or source
+    landmark_b = extra.get('B') or goal
+    landmark_c = extra.get('C') or object_type
     k = extra.get('k')
     if k is None and fact.query_step is not None and fact.encoding_step is not None:
         k = max(1, int(fact.query_step) - int(fact.encoding_step))
@@ -160,7 +163,7 @@ def _core_question(fact: PlannedFact) -> str:
     object_category = extra.get('object_category') or object_type
     new_location = extra.get('new_location') or extra.get('to_receptacle') or 'a surface'
     other_object_type = extra.get('other_object_type') or 'another object'
-    condition = extra.get('condition') or 'a new passage is available'
+    condition = extra.get('condition') or 'a passage is closed'
     relation = extra.get('relation') or 'left'
 
     body = tmpl.format(
@@ -173,8 +176,9 @@ def _core_question(fact: PlannedFact) -> str:
         reference_entity=reference,
         source=source,
         goal=goal,
-        A=source,
-        B=goal,
+        A=landmark_a,
+        B=landmark_b,
+        C=landmark_c,
         k=k,
         new_location=new_location,
         condition=condition,
@@ -227,14 +231,28 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         goal = extra.get('goal', 'the goal')
         parts.append(
             f'Retrace the walked route from {src} to {goal} based on the path '
-            'you have followed so far.'
+            'you have followed so far. Choose the matching turn sequence.'
         )
     elif fact.construct == 'survey_based_route_planning':
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
+        mode = extra.get('template_mode') or 'direction_distance'
+        if mode == 'conditional_detour':
+            cond = extra.get('condition') or 'a passage is closed'
+            parts.append(
+                f'Use the layout to decide the first heading from {src} toward {goal} '
+                f'under the recorded condition ({cond}). This is not a turn sequence.'
+            )
+        else:
+            parts.append(
+                f'Use the layout to judge direction and distance of {goal} relative '
+                f'to {src}. The connecting path was never walked.'
+            )
+    elif fact.construct == 'perspective_taking':
         parts.append(
-            f'Use the layout to find a connection from {src} to {goal} '
-            'that was not walked as an experienced route.'
+            f"Adopt an imagined viewpoint at {extra.get('A', 'landmark A')}, "
+            f"facing {extra.get('B', 'landmark B')}, then locate "
+            f"{extra.get('C', 'landmark C')}."
         )
 
     room = None

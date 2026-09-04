@@ -24,7 +24,11 @@ The capability axis is a **partially ordered pipeline** (later constructs subsum
 | 3 | Operation on the cognitive map | spatial updating · perspective taking |
 | 4 | Navigation / wayfinding | route knowledge · survey knowledge |
 
-Full definitions live in [`configs/taxonomy.yaml`](configs/taxonomy.yaml). Per-construct generator specs live in [`configs/constructs/`](configs/constructs/).
+Full definitions live in [`configs/taxonomy.yaml`](configs/taxonomy.yaml) (must stay valid YAML).
+Per-construct files under [`configs/constructs/`](configs/constructs/): classes 2–4 navigation /
+memory / updating / perspective files are **synced excerpts** of the taxonomy blocks;
+class-1 and `spatial_working_memory` still use longer generator-style specs. Edit taxonomy
+first for shared semantics, then re-sync excerpts.
 
 ---
 
@@ -489,9 +493,11 @@ covers); they are not the presentation protocol for the question itself.
 Construct filters still decide **whether** a question is emitted at a given step
 (visibility, translation, displacement, etc.).
 
-Encode→query windows with **no floor-plane translation** are rejected for SWM,
-spatial updating, and invisible displacement (rotate/look-in-place alone is not
-enough). Provenance `image_paths` also drop stationary intermediate poses.
+Encode→query windows with **no net pose change** (position *and* heading under
+tolerance) are rejected for spatial updating — action count alone is not enough.
+SWM and invisible displacement still require floor-plane translation between
+encode and query (rotate/look-in-place alone is not enough). Provenance
+`image_paths` also drop stationary intermediate poses.
 `--swm_min_delay` / `--su_min_delay` default to `2`; matching `--*_max_delay`
 flags are optional. Generation is deterministic.
 
@@ -499,8 +505,8 @@ flags are optional. Generation is deterministic.
 
 | Construct | What the draft asks | Evidence |
 |-----------|---------------------|----------|
-| `route_knowledge` | **Retrace** walked A→B as `derive_turns()` sequence (graph-snapped trajectory) | `nav_graph` + snapped `agent_trajectory`; landmarks for naming only |
-| `survey_based_route_planning` | Direction/distance between landmarks whose graph path was **never** walked | Landmark poses + `nav_graph` untraversed check (not turn sequences) |
+| `route_knowledge` | MCQ over `derive_turns()` sequences for a walked A→B (scene-calibrated min hops) | `nav_graph` + snapped trajectory; `select_landmark_candidates` for naming |
+| `survey_based_route_planning` | **direction_distance**: layout relation of B to A; **conditional_detour**: first-hop after removing edges near a *recorded* closed passage | Landmark poses + untraversed check + `passage_state`; never turn sequences |
 
 Do **not** emit a single question that expects recall of the full egomotion list across hundreds of steps.
 
@@ -512,12 +518,12 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 |-----------|--------------|
 | `egocentric_encoding` | full |
 | `spatial_working_memory` | full (explicit delay `k`; ego edge at encoding step; optional count mode) |
-| `invisible_displacement` | full: direct (`recall_direction` — names destination landmark) and swap (names partner object); ego bearing only; trial-teleport candidates; distinguishable object + landmark/partner; unique option labels |
-| `spatial_updating` | full when agent **translates** (position change), object static, not visible at final; rotate-only windows rejected |
+| `invisible_displacement` | full: direct (`recall_direction` — receptacle or Floor+anchor within `FLOOR_ANCHOR_RADIUS`) and swap; ego bearing; `relation_shift_magnitude` difficulty |
+| `spatial_updating` | full when **net pose** changes (position or heading), object static via `object_state_track`, not visible at final; duplicate encode/answer pairs dropped |
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
-| `route_knowledge` | full (retrace walked A→B) |
-| `survey_based_route_planning` | full only for novel unwalked path; else unsupported |
-| `perspective_taking` | `unsupported` until trusted facing exists |
+| `route_knowledge` | full (MCQ over walked turn sequences; salience landmarks; calibrated min hops) |
+| `survey_based_route_planning` | full for untraversed + perceptually evidenced pairs; optional `conditional_detour` from recorded closures |
+| `perspective_taking` | full: A/B/C landmarks, relational A→B heading (`imagined_perspective_label`); no intrinsic-front metadata |
 
 ### Display names
 

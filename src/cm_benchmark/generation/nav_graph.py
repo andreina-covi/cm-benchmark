@@ -180,6 +180,10 @@ def snap_landmark_to_graph(
     return snap_position_to_graph(graph, world_pos, tolerance=tol)
 
 
+# Taxonomy / docs alias (survey endpoints: nearest navigable node).
+snap_to_nearest_node = snap_landmark_to_graph
+
+
 def snap_to_nearest_of(
     graph: nx.Graph,
     world_pos,
@@ -466,46 +470,50 @@ def format_turn_sequence(turns: Sequence[dict], *, compress_straight: bool = Tru
 def perturb_turn_sequence(
     turns: Sequence[dict], mode: str
 ) -> Optional[list[dict]]:
-    """Mechanical distractors for route_knowledge MC options."""
+    """Mechanical distractors for route_knowledge MC options.
+
+    Taxonomy names: reversed_sequence, swapped_two_turns,
+    plausible_but_unwalked_route. Older aliases are accepted.
+    """
     if not turns:
         return None
     seq = [dict(t) for t in turns]
-    if mode == 'opposite_direction':
-        flipped = False
-        for t in seq:
-            lab = t.get('label') or 'straight'
-            if lab == 'straight':
-                continue
-            t['label'] = OPPOSITE_TURN.get(lab, lab)
-            flipped = True
-        if not flipped:
-            # Degenerate all-straight path: flip the first step
-            seq[0]['label'] = OPPOSITE_TURN.get(seq[0].get('label') or 'straight', 'turn around')
-        return seq
-    if mode == 'wrong_decision_point':
-        if len(seq) < 2:
-            return None
-        # Swap landmark attachments between first two decision points
-        seq[0]['landmark'], seq[1]['landmark'] = (
-            seq[1].get('landmark'),
-            seq[0].get('landmark'),
+    # Aliases → canonical
+    if mode in ('opposite_direction',):
+        mode = 'reversed_sequence'
+    if mode in ('wrong_decision_point',):
+        mode = 'swapped_two_turns'
+    if mode in ('extra_turn', 'no_turn'):
+        mode = 'plausible_but_unwalked_route'
+
+    if mode == 'reversed_sequence':
+        rev = list(reversed(seq))
+        return rev if rev != seq else None
+
+    if mode == 'swapped_two_turns':
+        idxs = [i for i, t in enumerate(seq) if (t.get('label') or 'straight') != 'straight']
+        if len(idxs) < 2:
+            if len(seq) < 2:
+                return None
+            i, j = 0, 1
+        else:
+            i, j = idxs[0], idxs[1]
+        seq[i]['label'], seq[j]['label'] = seq[j].get('label'), seq[i].get('label')
+        seq[i]['landmark'], seq[j]['landmark'] = (
+            seq[j].get('landmark'),
+            seq[i].get('landmark'),
         )
         return seq
-    if mode == 'extra_turn':
-        mid = dict(seq[len(seq) // 2])
-        mid['label'] = 'turn left' if mid.get('label') == 'straight' else 'straight'
-        mid['landmark'] = mid.get('landmark')
-        seq.insert(len(seq) // 2, mid)
-        return seq
-    if mode == 'no_turn':
-        if len(seq) < 2:
-            return None
-        # Drop a non-straight turn if any, else drop middle
-        for i, t in enumerate(seq):
-            if t.get('label') != 'straight':
-                return seq[:i] + seq[i + 1 :]
-        i = len(seq) // 2
-        return seq[:i] + seq[i + 1 :]
+
+    if mode == 'plausible_but_unwalked_route':
+        # Change turn count: insert a spurious turn (preferred) or drop one.
+        if len(seq) >= 1:
+            mid = dict(seq[len(seq) // 2])
+            mid['label'] = 'turn left' if mid.get('label') == 'straight' else 'straight'
+            seq.insert(len(seq) // 2, mid)
+            return seq
+        return None
+
     return None
 
 
@@ -592,3 +600,68 @@ def format_survey_relation(
     if direction in ('ahead of', 'behind'):
         return f'{direction} the {source_name} and {distance}'
     return f'{direction} the {source_name} and {distance}'
+
+
+def remove_edges_near_position(
+    graph: nx.Graph,
+    world_pos,
+    *,
+    radius_m: float = 0.6,
+) -> nx.Graph:
+    """Copy of ``graph`` with edges whose midpoint is within ``radius_m`` of pos removed.
+
+    Used for conditional_detour: block a recorded closed passage without inventing
+    edges — only existing nearby edges are dropped.
+    """
+    xyz = _as_xyz(world_pos)
+    if xyz is None:
+        return graph.copy()
+    G = graph.copy()
+    to_drop = []
+    for u, v, data in G.edges(data=True):
+        pu = G.nodes[u].get('pos')
+        pv = G.nodes[v].get('pos')
+        if not pu or not pv:
+            continue
+        mid = ((pu[0] + pv[0]) / 2.0, (pu[1] + pv[1]) / 2.0, (pu[2] + pv[2]) / 2.0)
+        if _xz_dist(xyz, mid) <= radius_m:
+            to_drop.append((u, v))
+    G.remove_edges_from(to_drop)
+    return G
+
+
+def first_hop_direction_label(
+    graph: nx.Graph, path_nodes: Sequence[str], *, source_pos=None, goal_pos=None
+) -> Optional[str]:
+    """Initial travel direction of ``path_nodes`` from an A-facing-B frame.
+
+    Standing at source facing goal, report where the first hop heads
+    (ahead / left / right / behind). Falls back to world +Z frame if goal
+    pose is missing.
+    """
+    nodes = list(path_nodes)
+    if len(nodes) < 2:
+        return None
+    p0 = graph.nodes[nodes[0]].get('pos')
+    p1 = graph.nodes[nodes[1]].get('pos')
+    if not p0 or not p1:
+        return None
+    # Prefer relational A→B heading when both poses given
+    if source_pos is not None and goal_pos is not None:
+        from cm_benchmark.generation.constructs import (
+            imagined_perspective_label,
+            xyz_as_dict,
+        )
+
+        a = xyz_as_dict(source_pos)
+        b = xyz_as_dict(goal_pos)
+        c = {'x': p1[0], 'y': p1[1], 'z': p1[2]}
+        if a and b:
+            return imagined_perspective_label(a, b, c)
+    # World-frame fallback
+    dx, dz = p1[0] - p0[0], p1[2] - p0[2]
+    if abs(dx) < 1e-9 and abs(dz) < 1e-9:
+        return None
+    if abs(dz) >= abs(dx):
+        return 'ahead of you' if dz > 0 else 'behind you'
+    return 'to your right' if dx > 0 else 'to your left'

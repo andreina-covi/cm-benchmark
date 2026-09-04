@@ -111,10 +111,16 @@ def test_format_turn_sequence_compresses_straights():
     assert format_turn_sequence(turns) == 'straight → turn left @ Door → straight'
 
 
-def test_perturb_opposite_direction():
-    turns = [{'node_id': 'n1', 'label': 'turn left', 'landmark': 'Door'}]
-    pert = perturb_turn_sequence(turns, 'opposite_direction')
-    assert pert[0]['label'] == 'turn right'
+def test_perturb_reversed_sequence():
+    turns = [
+        {'node_id': 'n1', 'label': 'turn left', 'landmark': 'Door'},
+        {'node_id': 'n2', 'label': 'turn right', 'landmark': None},
+    ]
+    pert = perturb_turn_sequence(turns, 'reversed_sequence')
+    assert [t['label'] for t in pert] == ['turn right', 'turn left']
+    # Alias still accepted
+    alias = perturb_turn_sequence(turns, 'opposite_direction')
+    assert [t['label'] for t in alias] == ['turn right', 'turn left']
 
 
 def test_filter_self_loop_connectivity():

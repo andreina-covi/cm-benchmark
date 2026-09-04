@@ -44,7 +44,7 @@ select_episodes_where:
 frame_selection:
   include: [encoding_frame, final_frame]   # +optional intermediate frames
   movement_type: executed
-  step_depth_k: >= 1                       # frames since object/relation last seen
+  step_depth_k: ">= 1"                     # frames since object/relation last seen
   note: never include a frame that plainly answers the recall question
 
 # ----- Question construction -----
