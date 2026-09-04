@@ -1,0 +1,136 @@
+# ============================================================
+# GENERATOR CONFIG — one per construct (8 total)
+# Construct: Survey-based route planning  (Class 4: Navigation / wayfinding)
+# Consumed by: Item Generator role. Reads your AI2-THOR/MP3D CSVs,
+# emits one benchmark item per valid episode. Does NOT fill the
+# verification fields — those are set later by the pipeline.
+#
+# CONTRAST vs route_knowledge:
+#   - graph path between landmarks was NEVER traversed
+#   - answer is direction + distance (layout judgment), NOT derive_turns()
+#   - INVALID if item reduces to recalling an experienced turn sequence
+# ============================================================
+
+construct_id: survey_based_route_planning
+class: 4                       # parent class, for partial-order analysis
+frame_of_reference: allocentric # configurational, map-like — global layout
+
+# ----- Task description given to the agent (natural language) -----
+task_description: >
+  Generate a question that tests whether the model can estimate relative
+  direction and distance between two distinguishable landmarks using survey
+  (map-like) knowledge of the layout. The shortest nav_graph path linking
+  the landmarks' snapped nodes must NEVER have been walked. The QUESTION
+  TEXT names the landmarks — it must never state the direction/distance
+  answer or a turn sequence. All spatial facts come from frames + metadata.
+
+# ----- Which CSV fields to read (source of truth) -----
+source_data:
+  from_agent_csv: [frame_id, agent_pose, agent_actions, path]
+  from_object_csv: [object_id, object_type, position, bounding_box]
+  from_nav_graph: [nodes, edges, grid_size]
+
+# ----- Episode / frame selection (hard filter before building) -----
+select_episodes_where:
+  - agent trajectory spans >=2 distinct regions (observed but not fully traversed)
+  - landmarks A and B are distinguishable (visibility filter) and snap to nav_graph
+  - shortest graph path A→B was NEVER traversed by the agent
+  - direction/distance computable from landmark world positions
+frame_selection:
+  include: [frames_showing_landmarks_A_and_B]
+  movement_type: none_required
+  note: agent_trajectory + nav_graph prove which paths were NOT taken
+
+# ----- Question construction -----
+question_templates:
+  - "Using your knowledge of the environment's layout, where is the {landmark_B} relative to the {landmark_A}?"
+  - "From the layout you observed, how would you place the {landmark_B} relative to the {landmark_A} (direction and distance)?"
+answer_derivation:
+  rule: >
+    direction + distance_label from landmark A/B world positions; nav_graph
+    only confirms the A→B shortest path was never traversed. Do NOT emit
+    derive_turns() sequences (those belong to route_knowledge).
+  answer_source_field: [landmark_positions, nav_graph, agent_trajectory]
+
+# ----- Options / distractors (spatially plausible only) -----
+options:
+  count: 4
+  correct: direction_distance_relation
+  distractors:
+    - opposite_direction           # flip ahead/behind or left/right
+    - wrong_distance               # same direction, alternate distance bin
+    - known_route_answer           # opposite + wrong distance (layout foil)
+  distractor_rule: >
+    all options are real direction×distance labels; exactly one matches
+    the pose-derived relation; never turn-sequence distractors
+
+# ----- Difficulty scaling -----
+difficulty:
+  by: [landmark_separation, num_observed_regions]
+
+# ----- HARD validity constraints (reject item if any fail) -----
+must_hold:
+  - shortest graph path between snapped landmark nodes was NEVER traversed
+  - answer is direction + distance from landmark poses — not a turn sequence
+  - landmarks passed distinguishability / visibility filter before sampling
+  - INVALID if item reduces to recalling an experienced route (route_knowledge)
+  - question text contains no direction/distance answer and no turn list
+  - answer traces to metadata (landmark positions + nav_graph untraversed check)
+  - NOT route_knowledge (path must be novel, answer format must not be turns)
+
+# ----- Output: item fields the generator must emit -----
+emit_item:
+  item_id: auto
+  construct: survey_based_route_planning
+  class: 4
+  frame_of_reference: allocentric
+  environment: <ai2thor | matterport3d | ...>
+  scene_id: <from source>
+  image_paths: [<frames showing landmarks A and B>]
+  question: <from template>
+  options: {A: ..., B: ..., C: ..., D: ...}
+  answer: <label>
+  answer_source: [landmark_positions, nav_graph, agent_trajectory]
+  agent_trajectory: <pose per shown frame>          # REQUIRED here (proves paths NOT taken)
+  agent_actions: <optional>
+  landmark_A_id: <landmark or location id>
+  landmark_B_id: <landmark or location id>
+  object_state_track: null        # unused
+  displacement_event: null        # unused
+  distractor_rationale: {A: ..., B: ..., C: ..., D: ...}
+  difficulty: <computed>
+  # verification fields left NULL — set by pipeline, not generator:
+  blind_llm_correct: null
+  caption_llm_correct: null
+  vision_necessary: null
+
+# ----- Worked example (what one good emitted item looks like) -----
+example_item:
+  item_id: id_c4_0012
+  construct: survey_based_route_planning
+  frame_of_reference: allocentric
+  environment: ai2thor
+  scene_id: FloorPlan21
+  image_paths: [f005.png, f025.png]
+  question: "Using your knowledge of the environment's layout, where is the fridge relative to the countertop?"
+  options:
+    A: "to the left of the CounterTop and beyond"
+    B: "to the right of the CounterTop and beyond"
+    C: "to the left of the CounterTop and within_reach"
+    D: "to the right of the CounterTop and far"
+  answer: A
+  answer_source: [landmark_positions, nav_graph, agent_trajectory]
+  landmark_A_id: CounterTop|8|2
+  landmark_B_id: Fridge|8|0
+  agent_trajectory:
+    - {frame: f005, pose: {x: 1.0, y: 0.0, heading: 0}}
+    - {frame: f025, pose: {x: 2.0, y: 0.0, heading: 180}}
+  distractor_rationale:
+    B: "opposite_direction"
+    C: "wrong_distance"
+    D: "known_route_answer"
+  difficulty: 3
+
+# ----- Notes for sibling constructs -----
+# route_knowledge: retrace an EXPERIENCED path as derive_turns() (procedural, egocentric)
+# allocentric_encoding: static object-to-object relation, not multi-region layout judgment

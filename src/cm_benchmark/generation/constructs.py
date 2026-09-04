@@ -47,6 +47,16 @@ CONSTRUCT_TEMPLATES = {
         ],
     },
     'invisible_displacement': {
+        # Destination cue required: named landmark (direct) or partner object (swap).
+        # Never ask "Where is X now?" alone — the hidden move is unwitnessed.
+        # Wording is for online sequential models (stream already seen; no image bundle).
+        # k is stored on the item for analysis; the probe is destination tracking, not delay.
+        'recall_direction': [
+            (
+                'While out of view, the {object_type} was moved to {new_location}. '
+                'Where is it relative to you now?'
+            ),
+        ],
         'displacement_update': [
             (
                 'While out of view, the {object_type} was moved to {new_location}. '
@@ -74,13 +84,13 @@ CONSTRUCT_TEMPLATES = {
     'survey_based_route_planning': [
         (
             "Using your knowledge of the environment's layout, "
-            "what route should you take from {source} to {goal}?"
+            'where is the {goal} relative to the {source}?'
         ),
         (
             "Using your knowledge of the environment's layout, "
-            "what route should you take from {source} to {goal}, "
+            'where is the {goal} relative to the {source}, '
             'given that {condition}?'
-        )
+        ),
     ],
 }
 

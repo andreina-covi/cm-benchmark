@@ -14,7 +14,7 @@ CONSTRUCT_CLASS = {
     'spatial_updating': 3,
     'perspective_taking': 3,
     'route_knowledge': 4,
-    'survey_knowledge': 4,
+    'survey_based_route_planning': 4,
 }
 
 # Default FoR per construct. SWM allows egocentric or allocentric per item;
@@ -27,7 +27,7 @@ CONSTRUCT_FOR: dict[str, Union[str, list[str]]] = {
     'spatial_updating': 'egocentric',
     'perspective_taking': 'allocentric',
     'route_knowledge': 'egocentric',
-    'survey_knowledge': 'allocentric',
+    'survey_based_route_planning': 'allocentric',
 }
 
 

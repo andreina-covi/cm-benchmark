@@ -47,7 +47,7 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `spatial_updating` → confirm ≥1 real movement action between encode and query steps; confirm object position unchanged; recompute bearing from `agent_pose@final`.
 - `perspective_taking` → confirm `reference_entity_facing_heading` exists and is used (not the camera frame); recompute relation in that frame. **Currently `status: unsupported`** — do not promote items for this construct until facing metadata is trusted.
 - `route_knowledge` → confirm the queried path is actually present in `agent_trajectory` (was traversed); recompute turn order.
-- `survey_knowledge` → confirm the queried path/shortcut is **absent** from `agent_trajectory` (never traversed) and is derivable from `world_layout.connectivity`; reject if it reduces to an experienced route.
+- `survey_based_route_planning` → confirm the queried path/shortcut is **absent** from `agent_trajectory` (never traversed) and is derivable from `world_layout.connectivity`; reject if it reduces to an experienced route.
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
@@ -100,7 +100,7 @@ Reviewer selects an option (their own answer to the question) *before* unblindin
 - **Both reviewers reject on the same discriminator:** item rejected, and the underlying template/generator gets a bug ticket referencing the specific `discriminators` line that failed. Don't just discard the item silently — a systematic discriminator failure across many items means the generator itself is broken for that construct.
 
 ### 3.4 Inter-annotator agreement (IAA)
-Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_knowledge` are inherently harder to adjudicate than `egocentric_encoding`). Report:
+Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_based_route_planning` are inherently harder to adjudicate than `egocentric_encoding`). Report:
 - Percent agreement and Cohen's κ per construct, computed on the "selected option" field (this is the harder, more informative metric — checklist agreement alone can look good even when reviewers are answering the underlying question differently).
 - A construct with κ below your threshold (pick one — 0.6 is a common floor for "substantial agreement" in annotation literature, but you should set this deliberately rather than import it blindly) means the construct's items are ambiguous to humans too, and the fix is almost always in `question_template` wording or `distractor_pattern`, not in adding more reviewers.
 

@@ -145,6 +145,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.displacement_events = []
         self.displacement_candidates = []
         self.world_layout = None
+        self.nav_graph = None
         self.passage_state = []
         self.region_trajectory = []
         # (timestep, obj_id) -> state dict for displaced objects only
@@ -226,7 +227,13 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
 
         if 'world_layout' in paths:
             with open(paths['world_layout']) as f:
-                self.world_layout = json.load(f)
+                from cm_benchmark.generation.nav_graph import sanitize_world_layout
+
+                self.world_layout = sanitize_world_layout(json.load(f))
+
+        if 'nav_graph' in paths:
+            with open(paths['nav_graph']) as f:
+                self.nav_graph = json.load(f)
 
         if 'passage_state' in paths:
             self.passage_state = self._read_passage_state(paths['passage_state'])
@@ -694,6 +701,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         episode_dict['displacement_events'] = self.displacement_events
         episode_dict['displacement_candidates'] = self.displacement_candidates
         episode_dict['world_layout'] = self.world_layout
+        episode_dict['nav_graph'] = self.nav_graph
         episode_dict['passage_state'] = self.passage_state
         episode_dict['region_trajectory'] = self.region_trajectory
         episode_dict['episode_meta'] = self.episode_meta

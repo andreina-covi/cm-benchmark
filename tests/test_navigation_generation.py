@@ -136,6 +136,13 @@ def test_folder_loads_displacement_and_survey_fields(folder_episode):
     assert state_at_step(entries, 5)['position'] == [0.8, 1.0, 0.0]
 
     assert data['world_layout']['regions'][0]['region_id'] == 'room|1'
+    # Self-loop connectivity rows are dropped at ingest.
+    assert all(
+        c['from_region'] != c['to_region']
+        for c in data['world_layout']['connectivity']
+    )
+    assert data.get('nav_graph') is not None
+    assert data['nav_graph']['scene_id'] == 'house_tiny'
     assert data['region_trajectory'][0]['region_id'] == 'room|1'
     # Sparse: fixture has same room on steps 0 and 1 → only first kept
     assert len(data['region_trajectory']) == 1

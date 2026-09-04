@@ -32,6 +32,7 @@ DEFAULT_STEMS = {
     'passage_state': 'passage_state',
     'region_trajectory': 'region_trajectory',
     'world_layout': 'world_layout',
+    'nav_graph': 'nav_graph',
     'episode_meta': 'episode_meta',
     'doors': 'doors',
 }
@@ -43,6 +44,7 @@ OPTIONAL_KEYS = {
     'passage_state',
     'region_trajectory',
     'world_layout',
+    'nav_graph',
     'episode_meta',
     'doors',
 }
@@ -247,7 +249,7 @@ def resolve_episode_paths(
             if not p.is_absolute():
                 p = annotations_dir / p
         else:
-            ext = 'json' if key in ('world_layout', 'episode_meta') else 'csv'
+            ext = 'json' if key in ('world_layout', 'nav_graph', 'episode_meta') else 'csv'
             p = annotations_dir / f'{stem}-{scene}.{ext}'
 
         if p.is_file():

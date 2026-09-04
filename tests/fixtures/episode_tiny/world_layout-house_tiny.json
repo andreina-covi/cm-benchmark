@@ -4,17 +4,56 @@
       "region_id": "room|1",
       "label": "Kitchen",
       "center": {"x": 0.0, "y": 0.0, "z": 0.0},
-      "landmark_obj_ids": ["Cup|1"]
+      "landmark_obj_ids": ["Cup|1", "Shelf|1"]
+    },
+    {
+      "region_id": "room|2",
+      "label": "LivingRoom",
+      "center": {"x": 0.5, "y": 0.0, "z": 0.5},
+      "landmark_obj_ids": ["Plate|1"]
     }
   ],
   "landmarks": [
     {
       "landmark_id": "Cup|1",
       "obj-type": "Cup",
-      "position": {"x": 0.0, "y": 1.0, "z": 0.8},
+      "position": {"x": 0.0, "y": 1.0, "z": 0.0},
       "region_id": "room|1"
+    },
+    {
+      "landmark_id": "Shelf|1",
+      "obj-type": "Shelf",
+      "position": {"x": 0.25, "y": 1.0, "z": 0.25},
+      "region_id": "room|1"
+    },
+    {
+      "landmark_id": "Plate|1",
+      "obj-type": "Plate",
+      "position": {"x": 0.5, "y": 1.0, "z": 0.5},
+      "region_id": "room|2"
     }
   ],
-  "passages": [],
-  "connectivity": []
+  "passages": [
+    {
+      "passage_id": "door|1|2",
+      "obj-id": "Doorway|1",
+      "from_region": "room|1",
+      "to_region": "room|2",
+      "passage_type": "doorway"
+    }
+  ],
+  "connectivity": [
+    {
+      "from_region": "room|1",
+      "to_region": "room|2",
+      "passage_id": "door|1|2",
+      "bidirectional": true
+    },
+    {
+      "from_region": "room|1",
+      "to_region": "room|1",
+      "passage_id": "bogus_self_loop",
+      "bidirectional": true
+    }
+  ]
 }

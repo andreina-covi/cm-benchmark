@@ -5,7 +5,7 @@
 # emits one benchmark item per valid episode. Does NOT fill the
 # verification fields — those are set later by the pipeline.
 #
-# CONTRAST vs survey_knowledge:
+# CONTRAST vs survey_based_route_planning:
 #   - path WAS actually traversed (experienced route), not a novel shortcut
 #   - answer is procedural/sequential (turn order), not configurational inference
 # ============================================================
@@ -46,20 +46,25 @@ question_templates:
   - "What sequence of turns did you take to get from the {landmark_A} to the {landmark_B}?"
 answer_derivation:
   rule: >
-    ordered turn sequence extracted from agent_actions between the frames
-    where landmark A and landmark B were reached; bucket turns into
-    {left, right, straight, u-turn} labels in traversal order.
-  answer_source_field: [agent_trajectory, agent_actions]
+    snap agent_trajectory to nav_graph; pick distinguishable landmarks whose
+    nearest visited nodes bookend a walked subpath; answer =
+    format_turn_sequence(derive_turns(subpath)) with 45° bins
+    (straight / turn left|right / sharp turn left|right / turn around)
+    and nearest landmark names at decision nodes.
+  answer_source_field: [nav_graph, agent_trajectory, visible_objects]
 
 # ----- Options / distractors (spatially plausible only) -----
 options:
   count: 4
   correct: ordered_turn_sequence
   distractors:
-    - reversed_sequence            # correct turns in reverse order
-    - swapped_two_turns            # two adjacent turns exchanged
-    - plausible_but_unwalked_route # route that was never traversed
-  distractor_rule: all options are valid turn sequences using scene landmarks; exactly one matches traversed path
+    - opposite_direction      # flip one turn label
+    - wrong_decision_point    # correct label attached to wrong node
+    - extra_turn              # insert a spurious turn
+    - no_turn                 # drop a real turn
+  distractor_rule: >
+    distractors are mechanical perturbations of derive_turns() output;
+    never free-text authored wrong answers
 
 # ----- Difficulty scaling -----
 difficulty:
@@ -72,7 +77,7 @@ must_hold:
   - agent_actions between A and B are non-empty (>=2 movement actions)
   - question text contains no turn direction and no move description
   - answer traces to metadata (agent_trajectory + agent_actions)
-  - NOT survey_knowledge (path must have been walked, not inferred novel shortcut)
+  - NOT survey_based_route_planning (path must have been walked, not inferred novel shortcut)
 
 # ----- Output: item fields the generator must emit -----
 emit_item:
@@ -131,5 +136,5 @@ example_item:
   difficulty: 2
 
 # ----- Notes for sibling constructs -----
-# survey_knowledge: novel shortcut over UNTRAVERSED space; allocentric layout inference
+# survey_based_route_planning: novel shortcut over UNTRAVERSED space; allocentric layout inference
 # spatial_updating: single-object bearing update, not multi-step route recall

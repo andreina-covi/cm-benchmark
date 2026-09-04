@@ -76,6 +76,7 @@ class EpisodeStore:
                 displacement_events_json TEXT NOT NULL DEFAULT '[]',
                 displacement_candidates_json TEXT,
                 world_layout_json TEXT,
+                nav_graph_json TEXT,
                 passage_state_json TEXT,
                 region_trajectory_json TEXT,
                 episode_meta_json TEXT,
@@ -168,6 +169,7 @@ class EpisodeStore:
         cols = {r[1] for r in self._conn.execute('PRAGMA table_info(episodes)')}
         extras = {
             'world_layout_json': 'TEXT',
+            'nav_graph_json': 'TEXT',
             'passage_state_json': 'TEXT',
             'region_trajectory_json': 'TEXT',
             'episode_meta_json': 'TEXT',
@@ -196,9 +198,9 @@ class EpisodeStore:
                 episode_id, scene, environment, thresholds_json, movement_constant,
                 object_state_track_json, displacement_events_json,
                 displacement_candidates_json,
-                world_layout_json, passage_state_json, region_trajectory_json,
+                world_layout_json, nav_graph_json, passage_state_json, region_trajectory_json,
                 episode_meta_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 episode_id,
@@ -213,6 +215,9 @@ class EpisodeStore:
                 _dumps(episode.get('displacement_candidates', [])),
                 _dumps(episode.get('world_layout'))
                 if episode.get('world_layout') is not None
+                else None,
+                _dumps(episode.get('nav_graph'))
+                if episode.get('nav_graph') is not None
                 else None,
                 _dumps(episode.get('passage_state', [])),
                 _dumps(episode.get('region_trajectory', [])),
@@ -450,6 +455,7 @@ class EpisodeStore:
             'object_state_track': _loads(ep['object_state_track_json'], None),
             'displacement_events': _loads(ep['displacement_events_json'], []),
             'world_layout': _loads(ep['world_layout_json'], None) if 'world_layout_json' in ep.keys() else None,
+            'nav_graph': _loads(ep['nav_graph_json'], None) if 'nav_graph_json' in ep.keys() else None,
             'passage_state': _loads(ep['passage_state_json'], []) if 'passage_state_json' in ep.keys() else [],
             'region_trajectory': (
                 _loads(ep['region_trajectory_json'], [])
@@ -457,6 +463,11 @@ class EpisodeStore:
                 else []
             ),
             'episode_meta': _loads(ep['episode_meta_json'], {}) if 'episode_meta_json' in ep.keys() else {},
+            'displacement_candidates': (
+                _loads(ep['displacement_candidates_json'], [])
+                if 'displacement_candidates_json' in ep.keys()
+                else []
+            ),
             'steps': steps,
         }
 
