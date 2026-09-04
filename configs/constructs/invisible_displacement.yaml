@@ -11,7 +11,12 @@ invisible_displacement:
     '
   what_moves: object (while hidden)
   difficulty_axis:
-  - relation_shift_magnitude
+  - delay_steps
+  - load_n_objects
+  - verbosity
+  # verbosity: concise | verbose — verbose names other static scene objects
+  # (no relations) per taxonomy shared_rules exception; report separately
+  # from delay/load, don't pool with them
   answer_type:
   - recall_direction: egocentric direction at query pose; question names the destination cue
   - swap: egocentric direction; question names a previously seen partner object as the spatial

@@ -37,6 +37,14 @@ _ACTIONS_HOOKS = frozenset(
         'spatial_updating',
     }
 )
+# Taxonomy shared_rules exception: verbose may name other static scene objects
+# WITHOUT pairing them to direction/distance/relation (naming without relating).
+_VERBOSE_SCENE_DETAIL_CONSTRUCTS = frozenset(
+    {
+        'spatial_working_memory',
+        'invisible_displacement',
+    }
+)
 
 
 def _shuffle_options(correct: str, pool: list[str], seeds: list[str]) -> tuple[dict, dict, str]:
@@ -147,6 +155,9 @@ def _core_question(fact: PlannedFact) -> str:
     tmpl = select_template(fact.construct, template_mode=mode, index=tmpl_index)
 
     object_type = _usable_display_name(extra.get('object_type'), fact.queried_object_id)
+    # Precomputed by planner: '' if category unique, phrase if duplicate+landmark,
+    # or omitted (treated as '') for constructs without referring expressions.
+    disambiguator = extra.get('disambiguator') or ''
     reference = _usable_display_name(
         extra.get('reference_object') or extra.get('reference_entity'),
         fact.reference_object_id,
@@ -183,6 +194,7 @@ def _core_question(fact: PlannedFact) -> str:
         new_location=new_location,
         condition=condition,
         relation=relation,
+        disambiguator=disambiguator,
     )
     # Online sequential protocol: no multi-image "time order" cue; templates
     # already situate "now" / "{k} steps ago" relative to the live nav stream.
@@ -190,7 +202,11 @@ def _core_question(fact: PlannedFact) -> str:
 
 
 def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
-    """GT-grounded scene description that must not leak the answer label."""
+    """GT-grounded scene description that must not leak the answer label.
+
+    Per taxonomy shared_rules: only SWM / invisible_displacement verbose may
+    name other static scene objects, and never with direction/distance/relation.
+    """
     step_idx = fact.encoding_step if fact.encoding_step is not None else fact.query_step
     step = step_by_index(episode, step_idx) if step_idx is not None else None
     if step is None and episode.get('steps'):
@@ -198,23 +214,10 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
 
     parts = []
     extra = fact.extra or {}
-    k = extra.get('k')
-    if k is None and fact.query_step is not None and fact.encoding_step is not None:
-        k = max(1, int(fact.query_step) - int(fact.encoding_step))
-    k = max(1, int(k or 1))
 
-    # Online protocol: situate in the navigation stream, never "these N images".
-    if fact.construct == 'spatial_updating':
-        parts.append(
-            f'You have been navigating for the last {k} step(s). '
-            "Answer the object's bearing from your current pose."
-        )
-    elif fact.construct == 'spatial_working_memory':
-        parts.append(
-            f'The answer refers to the view from {k} steps ago, '
-            'when the object was still visible.'
-        )
-    elif fact.construct == 'invisible_displacement':
+    # Online protocol cues that are NOT already in the core template.
+    # SWM / spatial_updating embed {k} in CONSTRUCT_TEMPLATES — do not restate.
+    if fact.construct == 'invisible_displacement':
         mode = extra.get('template_mode')
         if mode == 'swap':
             parts.append(
@@ -263,42 +266,66 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
 
     visible = (step or {}).get('visible_objects') or {}
     queried = fact.queried_object_id
-    answer = (fact.answer_label or '').lower()
+    allow_scene_detail = fact.construct in _VERBOSE_SCENE_DETAIL_CONSTRUCTS
 
-    others = []
-    for oid, odata in visible.items():
-        if oid == queried:
-            continue
-        cat = object_type_from_id(oid, {oid: odata})
-        rel_bits = []
-        for edge in step.get('edges_egocentric') or []:
-            if edge.get('target') != oid:
+    # Naming without relating: type names only — never edges_egocentric / bearings.
+    # Union encode + query (and any shown intermediate) so multi-frame items still
+    # get scene detail when the encoding view is sparse.
+    if allow_scene_detail:
+        detail_steps = []
+        for s in (fact.encoding_step, fact.query_step):
+            if s is None:
                 continue
-            ar = edge.get('angle_relation') or []
-            from cm_benchmark.generation.constructs import angle_relation_to_ego_label
+            st = step_by_index(episode, int(s))
+            if st is not None:
+                detail_steps.append(st)
+        if not detail_steps and step is not None:
+            detail_steps = [step]
 
-            lab = angle_relation_to_ego_label(ar)
-            if lab and lab.lower() == answer:
-                continue
-            if ar and ar[0]:
-                rel_bits.append(f'to your {ar[0]}')
-            elif ar and ar[2]:
-                z = 'ahead' if ar[2] == 'front' else ar[2]
-                rel_bits.append(z + ' of you' if z == 'ahead' else f'{z} you')
-            break
-        if rel_bits:
-            others.append(f'a {cat} ({rel_bits[0]})')
-        else:
-            others.append(f'a {cat}')
+        others: list[str] = []
+        seen_types: set[str] = set()
+        for st in detail_steps:
+            for oid, odata in (st.get('visible_objects') or {}).items():
+                if oid == queried:
+                    continue
+                typ = object_type_from_id(oid, {oid: odata})
+                key = typ.lower()
+                if key in seen_types:
+                    continue
+                seen_types.add(key)
+                others.append(f'a {typ}')
 
-    if others:
-        if len(others) == 1:
-            parts.append(f'Also visible is {others[0]}.')
-        else:
+        if others:
+            if len(others) == 1:
+                parts.append(f'Also visible is {others[0]}.')
+            else:
+                parts.append(
+                    'Among other things, you can see '
+                    + ', '.join(others[:-1])
+                    + f', and {others[-1]}.'
+                )
+
+        nv_cats: list[str] = []
+        nv_seen: set[str] = set()
+        for st in detail_steps:
+            for oid, odata in list((st.get('non_visible_objects') or {}).items())[:4]:
+                if oid == queried:
+                    continue
+                typ = object_type_from_id(oid, {oid: odata})
+                key = typ.lower()
+                if key in nv_seen:
+                    continue
+                nv_seen.add(key)
+                nv_cats.append(typ)
+                if len(nv_cats) >= 4:
+                    break
+            if len(nv_cats) >= 4:
+                break
+        if nv_cats:
             parts.append(
-                'Among other things, you can see '
-                + ', '.join(others[:-1])
-                + f', and {others[-1]}.'
+                'Some objects are no longer in view, including '
+                + ', '.join(nv_cats)
+                + '.'
             )
 
     if queried:
@@ -308,25 +335,11 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         else:
             parts.append(f'You previously noticed a {qtype}.')
 
-    non_vis = (step or {}).get('non_visible_objects') or {}
-    nv_cats = []
-    for oid, odata in list(non_vis.items())[:4]:
-        if oid == queried:
-            continue
-        nv_cats.append(object_type_from_id(oid, {oid: odata}))
-    if nv_cats:
-        parts.append(
-            'Some objects are no longer in view, including '
-            + ', '.join(nv_cats)
-            + '.'
-        )
-
     preamble = ' '.join(parts).strip()
     if fact.answer_label and fact.answer_label.lower() in preamble.lower():
         preamble = preamble.replace(fact.answer_label, '[…]')
         preamble = preamble.replace(fact.answer_label.lower(), '[…]')
     return preamble or 'You observe several objects in the environment.'
-
 
 def build_question(episode: dict, fact: PlannedFact, style: str) -> str:
     core = _core_question(fact)
@@ -352,8 +365,54 @@ def _step_of(entry) -> Optional[int]:
         return None
 
 
+def _compact_pose(entry: dict) -> Optional[dict]:
+    """Item-level pose: step + xz + yaw only (drop pitch/roll, y, image_path)."""
+    step = _step_of(entry)
+    if 'x' in entry and 'z' in entry and 'heading' in entry:
+        try:
+            out = {
+                'x': float(entry['x']),
+                'z': float(entry['z']),
+                'heading': float(entry['heading']),
+            }
+        except (TypeError, ValueError):
+            return None
+        if step is not None:
+            out['step'] = step
+        return out
+
+    pos = entry.get('position') or entry.get('pos')
+    rot = entry.get('rotation') or entry.get('rot')
+    if pos is None or rot is None:
+        return None
+    try:
+        x = float(pos[0])
+        z = float(pos[2])
+        heading = float(rot[1] if len(rot) > 1 else rot[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    out = {'x': x, 'z': z, 'heading': heading}
+    if step is not None:
+        out['step'] = step
+    return out
+
+
+def _compact_action(entry: dict) -> Optional[dict]:
+    """Item-level action: step + label (+ degrees when present)."""
+    action = entry.get('action')
+    if action is None:
+        return None
+    out: dict = {'action': action}
+    step = _step_of(entry)
+    if step is not None:
+        out['step'] = step
+    if entry.get('degrees') is not None:
+        out['degrees'] = entry['degrees']
+    return out
+
+
 def _frame_poses(episode: dict, fact: PlannedFact) -> list[dict]:
-    """Pose per frame shown by the item, in image order."""
+    """Compact pose per frame shown by the item, in image order."""
     traj = [e for e in (episode.get('agent_trajectory') or []) if isinstance(e, dict)]
     by_path: dict[str, dict] = {}
     for entry in traj:
@@ -361,25 +420,43 @@ def _frame_poses(episode: dict, fact: PlannedFact) -> list[dict]:
         if path and path not in by_path:
             by_path[path] = entry
 
-    poses = [dict(by_path[p]) for p in (fact.image_paths or []) if p in by_path]
+    poses: list[dict] = []
+    for path in fact.image_paths or []:
+        entry = by_path.get(path)
+        if entry is None:
+            continue
+        compact = _compact_pose(entry)
+        if compact is not None:
+            poses.append(compact)
     if poses:
         return poses
 
     wanted = {int(s) for s in (fact.encoding_step, fact.query_step) if s is not None}
-    return [dict(e) for e in traj if _step_of(e) in wanted]
+    out = []
+    for e in traj:
+        if _step_of(e) not in wanted:
+            continue
+        compact = _compact_pose(e)
+        if compact is not None:
+            out.append(compact)
+    return out
 
 
 def _window_actions(episode: dict, fact: PlannedFact) -> list:
-    """Actions performed between the encoding frame and the query frame."""
+    """Actions between encoding and query frames (compact; no pose echo)."""
     if fact.query_step is None:
         return []
     t1 = int(fact.query_step)
     t0 = int(fact.encoding_step) if fact.encoding_step is not None else t1 - 1
     out = []
     for entry in episode.get('agent_actions') or []:
+        if not isinstance(entry, dict):
+            continue
         step = _step_of(entry)
         if step is not None and t0 < step <= t1:
-            out.append(dict(entry))
+            compact = _compact_action(entry)
+            if compact is not None:
+                out.append(compact)
     return out
 
 

@@ -34,17 +34,20 @@ def test_resolve_hyperparams_from_episode_meta_camera_agent():
     assert hp['h'] == 480
     assert hp['fov_v'] == 70
     assert hp['mov_constant'] == 0.25
-    assert hp['question_visibility']['min_side'] is None
-    assert hp['question_visibility']['min_occupancy_ratio'] is None
+    # Hard thresholds are on by default (no joblib required).
+    assert hp['question_visibility']['min_side'] == 8.0
+    assert hp['question_visibility']['min_bbox_area'] == 100.0
+    assert hp['question_visibility']['min_visible_pixels'] == 40.0
 
 
-def test_passes_filter_off_by_default():
+def test_passes_filter_defaults_drop_tiny_blob():
     m = metrics_from_nav_row(
         {'cmin': 0, 'rmin': 0, 'cmax': 2, 'rmax': 2},
         frame_w=396,
         frame_h=224,
     )
-    assert passes_question_visibility_filter(m, None) is True
+    assert passes_question_visibility_filter(m, None) is False
+    assert passes_question_visibility_filter(m, False) is True
 
 
 def test_metrics_prefer_exported_columns():
@@ -80,11 +83,18 @@ def test_passes_filter_min_side_and_occupancy():
             'bbox-area': 25,
             'min-side': 5,
             'occupancy-ratio': 0.2,
+            'visible-pixels': 20,
         }
     )
-    assert passes_question_visibility_filter(
-        tiny, {'min_side': 12, 'min_occupancy_ratio': 0.3}
-    ) is False
+    # Explicit policy: only side + occupancy (other defaults cleared).
+    only_side_occ = {
+        'min_bbox_area': None,
+        'min_side': 12,
+        'min_occupancy_ratio': 0.3,
+        'min_visible_pixels': None,
+        'max_obj_distance': None,
+    }
+    assert passes_question_visibility_filter(tiny, only_side_occ) is False
 
     clear = metrics_from_nav_row(
         {
@@ -105,9 +115,26 @@ def test_passes_filter_min_side_and_occupancy():
 
 
 def test_missing_occupancy_does_not_reject_when_threshold_set():
-    m = metrics_from_nav_row({'cmin': 0, 'rmin': 0, 'cmax': 50, 'rmax': 50})
+    m = metrics_from_nav_row(
+        {
+            'cmin': 0,
+            'rmin': 0,
+            'cmax': 50,
+            'rmax': 50,
+            'bbox-area': 2500,
+            'min-side': 50,
+            'visible-pixels': 2000,
+        }
+    )
     assert m['occupancy_ratio'] is None
-    assert passes_question_visibility_filter(m, {'min_occupancy_ratio': 0.3}) is True
+    only_occ = {
+        'min_bbox_area': None,
+        'min_side': None,
+        'min_occupancy_ratio': 0.3,
+        'min_visible_pixels': None,
+        'max_obj_distance': None,
+    }
+    assert passes_question_visibility_filter(m, only_occ) is True
 
 
 def test_max_obj_distance():
@@ -120,18 +147,103 @@ def test_max_obj_distance():
             'bbox-area': 1600,
             'min-side': 40,
             'occupancy-ratio': 0.9,
+            'visible-pixels': 1400,
             'obj-distance': 5.0,
         }
     )
-    assert passes_question_visibility_filter(far, {'max_obj_distance': 2.0}) is False
-    assert passes_question_visibility_filter(far, {'max_obj_distance': 6.0}) is True
+    only_dist = {
+        'min_bbox_area': None,
+        'min_side': None,
+        'min_occupancy_ratio': None,
+        'min_visible_pixels': None,
+        'max_obj_distance': 2.0,
+    }
+    assert passes_question_visibility_filter(far, only_dist) is False
+    only_dist_loose = dict(only_dist, max_obj_distance=6.0)
+    assert passes_question_visibility_filter(far, only_dist_loose) is True
 
 
 def test_alias_min_bbox_side_maps_to_min_side():
     m = metrics_from_nav_row(
-        {'cmin': 0, 'rmin': 0, 'cmax': 5, 'rmax': 5, 'min-side': 5, 'bbox-area': 25}
+        {
+            'cmin': 0,
+            'rmin': 0,
+            'cmax': 5,
+            'rmax': 5,
+            'min-side': 5,
+            'bbox-area': 25,
+            'visible-pixels': 20,
+        }
     )
-    assert passes_question_visibility_filter(m, {'min_bbox_side': 12}) is False
+    only_side = {
+        'min_bbox_area': None,
+        'min_side': None,  # will be overridden via alias after normalize... 
+        'min_occupancy_ratio': None,
+        'min_visible_pixels': None,
+        'max_obj_distance': None,
+        'min_bbox_side': 12,
+    }
+    assert passes_question_visibility_filter(m, only_side) is False
+
+
+def test_legacy_all_null_thresholds_restore_defaults():
+    from cm_benchmark.generator.visibility_filters import (
+        normalize_question_visibility_thresholds,
+    )
+
+    thr = normalize_question_visibility_thresholds(
+        {
+            'min_bbox_area': None,
+            'min_side': None,
+            'min_occupancy_ratio': None,
+            'min_visible_pixels': None,
+            'max_obj_distance': None,
+        }
+    )
+    assert thr['min_bbox_area'] == 100.0
+    assert thr['min_side'] == 8.0
+
+
+def test_apply_question_visibility_to_episode_drops_tiny():
+    from cm_benchmark.generator.visibility_filters import (
+        apply_question_visibility_to_episode,
+    )
+
+    ep = {
+        'question_visibility': {
+            'min_bbox_area': None,
+            'min_side': None,
+            'min_occupancy_ratio': None,
+            'min_visible_pixels': None,
+            'max_obj_distance': None,
+        },
+        'steps': [
+            {
+                'step': 0,
+                'visible_objects': {
+                    'Potato|1': {
+                        'bbox_area': 9,
+                        'min_side': 3,
+                        'visible_pixels': 8,
+                        'occupancy_ratio': 0.9,
+                        'obj_distance': 2.0,
+                    },
+                    'Fridge|1': {
+                        'bbox_area': 2000,
+                        'min_side': 40,
+                        'visible_pixels': 1800,
+                        'occupancy_ratio': 0.9,
+                        'obj_distance': 2.0,
+                    },
+                },
+            }
+        ],
+    }
+    out = apply_question_visibility_to_episode(ep)
+    assert 'Potato|1' not in out['steps'][0]['visible_objects']
+    assert 'Fridge|1' in out['steps'][0]['visible_objects']
+    # Original episode untouched
+    assert 'Potato|1' in ep['steps'][0]['visible_objects']
 
 
 def test_classify_visibility_proba_bands():
