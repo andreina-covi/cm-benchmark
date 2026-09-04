@@ -44,12 +44,17 @@ credentials.json
 Thumbs.db
 
 # --- Local episode / draft outputs (regenerate from collection) ---
-# Keep package code under storage/; ignore simulator artifacts.
+# Keep package code under storage/; ignore simulator artifacts + SQLite DBs.
+src/cm_benchmark/storage/ai2thor/*.db
+src/cm_benchmark/storage/ai2thor/*.db-*
 src/cm_benchmark/storage/ai2thor/episodes.db
 src/cm_benchmark/storage/ai2thor/episodes.db-*
+src/cm_benchmark/storage/ai2thor/episodes_*.db
+src/cm_benchmark/storage/ai2thor/episodes_*.db-*
 src/cm_benchmark/storage/ai2thor/nav_data/
 src/cm_benchmark/storage/ai2thor/annotated/
 src/cm_benchmark/storage/ai2thor/items/
+src/cm_benchmark/storage/ai2thor/output/
 
 # --- Local analysis plot outputs ---
 /analysis/
@@ -57,9 +62,7 @@ src/cm_benchmark/storage/ai2thor/items/
 # --- Regenerable labeling / calibration artifacts (root) ---
 /labeling_tool.html
 /calibration_manifest.csv
+*.joblib
 
 # --- Presentation build helper (optional local venv) ---
 .venv-pptx/
-
-# --- Local path processing / labeling tool outputs ---
-src/cm_benchmark/storage/ai2thor/output/
