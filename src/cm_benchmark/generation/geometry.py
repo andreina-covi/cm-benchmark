@@ -6,36 +6,36 @@ from typing import Any, Optional
 
 import numpy as np
 
-from cm_benchmark.generation.constructs import angle_relation_to_ego_label
-from cm_benchmark.utils.spatial_relations import get_direction_angle
+from cm_benchmark.generation.constructs import (
+    AHEAD_HALF_WIDTH_FULL,
+    local_offset_to_ego_label,
+)
 from cm_benchmark.utils.spatial_transformer import world_to_local
-
-
-def _relation_thresholds(episode: dict) -> tuple[float, float]:
-    thr = (episode.get('thresholds') or {}).get('relation') or {}
-    angle = float(thr.get('lateral_deg', 15))
-    vertical = float(thr.get('vertical_m', 0.1))
-    return angle, vertical
 
 
 def ego_label_from_world_pose(
     agent_pos,
     agent_rot,
     world_pos,
-    episode: dict,
+    episode: dict = None,
+    *,
+    ahead_half_width: float = AHEAD_HALF_WIDTH_FULL,
 ) -> Optional[str]:
-    """Map agent pose + world object pose → horizontal MC ego label."""
+    """Map agent pose + world object pose → horizontal MC ego label.
+
+    ``episode`` is accepted for call-site compatibility. Pass
+    ``AHEAD_HALF_WIDTH_FOV`` when the object is constrained to the camera FOV.
+    """
+    del episode  # unused — wedge width is explicit via ahead_half_width
     if agent_pos is None or agent_rot is None or world_pos is None:
         return None
     try:
         local = world_to_local(agent_pos, agent_rot, world_pos)
     except Exception:
         return None
-    angle_thr, vertical_thr = _relation_thresholds(episode)
-    angle_relation = get_direction_angle(
-        np.asarray(local, dtype=float), angle_thr, vertical_thr
+    return local_offset_to_ego_label(
+        np.asarray(local, dtype=float), ahead_half_width=ahead_half_width
     )
-    return angle_relation_to_ego_label(list(angle_relation))
 
 
 def agent_pose_at_step(episode: dict, step_idx: int) -> tuple[Optional[Any], Optional[Any]]:

@@ -61,18 +61,31 @@ def get_distance_text(number, min_distance, med_distance, max_distance):
         text = "beyond"
     return text
 
-def get_direction_angle(diff, angle_threshold_xz, vertical_threshold, depth_threshold=0.0):
+def get_direction_angle(
+    diff,
+    angle_threshold_xz,
+    vertical_threshold,
+    depth_threshold=0.0,
+    ahead_half_width: float = 20.0,
+):
     """
     Egocentric relation from a local offset (dx, dy, dz).
 
-    - left/right: horizontal bearing atan2(x, z)
-    - above/below: y
-    - front/behind: sign of local z (camera forward). Independent of distance_label
-      (“beyond” can still be “front” = ahead of the agent but far away).
+    Horizontal labels use the same ahead/right/behind/left sectors as
+    ``angle_to_ego_label``. Default ``ahead_half_width=20`` matches FOV-
+    constrained collection (visible objects). Pass 45 for full-circle use.
+    ``angle_threshold_xz`` / ``depth_threshold`` are ignored (API compat).
     """
+    del angle_threshold_xz, depth_threshold
     x, y, z = diff
     angle_xz = math.atan2(x, z) * 180 / math.pi
-    x_dir = get_x_direction_angle(angle_xz, angle_threshold_xz)
+    a = angle_xz % 360.0
+    w = float(ahead_half_width)
     y_dir = get_y_direction(y, vertical_threshold)
-    z_dir = get_z_direction(z, depth_threshold)
-    return (x_dir, y_dir, z_dir)
+    if a < w or a >= 360.0 - w:
+        return ("", y_dir, "front")
+    if a < 180.0 - w:
+        return ("right", y_dir, "")
+    if a < 180.0 + w:
+        return ("", y_dir, "behind")
+    return ("left", y_dir, "")

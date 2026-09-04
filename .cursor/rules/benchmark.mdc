@@ -134,8 +134,11 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.
-- Spatial updating verifies net pose change from trajectory (position or
-  heading), never action count alone.
+- Egocentric MC labels use ``angle_to_ego_label(ahead_half_width=…)``:
+  FOV-constrained constructs (egocentric_encoding, disambiguator, SWM encode)
+  use 20°; full-circle (spatial_updating, perspective_taking, ID query) use 45°.
+  For current-frame-visible constructs, GT "behind you" is impossible (FOV) —
+  only a distractor. Distractor maps keep the same four string labels.
 - Constructs that lack required metadata (e.g. object facing for
   allocentric_encoding) stay unsupported rather than inventing facts.
 

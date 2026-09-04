@@ -98,11 +98,13 @@ def test_direction_angle_object_ahead():
 
 
 def test_direction_angle_object_to_the_right():
-    assert get_direction_angle((1.0, 0.0, 1.0), ANGLE_THR, VERT_THR) == ("right", "", "front")
+    # atan2(1,1)=45° with FOV half_width=20 → right
+    assert get_direction_angle((1.0, 0.0, 1.0), ANGLE_THR, VERT_THR) == ("right", "", "")
 
 
 def test_direction_angle_object_behind_left():
-    assert get_direction_angle((-1.0, 0.0, -1.0), ANGLE_THR, VERT_THR) == ("left", "", "behind")
+    # atan2(-1,-1)=225° with FOV half_width=20 → left (behind band is [160,200))
+    assert get_direction_angle((-1.0, 0.0, -1.0), ANGLE_THR, VERT_THR) == ("left", "", "")
 
 
 def test_direction_angle_object_slightly_above():
@@ -112,16 +114,16 @@ def test_direction_angle_object_slightly_above():
     assert z == "front"
 
 
-def test_direction_angle_almost_on_axis_is_ambiguous_laterally():
-    # small x relative to z → angle near 0 → no left/right
+def test_direction_angle_small_lateral_still_ahead_in_equal_wedges():
+    # ~0.57° off axis — equal wedges keep this as ahead (no 15° dead zone)
     x, y, z = get_direction_angle((0.01, 0.0, 1.0), ANGLE_THR, VERT_THR)
     assert x == ""
     assert z == "front"
 
 
 def test_direction_angle_far_ahead_is_still_front():
-    # distance_label may be "beyond", but local +Z stays "front"
-    assert get_direction_angle((3.0, 0.0, 5.0), ANGLE_THR, VERT_THR)[2] == "front"
+    # atan2(1,5)≈11° → still ahead under FOV half_width=20
+    assert get_direction_angle((1.0, 0.0, 5.0), ANGLE_THR, VERT_THR) == ("", "", "front")
 
 
 def test_direction_angle_true_behind_uses_negative_z():

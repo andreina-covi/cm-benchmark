@@ -81,6 +81,7 @@ must_hold:
   - answer computed from current agent pose + object position
   - question text contains no direction word and no move verb
   - answer traces to geometry (agent_pose@current + object_position)
+  # FOV: GT "behind you" is impossible (only a distractor); zero behind count is expected
 
 # ----- Output: item fields the generator must emit -----
 emit_item:

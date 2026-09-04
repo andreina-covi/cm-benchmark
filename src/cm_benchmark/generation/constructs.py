@@ -166,15 +166,84 @@ def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -
     return stem if stem else str(obj_id)
 
 
-def angle_relation_to_ego_label(angle_relation) -> Optional[str]:
-    """Map GT angle_relation (x, y, z) to a multiple-choice ego direction label.
+def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
+    """Map bearing degrees to an ego MC label with a tunable ahead wedge.
 
-    Only horizontal labels are used in MC pools (left/right/ahead/behind).
-    Vertical-only relations return None so the planner can skip them.
+    ``ahead_half_width`` is half the ahead sector in degrees (total ahead =
+    2 * width). Side/behind wedges share the remaining circle symmetrically:
+
+      ahead:  [360-w, 360) ∪ [0, w)
+      right:  [w, 180-w)
+      behind: [180-w, 180+w)
+      left:   [180+w, 360-w)
+
+    Use ``AHEAD_HALF_WIDTH_FOV`` (20°) when the object must be in the current
+    camera FOV (egocentric_encoding, disambiguator landmarks). Use
+    ``AHEAD_HALF_WIDTH_FULL`` (45°) when the queried pose can place the object
+    anywhere (spatial_updating, perspective_taking, hidden-object query poses).
+    """
+    w = float(ahead_half_width)
+    a = float(angle_deg) % 360.0
+    if a < w or a >= 360.0 - w:
+        return 'ahead of you'
+    if a < 180.0 - w:
+        return 'to your right'
+    if a < 180.0 + w:
+        return 'behind you'
+    return 'to your left'
+
+
+# FOV-constrained constructs: object visible now → bearing stays near ahead;
+# a 45° half-width collapses almost everything to "ahead of you".
+AHEAD_HALF_WIDTH_FOV = 20.0
+# Full-circle constructs: after real/imagined pose change, behind is legitimate.
+AHEAD_HALF_WIDTH_FULL = 45.0
+
+
+def bearing_deg_xz(dx: float, dz: float) -> Optional[float]:
+    """Horizontal bearing degrees from local/world xz offset (0 = +Z ahead)."""
+    if abs(float(dx)) < 1e-12 and abs(float(dz)) < 1e-12:
+        return None
+    return math.degrees(math.atan2(float(dx), float(dz))) % 360.0
+
+
+def local_offset_to_ego_label(
+    local_xyz, *, ahead_half_width: float = AHEAD_HALF_WIDTH_FULL
+) -> Optional[str]:
+    """MC ego label from a local (dx, dy, dz) offset."""
+    try:
+        x = float(local_xyz[0])
+        z = float(local_xyz[2])
+    except (TypeError, ValueError, IndexError):
+        return None
+    bearing = bearing_deg_xz(x, z)
+    if bearing is None:
+        return None
+    return angle_to_ego_label(bearing, ahead_half_width=ahead_half_width)
+
+
+def angle_relation_to_ego_label(
+    angle_relation, *, ahead_half_width: float = AHEAD_HALF_WIDTH_FULL
+) -> Optional[str]:
+    """Map a stored relation triple or local offset to an MC label.
+
+    Prefer ``local_offset_to_ego_label`` / ``angle_to_ego_label`` at call sites.
+    For legacy exclusive triples (one of left/right/front/behind), map directly;
+    composite triples from the old 15° scheme are not recovered — return None
+    so callers recompute from poses.
     """
     if not angle_relation or len(angle_relation) < 3:
         return None
+    # Numeric local offset (dx, dy, dz)
+    try:
+        x, _y, z = float(angle_relation[0]), float(angle_relation[1]), float(angle_relation[2])
+        return local_offset_to_ego_label((x, _y, z), ahead_half_width=ahead_half_width)
+    except (TypeError, ValueError):
+        pass
     x_dir, _y_dir, z_dir = angle_relation[0], angle_relation[1], angle_relation[2]
+    bits = [b for b in (x_dir, z_dir) if b]
+    if len(bits) > 1:
+        return None
     if x_dir == 'left':
         return 'to your left'
     if x_dir == 'right':
@@ -184,6 +253,14 @@ def angle_relation_to_ego_label(angle_relation) -> Optional[str]:
     if z_dir == 'behind':
         return 'behind you'
     return None
+
+
+_MC_TO_REFERRING = {
+    'ahead of you': 'ahead of',
+    'to your right': 'to the right of',
+    'behind you': 'behind',
+    'to your left': 'to the left of',
+}
 
 
 def find_ego_edge(step: dict, obj_id: str) -> Optional[dict]:
@@ -209,23 +286,26 @@ def find_allocentric_edge(step: dict) -> Optional[dict]:
 
 
 def translated_egocentric_label(
-    agent_heading: float, landmark_pos: dict, target_pos: dict
+    agent_heading: float,
+    landmark_pos: dict,
+    target_pos: dict,
+    *,
+    ahead_half_width: float = AHEAD_HALF_WIDTH_FOV,
 ) -> Optional[str]:
     """Direction of target from landmark in the agent's yaw frame (referring only).
 
-    Phrases are landmark-relative (``to the left of``), not viewer MC labels
-    (``to your left``), so they do not state the tested answer.
+    Default FOV half-width: disambiguator landmarks are co-visible in-frame.
+    Maps ``angle_to_ego_label`` output to landmark-relative phrases.
     """
     dx = float(target_pos['x']) - float(landmark_pos['x'])
     dz = float(target_pos['z']) - float(landmark_pos['z'])
-    angle = (math.degrees(math.atan2(dx, dz)) - float(agent_heading)) % 360
-    if angle < 45 or angle >= 315:
-        return 'ahead of'
-    if angle < 135:
-        return 'to the right of'
-    if angle < 225:
-        return 'behind'
-    return 'to the left of'
+    bearing = bearing_deg_xz(dx, dz)
+    if bearing is None:
+        return None
+    rel = (bearing - float(agent_heading)) % 360.0
+    return _MC_TO_REFERRING[
+        angle_to_ego_label(rel, ahead_half_width=ahead_half_width)
+    ]
 
 
 def _visible_catalog(step: dict) -> dict[str, dict]:
@@ -486,11 +566,17 @@ def net_pose_changed(
     return pos_delta > pos_tol or heading_delta > heading_tol_deg
 
 
-def imagined_perspective_label(pos_a: dict, pos_b: dict, pos_c: dict) -> Optional[str]:
+def imagined_perspective_label(
+    pos_a: dict,
+    pos_b: dict,
+    pos_c: dict,
+    *,
+    ahead_half_width: float = AHEAD_HALF_WIDTH_FULL,
+) -> Optional[str]:
     """Direction of C from an imagined viewpoint standing at A, facing B.
 
-    Heading is RELATIONAL (A→B) — no object-intrinsic-front data needed.
-    Positions are dicts with x/z (y optional).
+    Heading is RELATIONAL (A→B). Full-circle half-width by default — the
+    imagined pose is not FOV-constrained.
     """
     try:
         ax, az = float(pos_a['x']), float(pos_a['z'])
@@ -498,20 +584,12 @@ def imagined_perspective_label(pos_a: dict, pos_b: dict, pos_c: dict) -> Optiona
         cx, cz = float(pos_c['x']), float(pos_c['z'])
     except (KeyError, TypeError, ValueError):
         return None
-    if abs(bx - ax) < 1e-9 and abs(bz - az) < 1e-9:
+    heading = bearing_deg_xz(bx - ax, bz - az)
+    angle = bearing_deg_xz(cx - ax, cz - az)
+    if heading is None or angle is None:
         return None
-    if abs(cx - ax) < 1e-9 and abs(cz - az) < 1e-9:
-        return None
-    heading = math.degrees(math.atan2(bx - ax, bz - az))
-    angle = math.degrees(math.atan2(cx - ax, cz - az))
-    rel = (angle - heading + 360) % 360
-    if rel < 45 or rel >= 315:
-        return 'ahead of you'
-    if rel < 135:
-        return 'to your right'
-    if rel < 225:
-        return 'behind you'
-    return 'to your left'
+    rel = (angle - heading) % 360.0
+    return angle_to_ego_label(rel, ahead_half_width=ahead_half_width)
 
 
 def xyz_as_dict(pos) -> Optional[dict]:
