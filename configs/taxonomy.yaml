@@ -72,6 +72,9 @@ class_1:
         - queried object is VISIBLE in the shown view
         - no delay and no agent movement
         - answer computed from current agent pose + object position
+        # FOV constraint: "behind you" cannot be a ground-truth answer (object
+        # would be outside the camera); it appears only as a distractor. A zero
+        # GT count for behind is expected, not a labeling bug.
 
     allocentric_encoding:
       class: 1

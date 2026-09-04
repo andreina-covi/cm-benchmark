@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from cm_benchmark.generation.constructs import (
+    AHEAD_HALF_WIDTH_FOV,
+    AHEAD_HALF_WIDTH_FULL,
     EGO_DIRECTION_OPTIONS,
     MIRRORED_LR,
     OPPOSITE,
     ORTHOGONAL,
-    angle_relation_to_ego_label,
     find_ego_edge,
-    find_inferred_edge,
     fov_metrics_ok,
     humanize_receptacle,
     imagined_perspective_label,
@@ -227,6 +227,32 @@ def _distinguishable_encoding_sighting(
     return find_ego_edge(step, obj_id) is not None
 
 
+def _ego_label_at(
+    episode: dict,
+    step_idx: int,
+    obj_id: str,
+    *,
+    obj_pos=None,
+    ahead_half_width: float = AHEAD_HALF_WIDTH_FULL,
+) -> Optional[str]:
+    """Ego MC label from poses; pass FOV vs full-circle half-width per construct."""
+    ag_pos, ag_rot = agent_pose_at_step(episode, int(step_idx))
+    pos = obj_pos
+    if pos is None:
+        step = step_by_index(episode, int(step_idx))
+        if step is not None:
+            odata = (step.get('visible_objects') or {}).get(obj_id) or {}
+            pos = odata.get('position')
+            if pos is None:
+                mem = (step.get('non_visible_objects') or {}).get(obj_id) or {}
+                pos = mem.get('position') or (mem.get('last_known') or {}).get('position')
+        if pos is None:
+            pos = _object_world_pos(episode, obj_id)
+    return ego_label_from_world_pose(
+        ag_pos, ag_rot, pos, episode, ahead_half_width=ahead_half_width
+    )
+
+
 def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     out = []
     for step in episode.get('steps') or []:
@@ -238,7 +264,13 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
             edge = find_ego_edge(step, obj_id)
             if not edge:
                 continue
-            label = angle_relation_to_ego_label(edge.get('angle_relation'))
+            label = _ego_label_at(
+                episode,
+                step_idx,
+                obj_id,
+                obj_pos=visible[obj_id].get('position'),
+                ahead_half_width=AHEAD_HALF_WIDTH_FOV,
+            )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
             disambiguator = _referring_disambiguator(episode, step_idx, obj_id)
@@ -256,7 +288,8 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
                     queried_object_id=obj_id,
                     answer_label=label,
                     answer_source=[
-                        f"steps[{step_idx}].edges_egocentric[target={obj_id}].angle_relation"
+                        f"agent_pose@[{step_idx}] + visible_objects[{obj_id}].position "
+                        f"(equal-wedge bearing)"
                     ],
                     image_paths=_img(step),
                     options_pool=pool,
@@ -325,21 +358,33 @@ def plan_spatial_working_memory(
                 continue
             if not _distinguishable_encoding_sighting(episode, enc_idx, obj_id):
                 continue
-            # Answer only from encoding-step ego edge (not inferred-now)
+            # Answer from equal-wedge bearing at encoding pose (not stored triple)
             edge = find_ego_edge(enc, obj_id)
             if not edge:
                 continue
-            label = angle_relation_to_ego_label(edge.get('angle_relation'))
+            enc_vis = (enc.get('visible_objects') or {}).get(obj_id) or {}
+            label = _ego_label_at(
+                episode,
+                enc_idx,
+                obj_id,
+                obj_pos=enc_vis.get('position'),
+                ahead_half_width=AHEAD_HALF_WIDTH_FOV,
+            )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
 
             # Diagnostic: current-view answer if something else is at that bearing now
             current_view_lab = None
             for oid, odata in (step.get('visible_objects') or {}).items():
-                e = find_ego_edge(step, oid)
-                if not e:
+                if not find_ego_edge(step, oid):
                     continue
-                lab = angle_relation_to_ego_label(e.get('angle_relation'))
+                lab = _ego_label_at(
+                    episode,
+                    step_idx,
+                    oid,
+                    obj_pos=odata.get('position'),
+                    ahead_half_width=AHEAD_HALF_WIDTH_FOV,
+                )
                 if lab and lab != label:
                     current_view_lab = lab
                     break
@@ -367,7 +412,8 @@ def plan_spatial_working_memory(
                     queried_object_id=obj_id,
                     answer_label=label,
                     answer_source=[
-                        f"steps[{enc_idx}].edges_egocentric[target={obj_id}].angle_relation"
+                        f"agent_pose@[{enc_idx}] + object_position "
+                        f"(equal-wedge bearing; recalled)"
                     ],
                     image_paths=_images_between(episode, enc_idx, step_idx),
                     options_pool=pool,
@@ -518,8 +564,12 @@ def _relation_shift_magnitude(
     ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
     if ag_pos is None or ag_rot is None:
         return None
-    pre = ego_label_from_world_pose(ag_pos, ag_rot, from_pos, episode)
-    post = ego_label_from_world_pose(ag_pos, ag_rot, to_pos, episode)
+    pre = ego_label_from_world_pose(
+        ag_pos, ag_rot, from_pos, episode, ahead_half_width=AHEAD_HALF_WIDTH_FULL
+    )
+    post = ego_label_from_world_pose(
+        ag_pos, ag_rot, to_pos, episode, ahead_half_width=AHEAD_HALF_WIDTH_FULL
+    )
     if not pre or not post:
         return None
     left_right = {'to your left', 'to your right'}
@@ -700,7 +750,13 @@ def _ego_pool_from_specs(
     for spec in ordered:
         if spec.get('position') is None:
             continue
-        lab = ego_label_from_world_pose(ag_pos, ag_rot, spec['position'], episode)
+        lab = ego_label_from_world_pose(
+            ag_pos,
+            ag_rot,
+            spec['position'],
+            episode,
+            ahead_half_width=AHEAD_HALF_WIDTH_FULL,
+        )
         if not lab:
             continue
         if lab in labels_seen:
@@ -1094,29 +1150,32 @@ def plan_spatial_updating(
             # Queried object must NOT be visible at final pose
             if obj_id in (step.get('visible_objects') or {}):
                 continue
-            # Recompute bearing from poses when possible; fall back to inferred edge
+            # Recompute bearing from poses (equal wedges); no stored-triple fallback
             label = None
             ag_pos, ag_rot = agent_pose_at_step(episode, step_idx)
             obj_pos = mem.get('position') or (mem.get('last_known') or {}).get('position')
             if obj_pos is None:
                 obj_pos = _object_world_pos(episode, obj_id)
             if ag_pos is not None and ag_rot is not None and obj_pos is not None:
-                label = ego_label_from_world_pose(ag_pos, ag_rot, obj_pos, episode)
-            if not label:
-                now_edge = find_inferred_edge(step, obj_id)
-                if not now_edge:
-                    continue
-                label = angle_relation_to_ego_label(now_edge.get('angle_relation'))
+                label = ego_label_from_world_pose(
+                    ag_pos,
+                    ag_rot,
+                    obj_pos,
+                    episode,
+                    ahead_half_width=AHEAD_HALF_WIDTH_FULL,
+                )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
             key = (obj_id, enc_idx)
             if key in seen_answers and seen_answers[key] == label:
                 continue  # duplicate encode/answer across query steps
-            past_edge = find_ego_edge(enc, obj_id)
-            pre = (
-                angle_relation_to_ego_label(past_edge.get('angle_relation'))
-                if past_edge
-                else None
+            enc_vis = (enc.get('visible_objects') or {}).get(obj_id) or {}
+            pre = _ego_label_at(
+                episode,
+                enc_idx,
+                obj_id,
+                obj_pos=enc_vis.get('position'),
+                ahead_half_width=AHEAD_HALF_WIDTH_FOV,
             )
             if pre and pre not in EGO_DIRECTION_OPTIONS:
                 pre = None
@@ -1141,7 +1200,7 @@ def plan_spatial_updating(
                     answer_source=[
                         f"agent_trajectory[{enc_idx}→{step_idx}] (net pose change)",
                         f"object_state_track[{obj_id}] (static)",
-                        f"agent_pose@[{step_idx}] + object_position",
+                        f"agent_pose@[{step_idx}] + object_position (equal-wedge bearing)",
                     ],
                     image_paths=_images_between(episode, enc_idx, step_idx),
                     options_pool=pool,
@@ -1900,7 +1959,9 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     continue
                 if a['name'] == b['name'] or a['name'] == c['name'] or b['name'] == c['name']:
                     continue
-                label = imagined_perspective_label(pos_a, pos_b, pos_c)
+                label = imagined_perspective_label(
+                    pos_a, pos_b, pos_c, ahead_half_width=AHEAD_HALF_WIDTH_FULL
+                )
                 if not label or label not in EGO_DIRECTION_OPTIONS:
                     continue
                 query_step = max(
@@ -1908,10 +1969,16 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     int(b['first_seen_step']),
                     int(c['first_seen_step']),
                 )
-                # Camera-frame distractor: C relative to actual agent pose
+                # Camera-frame distractor: C relative to actual agent pose (FOV)
                 ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
                 cam = (
-                    ego_label_from_world_pose(ag_pos, ag_rot, c['position'], episode)
+                    ego_label_from_world_pose(
+                        ag_pos,
+                        ag_rot,
+                        c['position'],
+                        episode,
+                        ahead_half_width=AHEAD_HALF_WIDTH_FOV,
+                    )
                     if ag_pos is not None
                     else None
                 )
@@ -1922,7 +1989,9 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     'y': pos_a['y'],
                     'z': pos_a['z'] - (pos_b['z'] - pos_a['z']),
                 }
-                wrong = imagined_perspective_label(pos_a, wrong_b, pos_c)
+                wrong = imagined_perspective_label(
+                    pos_a, wrong_b, pos_c, ahead_half_width=AHEAD_HALF_WIDTH_FULL
+                )
                 pool = [label]
                 seeds: list[str] = []
                 if cam and cam not in pool:

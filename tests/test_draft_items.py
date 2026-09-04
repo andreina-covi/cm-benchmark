@@ -92,17 +92,19 @@ def test_egocentric_item_has_answer_source(tiny_episode):
     assert item['construct'] == 'egocentric_encoding'
     assert item['answer'] in item['options']
     assert item['answer_source']
-    assert item['answer_source'][0].startswith('steps[')
-    step = tiny_episode['steps'][item['query_step']]
-    edge = next(
-        e
-        for e in step['edges_egocentric']
-        if e['target'] == item['queried_object_id']
-    )
-    from cm_benchmark.generation.constructs import angle_relation_to_ego_label
+    assert 'equal-wedge' in item['answer_source'][0]
+    from cm_benchmark.generation.geometry import ego_label_from_world_pose, agent_pose_at_step
 
-    assert item['options'][item['answer']] == angle_relation_to_ego_label(
-        edge['angle_relation']
+    step_idx = item['query_step']
+    oid = item['queried_object_id']
+    ag_pos, ag_rot = agent_pose_at_step(tiny_episode, step_idx)
+    obj_pos = tiny_episode['steps'][step_idx]['visible_objects'][oid]['position']
+    assert item['options'][item['answer']] == ego_label_from_world_pose(
+        ag_pos,
+        ag_rot,
+        obj_pos,
+        tiny_episode,
+        ahead_half_width=20.0,
     )
 
 
