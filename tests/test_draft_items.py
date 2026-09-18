@@ -230,7 +230,7 @@ def test_invisible_displacement_skips_colliding_distractors(folder_episode):
     for fact in ok:
         labels = fact.options_pool or []
         assert len(labels) == len(set(labels))
-        assert len(labels) >= 2
+        assert len(labels) == 4
         assert fact.answer_label in labels
         assert (fact.extra or {}).get('template_mode') in ('recall_direction', 'swap')
 
@@ -431,19 +431,20 @@ def test_swm_encoding_uses_last_distinguishable_not_weak_last_seen():
     assert any(f.query_step >= 3 for f in ok)
 
 
-def test_id_encode_accepts_soft_fov_prop_not_query_landmark_bar():
-    """ID props (Cup-sized) use soft FOV encode; QUERY_FOV landmark bar would reject them."""
+def test_id_encode_requires_distinguishable_rejects_track_only():
+    """Track FOV without visible distinguishable metrics must not encode ID."""
     from cm_benchmark.generation.planner import (
         _ID_ENCODE_FOV,
         _last_distinguishable_sighting,
+        plan_invisible_displacement,
     )
 
-    cup = {
-        'category': 'Cup',
-        'position': [0.2, 0.9, 0.5],
-        'bbox_area': 493.0,
-        'min_side': 17.0,
-        'visible_pixels': 282.0,
+    counter = {
+        'category': 'CounterTop',
+        'position': [2.0, 0.9, 1.0],
+        'bbox_area': 5000.0,
+        'min_side': 60.0,
+        'visible_pixels': 4000.0,
     }
     episode = {
         'steps': [
@@ -451,20 +452,236 @@ def test_id_encode_accepts_soft_fov_prop_not_query_landmark_bar():
                 'step': 0,
                 'image_path': '/img_0.png',
                 'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
-                'visible_objects': {'Cup|1': cup},
+                'visible_objects': {},
+                'edges_egocentric': [],
+            },
+            {
+                'step': 1,
+                'image_path': '/img_1.png',
+                'agent': {'position': [1, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'CounterTop|1': counter},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['', '', 'front'],
+                    }
+                ],
+            },
+            {
+                'step': 2,
+                'image_path': '/img_2.png',
+                'agent': {'position': [2, 1, 0], 'rotation': [0, 90, 0]},
+                'visible_objects': {'CounterTop|1': counter},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['right', '', ''],
+                    }
+                ],
+            },
+        ],
+        'agent_trajectory': [
+            {'step': 0, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_0.png'},
+            {'step': 1, 'position': [1, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_1.png'},
+            {'step': 2, 'position': [2, 1, 0], 'rotation': [0, 90, 0], 'image_path': '/img_2.png'},
+        ],
+        'object_state_track': {
+            'Cup|1': {
+                'category': 'Cup',
+                'entries': [
+                    {
+                        'step': 0,
+                        'position': [0.5, 0.9, 0.5],
+                        'visible': True,
+                        'in_camera_fov': True,
+                    },
+                    {
+                        'step': 2,
+                        'position': [3.0, 0.9, 0.5],
+                        'visible': False,
+                        'in_camera_fov': False,
+                    },
+                ],
+            }
+        },
+        'displacement_events': [
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'hidden_during': True,
+                'at_timestep': 2,
+                'from_position': [0.5, 0.9, 0.5],
+                'to_position': [3.0, 0.9, 0.5],
+                'from_receptacle': 'Table|1',
+                'to_receptacle': 'CounterTop|1',
+                'moved_via': 'place',
+            }
+        ],
+        'displacement_candidates': [
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'candidate_role': 'chosen',
+                'candidate_position': [3.0, 0.9, 0.5],
+                'candidate_receptacle': 'CounterTop|1',
+            },
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'candidate_role': 'original_location',
+                'candidate_position': [0.5, 0.9, 0.5],
+                'candidate_receptacle': 'Table|1',
+            },
+        ],
+    }
+    assert _last_distinguishable_sighting(episode, 'Cup|1', 2, **_ID_ENCODE_FOV) is None
+    facts = plan_invisible_displacement(episode, max_items=2)
+    assert not any(f.status == 'ok' for f in facts)
+
+
+def test_id_encode_soft_distinguishable_and_pads_to_four_options():
+    """Soft-FOV distinguishable encode + invisible query; options padded to 4."""
+    from cm_benchmark.generation.planner import (
+        _pad_id_ego_options,
+        plan_invisible_displacement,
+    )
+
+    cup = {
+        'category': 'Cup',
+        'position': [0.5, 0.9, 0.5],
+        'bbox_area': 200.0,
+        'min_side': 12.0,
+        'visible_pixels': 80.0,
+    }
+    counter = {
+        'category': 'CounterTop',
+        'position': [2.0, 0.9, 1.0],
+        'bbox_area': 5000.0,
+        'min_side': 60.0,
+        'visible_pixels': 4000.0,
+    }
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/img_0.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'Cup|1': cup, 'CounterTop|1': counter},
                 'edges_egocentric': [
                     {
                         'source': 'agent',
                         'target': 'Cup|1',
                         'angle_relation': ['', '', 'front'],
+                    },
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['', '', 'front'],
+                    },
+                ],
+            },
+            {
+                'step': 1,
+                'image_path': '/img_1.png',
+                'agent': {'position': [1, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'CounterTop|1': counter},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['', '', 'front'],
                     }
                 ],
+            },
+            {
+                'step': 2,
+                'image_path': '/img_2.png',
+                'agent': {'position': [2, 1, 0], 'rotation': [0, 90, 0]},
+                'visible_objects': {'CounterTop|1': counter},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'CounterTop|1',
+                        'angle_relation': ['right', '', ''],
+                    }
+                ],
+            },
+        ],
+        'agent_trajectory': [
+            {'step': 0, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_0.png'},
+            {'step': 1, 'position': [1, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_1.png'},
+            {'step': 2, 'position': [2, 1, 0], 'rotation': [0, 90, 0], 'image_path': '/img_2.png'},
+        ],
+        'agent_actions': [
+            {'step': 0, 'action': 'Pass', 'degrees': None},
+            {'step': 1, 'action': 'MoveAhead', 'degrees': None},
+            {'step': 2, 'action': 'MoveAhead', 'degrees': None},
+        ],
+        'object_state_track': {
+            'Cup|1': {
+                'category': 'Cup',
+                'entries': [
+                    {
+                        'step': 0,
+                        'position': [0.5, 0.9, 0.5],
+                        'visible': True,
+                        'in_camera_fov': True,
+                    },
+                    {
+                        'step': 2,
+                        'position': [3.0, 0.9, 0.5],
+                        'visible': False,
+                        'in_camera_fov': False,
+                    },
+                ],
             }
-        ]
+        },
+        'displacement_events': [
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'hidden_during': True,
+                'at_timestep': 2,
+                'from_position': [0.5, 0.9, 0.5],
+                'to_position': [3.0, 0.9, 0.5],
+                'from_receptacle': 'Table|1',
+                'to_receptacle': 'CounterTop|1',
+                'moved_via': 'place',
+            }
+        ],
+        'displacement_candidates': [
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'candidate_role': 'chosen',
+                'candidate_position': [3.0, 0.9, 0.5],
+                'candidate_receptacle': 'CounterTop|1',
+            },
+            {
+                'event_id': 'disp_0',
+                'obj_id': 'Cup|1',
+                'candidate_role': 'original_location',
+                'candidate_position': [0.5, 0.9, 0.5],
+                'candidate_receptacle': 'Table|1',
+            },
+        ],
     }
-    # Landmark QUERY bar: reject; ID soft bar: accept.
-    assert _last_distinguishable_sighting(episode, 'Cup|1', 1) is None
-    assert _last_distinguishable_sighting(episode, 'Cup|1', 1, **_ID_ENCODE_FOV) == 0
+    padded, seeds = _pad_id_ego_options(
+        'to your right', ['to your right', 'behind you'], ['original_location']
+    )
+    assert len(padded) == 4
+    assert 'to your right' in padded and 'behind you' in padded
+    assert 'opposite_direction' in seeds
+
+    facts = plan_invisible_displacement(episode, max_items=2)
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok, f'expected ID ok, got {[(f.status, f.reason) for f in facts]}'
+    assert ok[0].encoding_step == 0
+    assert ok[0].queried_object_id == 'Cup|1'
+    assert len(ok[0].options_pool) == 4
+    assert len(set(ok[0].options_pool)) == 4
 
 
 def test_survey_rejects_when_agent_near_source_landmark():
@@ -613,6 +830,164 @@ def test_draft_item_persists_image_roles_and_context(folder_episode):
     assert len(item['image_roles']) == len(item.get('image_paths') or [])
     ctx = item.get('context') or {}
     assert ctx.get('A') and ctx.get('B') and ctx.get('C')
+
+
+def test_referring_display_name_requires_distinguishable_and_unique():
+    from cm_benchmark.generation.planner import _referring_display_name
+
+    def _vis(area, side, pix, pos):
+        return {
+            'category': 'Chair',
+            'position': list(pos),
+            'bbox_area': area,
+            'min_side': side,
+            'visible_pixels': pix,
+        }
+
+    lm = {
+        'category': 'Table',
+        'position': [0.0, 1.0, 3.0],
+        'bbox_area': 5000.0,
+        'min_side': 50.0,
+        'visible_pixels': 2000.0,
+    }
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {
+                    'Chair|1': _vis(2000, 40, 500, (0.0, 1.0, 1.0)),
+                    'Chair|2': _vis(2000, 40, 500, (2.0, 1.0, 1.0)),
+                    'Table|1': lm,
+                },
+                'edges_egocentric': [
+                    {'source': 'agent', 'target': 'Chair|1', 'angle_relation': ['', '', 'front']},
+                    {'source': 'agent', 'target': 'Chair|2', 'angle_relation': ['right', '', '']},
+                    {'source': 'agent', 'target': 'Table|1', 'angle_relation': ['', '', 'front']},
+                ],
+            }
+        ]
+    }
+    # Unique landmark category → bare name
+    assert _referring_display_name(episode, 0, 'Table|1') == 'Table'
+    # Duplicate chairs with clear proximity margin to Table for Chair|1
+    name = _referring_display_name(episode, 0, 'Chair|1')
+    assert name is not None
+    assert name.startswith('Chair')
+    assert 'Table' in name
+
+
+def test_perspective_taking_rejects_weak_landmarks():
+    """PT must not mention landmarks that fail QUERY_FOV distinguishability."""
+    from cm_benchmark.generation.planner import plan_perspective_taking
+
+    weak = {
+        'category': 'Cup',
+        'position': [1.0, 1.0, 1.0],
+        'bbox_area': 50.0,
+        'min_side': 5.0,
+        'visible_pixels': 20.0,
+    }
+    strong = {
+        'category': 'Sofa',
+        'position': [2.0, 1.0, 2.0],
+        'bbox_area': 5000.0,
+        'min_side': 50.0,
+        'visible_pixels': 2000.0,
+    }
+    episode = {
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/a.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {
+                    'Cup|1': weak,
+                    'Sofa|1': strong,
+                    'Fridge|1': {
+                        **strong,
+                        'category': 'Fridge',
+                        'position': [3.0, 1.0, 0.0],
+                    },
+                },
+                'edges_egocentric': [
+                    {'source': 'agent', 'target': 'Cup|1', 'angle_relation': ['', '', 'front']},
+                    {'source': 'agent', 'target': 'Sofa|1', 'angle_relation': ['right', '', '']},
+                    {'source': 'agent', 'target': 'Fridge|1', 'angle_relation': ['left', '', '']},
+                ],
+            }
+        ],
+        'world_layout': {'landmarks': []},
+        'agent_trajectory': [
+            {'step': 0, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/a.png'}
+        ],
+    }
+    facts = plan_perspective_taking(episode, max_items=2)
+    # Weak Cup must never appear as A/B/C
+    for f in facts:
+        if f.status != 'ok':
+            continue
+        blob = ' '.join(
+            str((f.extra or {}).get(k) or '') for k in ('A', 'B', 'C')
+        )
+        assert 'Cup' not in blob
+
+
+def test_border_scrape_cup_rejected_for_egocentric():
+    """Thin left-edge Cup strip must not become an egocentric query target."""
+    from cm_benchmark.generation.constructs import (
+        bbox_not_border_scrape,
+        fov_metrics_ok,
+    )
+    from cm_benchmark.generation.planner import (
+        _distinguishable_encoding_sighting,
+        plan_egocentric_encoding,
+    )
+
+    cup = {
+        'category': 'Cup',
+        'position': [0.1, 0.9, 0.5],
+        'bbox': [0, 177, 25, 223],
+        'bbox_area': 1150.0,
+        'min_side': 25.0,
+        'visible_pixels': 664.0,
+        'occupancy_ratio': 0.577,
+    }
+    # Absolute floors alone (old 800/24/200) would pass; border scrape must fail.
+    assert fov_metrics_ok(
+        cup, min_bbox_area=800, min_side=24, min_visible_pixels=200
+    )
+    assert not bbox_not_border_scrape(cup, (396, 224))
+    assert not fov_metrics_ok(
+        cup,
+        min_bbox_area=800,
+        min_side=24,
+        min_visible_pixels=200,
+        image_wh=(396, 224),
+    )
+
+    episode = {
+        'episode_meta': {'camera': {'width': 396, 'height': 224}},
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/img_0.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {'Cup|2|9': cup},
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'Cup|2|9',
+                        'angle_relation': ['left', '', ''],
+                    }
+                ],
+            }
+        ],
+    }
+    assert not _distinguishable_encoding_sighting(episode, 0, 'Cup|2|9')
+    facts = plan_egocentric_encoding(episode, max_items=3)
+    assert all(f.queried_object_id != 'Cup|2|9' for f in facts)
 
 
 def test_swm_question_states_explicit_delay_k(delayed_episode):

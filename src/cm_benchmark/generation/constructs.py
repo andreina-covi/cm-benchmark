@@ -178,9 +178,10 @@ def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
       left:   [180+w, 360-w)
 
     Use ``AHEAD_HALF_WIDTH_FOV`` (20°) when the object must be in the current
-    camera FOV (egocentric_encoding, disambiguator landmarks). Use
-    ``AHEAD_HALF_WIDTH_FULL`` (45°) when the queried pose can place the object
-    anywhere (spatial_updating, perspective_taking, hidden-object query poses).
+    camera FOV (egocentric_encoding, disambiguator, SWM encode). Use
+    ``AHEAD_HALF_WIDTH_FULL`` (45°) for full-circle pose updates
+    (spatial_updating, invisible-displacement query). Perspective-taking uses
+    ``imagined_perspective_label`` / signed-angle bins instead of this wedge.
     """
     w = float(ahead_half_width)
     a = float(angle_deg) % 360.0
@@ -196,8 +197,13 @@ def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
 # FOV-constrained constructs: object visible now → bearing stays near ahead;
 # a 45° half-width collapses almost everything to "ahead of you".
 AHEAD_HALF_WIDTH_FOV = 20.0
-# Full-circle constructs: after real/imagined pose change, behind is legitimate.
+# Full-circle constructs after a real pose change (spatial_updating, ID query).
 AHEAD_HALF_WIDTH_FULL = 45.0
+
+# Perspective-taking (stand at A, face B, locate C): signed-angle bins with no
+# "ahead" class. Reject samples within this margin of 0° / ±135° boundaries.
+PT_DIRECTION_BOUNDARY_MARGIN_DEG = 10.0
+PT_DIRECTION_BACK_DEG = 135.0
 
 
 def bearing_deg_xz(dx: float, dz: float) -> Optional[float]:
@@ -205,6 +211,61 @@ def bearing_deg_xz(dx: float, dz: float) -> Optional[float]:
     if abs(float(dx)) < 1e-12 and abs(float(dz)) < 1e-12:
         return None
     return math.degrees(math.atan2(float(dx), float(dz))) % 360.0
+
+
+def signed_rel_bearing_deg_xz(
+    fwd_dx: float, fwd_dz: float, tgt_dx: float, tgt_dz: float
+) -> Optional[float]:
+    """Signed horizontal angle from forward to target, degrees in (-180, 180].
+
+    Uses the same xz / ``atan2(dx, dz)`` frame as ``bearing_deg_xz`` (0 = +Z).
+    Sign convention (Y-up, viewed from above): **positive = left (CCW)**,
+    **negative = right (CW)**. Example: facing +Z, target on +X → ≈ −90°.
+    """
+    fx, fz = float(fwd_dx), float(fwd_dz)
+    tx, tz = float(tgt_dx), float(tgt_dz)
+    f_len = math.hypot(fx, fz)
+    t_len = math.hypot(tx, tz)
+    if f_len < 1e-12 or t_len < 1e-12:
+        return None
+    fx, fz = fx / f_len, fz / f_len
+    tx, tz = tx / t_len, tz / t_len
+    # up · (forward × target) in Y-up: fx*tz - fz*tx
+    cross = fx * tz - fz * tx
+    dot = fx * tx + fz * tz
+    return math.degrees(math.atan2(cross, dot))
+
+
+def perspective_direction_label_from_signed(
+    signed_deg: float,
+    *,
+    margin_deg: float = PT_DIRECTION_BOUNDARY_MARGIN_DEG,
+    back_deg: float = PT_DIRECTION_BACK_DEG,
+) -> Optional[str]:
+    """Map signed A→B vs A→C angle to left / right / behind; None if ambiguous.
+
+    Bins (no ``ahead of you`` answer class)::
+
+        right : -back < angle < 0
+        left  :  0 < angle < +back
+        back  : |angle| >= back   → ``behind you``
+
+    Reject when ``|angle|`` is within ``margin_deg`` of 0° or ±back (decision
+    boundaries). World object extent is not used here — episode GT does not
+    carry trusted world-space AABB extents for angular span checks.
+    """
+    a = float(signed_deg)
+    m = max(0.0, float(margin_deg))
+    back = float(back_deg)
+    if abs(a) < m:
+        return None
+    if abs(abs(a) - back) < m:
+        return None
+    if abs(a) >= back:
+        return 'behind you'
+    if a < 0.0:
+        return 'to your right'
+    return 'to your left'
 
 
 def local_offset_to_ego_label(
@@ -335,18 +396,77 @@ MIN_DISAMBIG_MARGIN_M = 0.6
 MIN_DISAMBIG_MARGIN_RATIO = 1.5  # nearest sibling must be ≥ this × target–landmark dist
 
 # Landmarks / recalled query targets need a clearer FOV footprint than the
-# soft Q&A filter (which still keeps small props). Tuned above HousePlant@s5
-# (bbox≈432, side≈16) which was not human-distinguishable in review.
-QUERY_FOV_MIN_BBOX_AREA = 800.0
-QUERY_FOV_MIN_SIDE = 24.0
-QUERY_FOV_MIN_VISIBLE_PIXELS = 200.0
+# soft Q&A filter when **no** DecisionTree joblib is loaded. These floors are
+# a fallback only — prefer refitting ``visibility_filter.joblib`` from labels
+# instead of bumping these after each bad draft.
+QUERY_FOV_MIN_BBOX_AREA = 1200.0
+QUERY_FOV_MIN_SIDE = 32.0
+QUERY_FOV_MIN_VISIBLE_PIXELS = 300.0
+# If the bbox touches the image border, the extent *along that axis* must still
+# be large enough that the object is not just a clipped strip (geometric rule;
+# kept even when the DecisionTree is active).
+QUERY_FOV_EDGE_MARGIN_PX = 2
+QUERY_FOV_MIN_EXTENT_IF_CLIPPED = 48.0
 
 # Invisible-displacement objects are small movable props (Cup, Phone, Bread).
-# Encode them with the soft Q&A visibility bar, not the landmark QUERY_FOV bar —
-# otherwise every swap/direct event is rejected for "no distinguishable sighting".
+# Encode distinguishability: DecisionTree when attached on the episode, else these
+# soft floors (not landmark QUERY_FOV). At query they must be invisible.
 ID_ENCODE_FOV_MIN_BBOX_AREA = 100.0
 ID_ENCODE_FOV_MIN_SIDE = 8.0
 ID_ENCODE_FOV_MIN_VISIBLE_PIXELS = 40.0
+
+
+def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
+    """Return (width, height) from episode_meta.camera when present."""
+    if not isinstance(episode, dict):
+        return None
+    cam = (episode.get('episode_meta') or {}).get('camera') or {}
+    try:
+        w = int(cam.get('width'))
+        h = int(cam.get('height'))
+    except (TypeError, ValueError):
+        return None
+    if w > 0 and h > 0:
+        return w, h
+    return None
+
+
+def bbox_not_border_scrape(
+    odata: Optional[dict],
+    image_wh: Optional[tuple[int, int]],
+    *,
+    edge_margin_px: int = QUERY_FOV_EDGE_MARGIN_PX,
+    min_extent_if_clipped: float = QUERY_FOV_MIN_EXTENT_IF_CLIPPED,
+) -> bool:
+    """False when the detection is only a thin strip along the image border.
+
+    Example reject: bbox ``[0, 177, 25, 223]`` on a 396×224 frame — left-edge
+    clip with width 25 px; a human cannot identify the category.
+    When bbox or image size is missing, do not invent a reject.
+    """
+    if not isinstance(odata, dict) or not image_wh:
+        return True
+    bbox = odata.get('bbox')
+    if not bbox or len(bbox) < 4:
+        return True
+    try:
+        x0, y0, x1, y1 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        width = x1 - x0
+        height = y1 - y0
+        img_w, img_h = int(image_wh[0]), int(image_wh[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    if width <= 0 or height <= 0 or img_w <= 0 or img_h <= 0:
+        return False
+    m = max(0, int(edge_margin_px))
+    thr = float(min_extent_if_clipped)
+    clipped_x = x0 <= m or x1 >= img_w - 1 - m
+    clipped_y = y0 <= m or y1 >= img_h - 1 - m
+    if clipped_x and width < thr:
+        return False
+    if clipped_y and height < thr:
+        return False
+    return True
 
 
 def fov_metrics_ok(
@@ -355,14 +475,32 @@ def fov_metrics_ok(
     min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
     min_side: float = QUERY_FOV_MIN_SIDE,
     min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
+    image_wh: Optional[tuple[int, int]] = None,
+    min_extent_if_clipped: float = QUERY_FOV_MIN_EXTENT_IF_CLIPPED,
+    model: Any = None,
 ) -> bool:
-    """True if FOV detection is large enough to treat as distinguishable.
+    """True if FOV detection is distinguishable enough to name / encode.
 
-    When no bbox metrics are present (legacy fixtures), do not invent a reject.
-    When some metrics are present, enforce only those that are non-null.
+    When ``model`` (DecisionTree visibility bundle) is set, keep/drop follows
+    ``passes_for_questions`` — do not also apply static QUERY floors.
+    Otherwise enforce static ``min_*`` floors (fallback).
+
+    When no bbox metrics are present (legacy fixtures), do not invent a reject
+    from floors; still apply border-scrape when bbox + image size exist.
+    Optional ``image_wh`` rejects thin border-clipped scrapes either way.
     """
     if not isinstance(odata, dict):
         return False
+
+    if model is not None:
+        from cm_benchmark.generator.visibility_filters import metrics_dict_from_object
+
+        if not model.passes_for_questions(metrics_dict_from_object(odata)):
+            return False
+        return bbox_not_border_scrape(
+            odata, image_wh, min_extent_if_clipped=min_extent_if_clipped
+        )
+
     checks: list[tuple[Any, float]] = []
     if odata.get('bbox_area') is not None:
         checks.append((odata.get('bbox_area'), min_bbox_area))
@@ -371,11 +509,18 @@ def fov_metrics_ok(
     if odata.get('visible_pixels') is not None:
         checks.append((odata.get('visible_pixels'), min_visible_pixels))
     if not checks:
-        return True
+        # Still apply border-scrape check when bbox + image size exist.
+        return bbox_not_border_scrape(
+            odata, image_wh, min_extent_if_clipped=min_extent_if_clipped
+        )
     try:
-        return all(float(val) >= float(thr) for val, thr in checks)
+        if not all(float(val) >= float(thr) for val, thr in checks):
+            return False
     except (TypeError, ValueError):
         return False
+    return bbox_not_border_scrape(
+        odata, image_wh, min_extent_if_clipped=min_extent_if_clipped
+    )
 
 
 def duplicate_category_group(step: dict, target_obj_id: str) -> list[str]:
@@ -408,6 +553,7 @@ def find_disambiguator(
     *,
     min_margin_m: float = MIN_DISAMBIG_MARGIN_M,
     min_margin_ratio: float = MIN_DISAMBIG_MARGIN_RATIO,
+    model: Any = None,
 ) -> Optional[dict]:
     """Landmark + relation that uniquely identifies target among duplicate_group.
 
@@ -435,7 +581,7 @@ def find_disambiguator(
         for oid, o in catalog.items()
         if oid not in duplicate_group
         and cat_counts.get(o['category'], 0) == 1
-        and fov_metrics_ok(raw_vis.get(oid))
+        and fov_metrics_ok(raw_vis.get(oid), model=model)
     ]
 
     def dist(a: dict, b: dict) -> float:
@@ -503,6 +649,8 @@ def resolve_referring_disambiguator(
     step: dict,
     target_obj_id: str,
     agent_pose: Optional[dict] = None,
+    *,
+    model: Any = None,
 ) -> Optional[str]:
     """Phrase for templates, or None to skip the candidate.
 
@@ -515,7 +663,9 @@ def resolve_referring_disambiguator(
         return None
     if len(group) == 1:
         return ''
-    info = find_disambiguator(step, target_obj_id, group, agent_pose)
+    info = find_disambiguator(
+        step, target_obj_id, group, agent_pose, model=model
+    )
     if info is None:
         return None
     return format_disambiguator_phrase(info)
@@ -578,25 +728,33 @@ def imagined_perspective_label(
     pos_b: dict,
     pos_c: dict,
     *,
-    ahead_half_width: float = AHEAD_HALF_WIDTH_FULL,
+    margin_deg: float = PT_DIRECTION_BOUNDARY_MARGIN_DEG,
+    ahead_half_width: Optional[float] = None,
 ) -> Optional[str]:
     """Direction of C from an imagined viewpoint standing at A, facing B.
 
-    Heading is RELATIONAL (A→B). Full-circle half-width by default — the
-    imagined pose is not FOV-constrained.
+    - Observer: A
+    - Forward: A → B
+    - Target: A → C
+    - Signed angle on the horizontal plane (positive = left, negative = right)
+    - Labels: ``to your right`` / ``to your left`` / ``behind you``
+    - Returns None near 0° / ±135° boundaries (``margin_deg``) so ambiguous
+      QA samples are not generated.
+
+    ``ahead_half_width`` is accepted for call-site compatibility but ignored —
+    perspective-taking no longer uses equal ahead wedges.
     """
+    del ahead_half_width  # unused; kept for backward-compatible kwargs
     try:
         ax, az = float(pos_a['x']), float(pos_a['z'])
         bx, bz = float(pos_b['x']), float(pos_b['z'])
         cx, cz = float(pos_c['x']), float(pos_c['z'])
     except (KeyError, TypeError, ValueError):
         return None
-    heading = bearing_deg_xz(bx - ax, bz - az)
-    angle = bearing_deg_xz(cx - ax, cz - az)
-    if heading is None or angle is None:
+    signed = signed_rel_bearing_deg_xz(bx - ax, bz - az, cx - ax, cz - az)
+    if signed is None:
         return None
-    rel = (angle - heading) % 360.0
-    return angle_to_ego_label(rel, ahead_half_width=ahead_half_width)
+    return perspective_direction_label_from_signed(signed, margin_deg=margin_deg)
 
 
 def xyz_as_dict(pos) -> Optional[dict]:

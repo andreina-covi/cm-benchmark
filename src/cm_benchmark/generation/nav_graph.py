@@ -636,8 +636,8 @@ def first_hop_direction_label(
     """Initial travel direction of ``path_nodes`` from an A-facing-B frame.
 
     Standing at source facing goal, report where the first hop heads
-    (ahead / left / right / behind). Falls back to world +Z frame if goal
-    pose is missing.
+    (ahead / left / right / behind) via equal-wedge ego labels. Falls back
+    to world +Z frame if goal pose is missing.
     """
     nodes = list(path_nodes)
     if len(nodes) < 2:
@@ -649,15 +649,22 @@ def first_hop_direction_label(
     # Prefer relational A→B heading when both poses given
     if source_pos is not None and goal_pos is not None:
         from cm_benchmark.generation.constructs import (
-            imagined_perspective_label,
+            AHEAD_HALF_WIDTH_FULL,
+            angle_to_ego_label,
+            bearing_deg_xz,
             xyz_as_dict,
         )
 
         a = xyz_as_dict(source_pos)
         b = xyz_as_dict(goal_pos)
-        c = {'x': p1[0], 'y': p1[1], 'z': p1[2]}
         if a and b:
-            return imagined_perspective_label(a, b, c)
+            heading = bearing_deg_xz(
+                float(b['x']) - float(a['x']), float(b['z']) - float(a['z'])
+            )
+            hop = bearing_deg_xz(p1[0] - float(a['x']), p1[2] - float(a['z']))
+            if heading is not None and hop is not None:
+                rel = (hop - heading) % 360.0
+                return angle_to_ego_label(rel, ahead_half_width=AHEAD_HALF_WIDTH_FULL)
     # World-frame fallback
     dx, dz = p1[0] - p0[0], p1[2] - p0[2]
     if abs(dx) < 1e-9 and abs(dz) < 1e-9:

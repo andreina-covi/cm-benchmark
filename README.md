@@ -535,7 +535,7 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
 | `route_knowledge` | full (MCQ over walked turn sequences; salience landmarks; calibrated min hops) |
 | `survey_based_route_planning` | full for untraversed + perceptually evidenced pairs; optional `conditional_detour` from recorded closures |
-| `perspective_taking` | full: A/B/C landmarks, relational A→B heading (`imagined_perspective_label`); no intrinsic-front metadata |
+| `perspective_taking` | full: A/B/C landmarks, signed A→B vs A→C angle (`imagined_perspective_label`; left/right/behind + boundary margin); no intrinsic-front metadata |
 
 ### Display names
 

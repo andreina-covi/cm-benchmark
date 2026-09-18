@@ -101,14 +101,17 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   region_trajectory, passage_state — carry-forward at query step t.
 - Nav FOV / edges exclude structural meshes (Wall/Floor/Ceiling/Room/…).
 - Camera size / FOV / step size come from episode_meta when present.
-- Q&A FOV may further drop tiny or barely-shown detections via tunable
-  visibility thresholds (optional labeled multi-scene calibration; do not
-  invent objects). Catalog / displacement logs stay unfiltered.
+- Q&A FOV may further drop tiny or barely-shown detections via a trained
+  DecisionTree (`visibility_filter.joblib`, preferred) or static
+  `question_visibility` floors as fallback (optional labeled multi-scene
+  calibration; do not invent objects). Catalog / displacement logs stay
+  unfiltered.
 - distance_label (how far) ≠ angle_relation front/behind (local +Z).
   "beyond" + "front" means ahead of the agent but far.
 - Do not invent object facing from obj-rot unless a trusted source exists.
   `perspective_taking` does **not** need intrinsic facing: it uses relational
-  A→B heading from landmark positions (`imagined_perspective_label`).
+  A→B heading from landmark positions (`imagined_perspective_label` signed
+  left/right/behind bins with boundary margin).
   `allocentric_encoding` still needs trusted object-frame edges when enabled.
 - Collector field brief: prompts/ai2thor_collection_extension.md.
 
@@ -124,7 +127,13 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   proximity margin is large enough to be obvious in the image (≥0.6 m and
   ≥1.5× sibling distance); otherwise exclude the candidate. Unique categories
   omit the phrase. Recalled / queried objects must also pass FOV size gates
-  at the encoding step (not merely appear in ``non_visible_objects`` memory).
+  at the encoding step (not merely appear in ``non_visible_objects`` memory),
+  including a reject for thin border-clipped bbox scrapes (e.g. a 25px-wide
+  cup strip at x=0 that clears area floors but is not human-identifiable).
+  Prefer the DecisionTree visibility bundle over bumping static
+  `QUERY_FOV_*` floors when labels exist.
+- Perspective-taking A/B/C (and other mentioned landmarks) must each be
+  QUERY-FOV distinguishable and uniquely nameable; prefer a co-visible frame.
 - Temporal SWM / spatial_updating encode at the latest *distinguishable*
   prior sighting (FOV metrics + ego edge), not raw ``last_seen_step`` (which
   may be a weak scrape of a large mesh).
@@ -141,11 +150,15 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.
-- Invisible-displacement encode uses the soft Q&A FOV bar (`ID_ENCODE_FOV_*`),
-  not the landmark `QUERY_FOV_*` bar — displaced props are Cup/Phone-sized.
+- Invisible-displacement **displaced** objects (and swap partners): distinguishable
+  at encode (DecisionTree if attached, else soft `ID_ENCODE_FOV_*`); **invisible**
+  from the move through query. Ego MC options: diagnostic candidate bearings
+  first, then pad to four from the ego bank (opposite / orthogonal / fillers).
 - Egocentric MC labels use ``angle_to_ego_label(ahead_half_width=…)``:
   FOV-constrained constructs (egocentric_encoding, disambiguator, SWM encode)
-  use 20°; full-circle (spatial_updating, perspective_taking, ID query) use 45°.
+  use 20°; full-circle pose updates (spatial_updating, ID query) use 45°.
+  Perspective-taking uses signed A→B vs A→C bins (left / right / behind) with
+  a configurable margin around 0° / ±135° — not the ahead wedge.
   For current-frame-visible constructs, GT "behind you" is impossible (FOV) —
   only a distractor. Distractor maps keep the same four string labels.
 - Constructs that lack required metadata (e.g. object facing for
