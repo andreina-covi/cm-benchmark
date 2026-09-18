@@ -2,10 +2,12 @@
 
 SPOC navigation rows export visibility metrics. Q&A FOV filtering can use:
 
-1. Hard thresholds (``question_visibility``) — **on by default** so tiny /
-   barely-visible blobs are dropped even when no joblib model is configured.
-2. A trained DecisionTree bundle (``visibility_filter.joblib``) via
-   ``predict_proba`` + probability bands (preferred when a model exists).
+1. A trained DecisionTree bundle (``visibility_filter.joblib``) via
+   ``predict_proba`` + probability bands (**preferred** when a model exists —
+   including at draft time). Replace / refit the ``.joblib`` from labels; do
+   not keep bumping hard-coded floors for each bad object.
+2. Hard thresholds (``question_visibility``) — fallback when no joblib is
+   configured, so tiny / barely-visible blobs are still dropped.
 
 Pass ``question_visibility=False`` to disable hard thresholds entirely.
 The model path is configuration, not code: replace the ``.joblib`` file to
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
@@ -62,6 +65,7 @@ DEFAULT_PROBA_HIGH = 0.7
 
 # Built-in keep rules when no visibility_filter.joblib is provided.
 # Tuned to drop speck detections (Potato/Wrench ~10px) while keeping furniture.
+# Prefer a labeled DecisionTree over editing these constants.
 DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
     'min_bbox_area': 100.0,
     'min_side': 8.0,
@@ -69,6 +73,91 @@ DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
     'min_visible_pixels': 40.0,
     'max_obj_distance': None,
 }
+
+# In-process episode key (not written to JSON drafts).
+EPISODE_VISIBILITY_MODEL_KEY = '_visibility_model'
+
+VISIBILITY_MODEL_ENV = 'CM_VISIBILITY_FILTER_MODEL'
+
+# Searched when no explicit path / env / episode metadata path is set.
+DEFAULT_VISIBILITY_MODEL_CANDIDATES: tuple[Path, ...] = (
+    Path('analysis/dt_tune/visibility_filter.joblib'),
+    Path('src/cm_benchmark/storage/ai2thor/output/analysis/dt_tune/visibility_filter.joblib'),
+)
+
+
+def metrics_dict_from_object(odata: Mapping[str, Any]) -> dict[str, Any]:
+    """Visibility metrics as stored on episode ``visible_objects`` values."""
+    return {
+        'bbox_area': odata.get('bbox_area'),
+        'min_side': odata.get('min_side'),
+        'occupancy_ratio': odata.get('occupancy_ratio'),
+        'visible_pixels': odata.get('visible_pixels'),
+        'obj_distance': odata.get('obj_distance'),
+    }
+
+
+def resolve_visibility_model_path(
+    explicit: Optional[Union[str, Path]] = None,
+    *,
+    episode: Optional[Mapping[str, Any]] = None,
+    search_defaults: bool = True,
+) -> Optional[Path]:
+    """Resolve a ``visibility_filter.joblib`` path if one exists on disk.
+
+    Order: ``explicit`` → ``CM_VISIBILITY_FILTER_MODEL`` → episode
+    ``visibility_filter_model.path`` → default candidate locations.
+    """
+    candidates: list[Path] = []
+    if explicit is not None and str(explicit).strip():
+        candidates.append(Path(str(explicit)).expanduser())
+    env = os.environ.get(VISIBILITY_MODEL_ENV)
+    if env and str(env).strip():
+        candidates.append(Path(str(env).strip()).expanduser())
+    if episode is not None:
+        meta = episode.get('visibility_filter_model')
+        if isinstance(meta, Mapping) and meta.get('path'):
+            candidates.append(Path(str(meta['path'])).expanduser())
+    if search_defaults:
+        candidates.extend(DEFAULT_VISIBILITY_MODEL_CANDIDATES)
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            return path
+    return None
+
+
+def visibility_model_from_episode(
+    episode: Optional[Mapping[str, Any]],
+) -> Optional['VisibilityFilterModel']:
+    """Return the in-process model attached by draft-time filtering, if any."""
+    if not isinstance(episode, Mapping):
+        return None
+    model = episode.get(EPISODE_VISIBILITY_MODEL_KEY)
+    if model is None:
+        return None
+    if hasattr(model, 'passes_for_questions'):
+        return model  # type: ignore[return-value]
+    return None
+
+
+def load_visibility_filter_for_draft(
+    explicit: Optional[Union[str, Path]] = None,
+    *,
+    episode: Optional[Mapping[str, Any]] = None,
+    search_defaults: bool = True,
+) -> Optional['VisibilityFilterModel']:
+    """Load a DecisionTree visibility bundle for drafting, or None if absent."""
+    path = resolve_visibility_model_path(
+        explicit, episode=episode, search_defaults=search_defaults
+    )
+    if path is None:
+        return None
+    return load_visibility_filter_model(path)
 
 
 def _all_none_visibility(thresholds: Mapping[str, Any]) -> bool:
@@ -258,23 +347,23 @@ def passes_question_visibility_filter(
 def filter_visible_objects_map(
     visible_objects: Optional[Mapping[str, Any]],
     thresholds: Optional[Mapping[str, Any] | bool] = None,
+    *,
+    model: Optional['VisibilityFilterModel'] = None,
 ) -> dict[str, Any]:
-    """Drop detections that fail ``question_visibility`` (metrics already on values)."""
+    """Drop detections that fail the DecisionTree (if set) or hard thresholds."""
     thr = normalize_question_visibility_thresholds(thresholds)
-    if not question_visibility_active(thr):
+    if model is None and not question_visibility_active(thr):
         return dict(visible_objects or {})
     kept: dict[str, Any] = {}
     for oid, odata in (visible_objects or {}).items():
         if not isinstance(odata, Mapping):
             kept[oid] = odata
             continue
-        metrics = {
-            'bbox_area': odata.get('bbox_area'),
-            'min_side': odata.get('min_side'),
-            'occupancy_ratio': odata.get('occupancy_ratio'),
-            'visible_pixels': odata.get('visible_pixels'),
-            'obj_distance': odata.get('obj_distance'),
-        }
+        metrics = metrics_dict_from_object(odata)
+        if model is not None:
+            if model.passes_for_questions(metrics):
+                kept[oid] = odata
+            continue
         if passes_question_visibility_filter(metrics, thr):
             kept[oid] = odata
     return kept
@@ -284,25 +373,51 @@ def apply_question_visibility_to_episode(
     episode: dict,
     *,
     thresholds: Optional[Mapping[str, Any] | bool] = None,
+    model: Optional['VisibilityFilterModel'] = None,
+    model_path: Optional[Union[str, Path]] = None,
+    search_default_model: bool = True,
     inplace: bool = False,
 ) -> dict:
     """Filter each step's ``visible_objects`` for Q&A drafting.
 
-    Uses ``thresholds`` if given, else episode ``question_visibility``, else
-    built-in defaults. Ensures drafts drop tiny blobs even when the episode
-    was exported without a visibility joblib / with all-null thresholds.
+    Preference order for keep/drop:
+    1. ``model`` argument
+    2. load from ``model_path`` / env / episode metadata / default candidates
+    3. hard ``thresholds`` / episode ``question_visibility`` / built-in defaults
+
+    Attaches the loaded model on ``episode['_visibility_model']`` for in-process
+    distinguishability gates (not part of the JSON item schema).
     """
     ep = episode if inplace else copy.deepcopy(episode)
+    loaded = model
+    if loaded is None:
+        loaded = load_visibility_filter_for_draft(
+            model_path, episode=ep, search_defaults=search_default_model
+        )
+
     if thresholds is None:
         thr = normalize_question_visibility_thresholds(ep.get('question_visibility'))
     else:
         thr = normalize_question_visibility_thresholds(thresholds)
     ep['question_visibility'] = dict(thr)
+
+    if loaded is not None:
+        ep[EPISODE_VISIBILITY_MODEL_KEY] = loaded
+        ep['visibility_filter_model'] = {
+            'path': loaded.source_path,
+            'features': list(loaded.features),
+            'low': loaded.low,
+            'high': loaded.high,
+            'ambiguous_proba_stats': loaded.ambiguous_proba_stats,
+        }
+    else:
+        ep.pop(EPISODE_VISIBILITY_MODEL_KEY, None)
+
     for step in ep.get('steps') or []:
         if not isinstance(step, dict):
             continue
         step['visible_objects'] = filter_visible_objects_map(
-            step.get('visible_objects'), thr
+            step.get('visible_objects'), thr, model=loaded
         )
     return ep
 

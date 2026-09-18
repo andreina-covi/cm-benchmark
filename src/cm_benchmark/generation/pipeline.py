@@ -33,6 +33,7 @@ def draft_items_for_episode(
     styles: tuple[str, ...] = ('concise', 'verbose'),
     paraphrase: bool = False,
     episode_tag: Optional[str] = None,
+    visibility_model_path: Optional[str] = None,
 ) -> list[dict]:
     facts = plan_episode(
         episode,
@@ -42,6 +43,7 @@ def draft_items_for_episode(
         swm_max_delay=swm_max_delay,
         su_min_delay=su_min_delay,
         su_max_delay=su_max_delay,
+        visibility_model_path=visibility_model_path,
     )
     tag = episode_tag or scene_id_of(episode)
     items = build_items_from_facts(

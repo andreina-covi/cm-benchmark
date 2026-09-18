@@ -64,6 +64,16 @@ def main(argv: Optional[list[str]] = None) -> None:
         action='store_true',
         help='Optional LLM paraphrase of question text only (no-op without provider)',
     )
+    parser.add_argument(
+        '--visibility_model_path',
+        type=str,
+        default=None,
+        help=(
+            'Path to visibility_filter.joblib (DecisionTree). '
+            'If omitted, searches CM_VISIBILITY_FILTER_MODEL and default '
+            'analysis/dt_tune/ paths; falls back to static thresholds if none found.'
+        ),
+    )
     args = parser.parse_args(argv)
     if args.swm_min_delay < 1:
         parser.error('--swm_min_delay must be at least 1')
@@ -92,6 +102,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         su_max_delay=args.su_max_delay,
         styles=styles,
         paraphrase=args.paraphrase,
+        visibility_model_path=args.visibility_model_path,
     )
     path = write_draft_items(items, args.output)
     n_ok = sum(1 for i in items if i.get('status') == 'ok')

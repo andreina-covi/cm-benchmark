@@ -55,15 +55,15 @@ def test_distractor_maps_cover_all_ego_labels():
         assert MIRRORED_LR[lab] in EGO_DIRECTION_OPTIONS
 
 
-def test_imagined_uses_full_width_disambiguator_uses_fov():
+def test_imagined_uses_signed_bins_not_ahead_wedge():
+    # ~26.5° to the right of +Z facing — old 45° wedge said "ahead"; PT bins → right
     assert (
         imagined_perspective_label(
             {'x': 0, 'z': 0},
             {'x': 0, 'z': 1},
-            {'x': 1, 'z': 2},  # ~26.5° from +Z facing
-            ahead_half_width=AHEAD_HALF_WIDTH_FULL,
+            {'x': 1, 'z': 2},
         )
-        == 'ahead of you'
+        == 'to your right'
     )
     assert (
         translated_egocentric_label(

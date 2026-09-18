@@ -239,11 +239,132 @@ def test_apply_question_visibility_to_episode_drops_tiny():
             }
         ],
     }
-    out = apply_question_visibility_to_episode(ep)
+    out = apply_question_visibility_to_episode(ep, search_default_model=False)
     assert 'Potato|1' not in out['steps'][0]['visible_objects']
     assert 'Fridge|1' in out['steps'][0]['visible_objects']
     # Original episode untouched
     assert 'Potato|1' in ep['steps'][0]['visible_objects']
+
+
+def test_apply_question_visibility_prefers_decision_tree(tmp_path):
+    from cm_benchmark.generator.visibility_filters import (
+        apply_question_visibility_to_episode,
+        visibility_model_from_episode,
+    )
+
+    path = _toy_model_bundle(tmp_path)
+    # Soft static floors would KEEP this (area 200 >= 100); tree rejects min_side < 15.
+    ep = {
+        'question_visibility': {
+            'min_bbox_area': 100.0,
+            'min_side': 8.0,
+            'min_occupancy_ratio': None,
+            'min_visible_pixels': 40.0,
+            'max_obj_distance': None,
+        },
+        'steps': [
+            {
+                'step': 0,
+                'visible_objects': {
+                    'Mid|1': {
+                        'bbox_area': 200.0,
+                        'min_side': 10.0,
+                        'visible_pixels': 180.0,
+                        'occupancy_ratio': 0.5,
+                        'obj_distance': 1.0,
+                    },
+                    'Big|1': {
+                        'bbox_area': 1600.0,
+                        'min_side': 40.0,
+                        'visible_pixels': 1500.0,
+                        'occupancy_ratio': 0.8,
+                        'obj_distance': 1.5,
+                    },
+                },
+            }
+        ],
+    }
+    out = apply_question_visibility_to_episode(
+        ep, model_path=path, search_default_model=False
+    )
+    assert visibility_model_from_episode(out) is not None
+    assert 'Mid|1' not in out['steps'][0]['visible_objects']
+    assert 'Big|1' in out['steps'][0]['visible_objects']
+    assert out['visibility_filter_model']['path'] is not None
+
+
+def test_fov_metrics_ok_uses_tree_not_static_floors(tmp_path):
+    from cm_benchmark.generation.constructs import fov_metrics_ok
+
+    model = load_visibility_filter_model(_toy_model_bundle(tmp_path))
+    # Clears soft QUERY floors (1200/32/300) would fail; tree on min_side>=15 passes.
+    mid = {
+        'bbox_area': 400.0,
+        'min_side': 20.0,
+        'visible_pixels': 100.0,
+        'occupancy_ratio': 0.4,
+        'obj_distance': 1.0,
+    }
+    assert not fov_metrics_ok(mid)  # static QUERY fallback rejects
+    assert fov_metrics_ok(mid, model=model)  # tree accepts
+
+
+def test_plan_episode_attaches_model_for_distinguishability(tmp_path):
+    from cm_benchmark.generation.planner import (
+        _distinguishable_encoding_sighting,
+        plan_episode,
+    )
+    from cm_benchmark.generator.visibility_filters import (
+        EPISODE_VISIBILITY_MODEL_KEY,
+        apply_question_visibility_to_episode,
+    )
+
+    path = _toy_model_bundle(tmp_path)
+    # Object passes tree (side 40) but fails QUERY floors — with model attached,
+    # distinguishability must follow the tree.
+    episode = {
+        'episode_meta': {'camera': {'width': 396, 'height': 224}},
+        'steps': [
+            {
+                'step': 0,
+                'image_path': '/img_0.png',
+                'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+                'visible_objects': {
+                    'Chair|1': {
+                        'category': 'Chair',
+                        'position': [0.0, 0.9, 1.0],
+                        'bbox': [50, 50, 90, 90],
+                        'bbox_area': 400.0,
+                        'min_side': 40.0,
+                        'visible_pixels': 350.0,
+                        'occupancy_ratio': 0.7,
+                        'obj_distance': 1.2,
+                    }
+                },
+                'edges_egocentric': [
+                    {
+                        'source': 'agent',
+                        'target': 'Chair|1',
+                        'angle_relation': ['ahead', '', ''],
+                    }
+                ],
+            }
+        ],
+    }
+    filtered = apply_question_visibility_to_episode(
+        episode, model_path=str(path), search_default_model=False
+    )
+    assert EPISODE_VISIBILITY_MODEL_KEY in filtered
+    assert _distinguishable_encoding_sighting(filtered, 0, 'Chair|1')
+    facts = plan_episode(
+        episode,
+        constructs=['egocentric_encoding'],
+        max_per_construct=2,
+        visibility_model_path=str(path),
+    )
+    assert any(
+        f.status == 'ok' and f.queried_object_id == 'Chair|1' for f in facts
+    )
 
 
 def test_classify_visibility_proba_bands():

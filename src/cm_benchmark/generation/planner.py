@@ -20,6 +20,7 @@ from cm_benchmark.generation.constructs import (
     QUERY_FOV_MIN_BBOX_AREA,
     QUERY_FOV_MIN_SIDE,
     QUERY_FOV_MIN_VISIBLE_PIXELS,
+    camera_size_wh,
     find_ego_edge,
     fov_metrics_ok,
     humanize_receptacle,
@@ -242,9 +243,46 @@ def _referring_disambiguator(
     step = step_by_index(episode, int(step_idx))
     if step is None:
         return None
+    from cm_benchmark.generator.visibility_filters import visibility_model_from_episode
+
     return resolve_referring_disambiguator(
-        step, obj_id, _agent_pose_dict(episode, int(step_idx))
+        step,
+        obj_id,
+        _agent_pose_dict(episode, int(step_idx)),
+        model=visibility_model_from_episode(episode),
     )
+
+
+def _referring_display_name(
+    episode: dict,
+    step_idx: int,
+    obj_id: str,
+    *,
+    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
+    min_side: float = QUERY_FOV_MIN_SIDE,
+    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
+) -> Optional[str]:
+    """Human name for questions: ``Chair`` or ``Chair close to the Table``.
+
+    Requires a distinguishable FOV sighting at ``step_idx``. Returns None when the
+    object is weak/missing or a duplicate category cannot be uniquely referred.
+    """
+    if not _distinguishable_encoding_sighting(
+        episode,
+        step_idx,
+        obj_id,
+        min_bbox_area=min_bbox_area,
+        min_side=min_side,
+        min_visible_pixels=min_visible_pixels,
+    ):
+        return None
+    phrase = _referring_disambiguator(episode, step_idx, obj_id)
+    if phrase is None:
+        return None
+    step = step_by_index(episode, int(step_idx))
+    catalog = (step or {}).get('visible_objects') or {}
+    base = object_type_from_id(obj_id, catalog)
+    return f'{base}{phrase}'
 
 
 def _distinguishable_encoding_sighting(
@@ -256,22 +294,35 @@ def _distinguishable_encoding_sighting(
     min_side: float = QUERY_FOV_MIN_SIDE,
     min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
 ) -> bool:
-    """Object must be clearly visible at encode (metrics + ego edge), not just listed."""
+    """Object must be clearly visible at encode (metrics + ego edge), not just listed.
+
+    When a DecisionTree visibility model is attached on the episode, that model
+    decides distinguishability (static ``min_*`` floors are ignored). Otherwise
+    the static floors apply. Thin border-clipped scrapes are always rejected
+    when ``episode_meta.camera`` size is available.
+    """
+    from cm_benchmark.generator.visibility_filters import visibility_model_from_episode
+
     step = step_by_index(episode, int(step_idx))
     if step is None:
         return False
     odata = (step.get('visible_objects') or {}).get(obj_id)
+    model = visibility_model_from_episode(episode)
     if not fov_metrics_ok(
         odata,
         min_bbox_area=min_bbox_area,
         min_side=min_side,
         min_visible_pixels=min_visible_pixels,
+        image_wh=camera_size_wh(episode),
+        model=model,
     ):
         return False
     return find_ego_edge(step, obj_id) is not None
 
 
-# Soft FOV kwargs for invisible-displacement prop encoding (not landmark QUERY bar).
+# Soft FOV kwargs for invisible-displacement encode when no DecisionTree is loaded.
+# With a tree attached on the episode, ``_distinguishable_encoding_sighting`` uses
+# the tree instead. Query-time invisibility is separate (``_object_hidden_through``).
 _ID_ENCODE_FOV = dict(
     min_bbox_area=ID_ENCODE_FOV_MIN_BBOX_AREA,
     min_side=ID_ENCODE_FOV_MIN_SIDE,
@@ -311,7 +362,7 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
         step_idx = int(step['step'])
         visible = step.get('visible_objects') or {}
         for obj_id in visible:
-            if not fov_metrics_ok(visible.get(obj_id)):
+            if not _distinguishable_encoding_sighting(episode, step_idx, obj_id):
                 continue
             edge = find_ego_edge(step, obj_id)
             if not edge:
@@ -360,13 +411,18 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
 
 
 def _count_category_seen(episode: dict, category: str, up_to_step: int) -> int:
-    """Count distinct object ids of ``category`` visible on any step ≤ up_to_step."""
+    """Count distinct ids of ``category`` with a distinguishable sighting ≤ up_to_step."""
     seen: set[str] = set()
     for step in episode.get('steps') or []:
-        if int(step['step']) > int(up_to_step):
+        si = int(step['step'])
+        if si > int(up_to_step):
             continue
         for oid, odata in (step.get('visible_objects') or {}).items():
-            if object_type_from_id(oid, {oid: odata}) == category:
+            if object_type_from_id(oid, {oid: odata}) != category:
+                continue
+            if oid in seen:
+                continue
+            if _distinguishable_encoding_sighting(episode, si, oid):
                 seen.add(oid)
     return len(seen)
 
@@ -638,6 +694,7 @@ def _nearest_floor_anchor(
     """Nearest distinguishable landmark within radius of a Floor destination.
 
     Returns ``(landmark_id, display_name)`` or None (reject that Floor candidate).
+    Display name includes a referring disambiguator when the category is ambiguous.
     """
     target = _xz_from_any(final_pos)
     if target is None:
@@ -651,15 +708,105 @@ def _nearest_floor_anchor(
         for oid, odata in (step.get('visible_objects') or {}).items():
             if _is_floor_receptacle(oid):
                 continue
+            if not _distinguishable_encoding_sighting(episode, si, oid):
+                continue
             pos = odata.get('position')
             xz = _xz_from_any(pos)
             if xz is None:
                 continue
             d = ((xz[0] - target[0]) ** 2 + (xz[1] - target[1]) ** 2) ** 0.5
             if d <= radius_m and d < best_d:
+                name = _referring_display_name(episode, si, oid)
+                if name is None:
+                    continue
                 best_d = d
-                best = (oid, object_type_from_id(oid, {oid: odata}))
+                best = (oid, name)
     return best
+
+
+def _landmark_matches(visible_id: str, landmark_id: str) -> bool:
+    if visible_id == landmark_id:
+        return True
+    return str(visible_id).split('|')[0] == str(landmark_id).split('|')[0]
+
+
+def _visible_oid_matching(step: dict, landmark_id: str) -> Optional[str]:
+    for oid in step.get('visible_objects') or {}:
+        if _landmark_matches(oid, landmark_id):
+            return oid
+    return None
+
+
+def _landmark_distinguishable_in_frames(
+    episode: dict,
+    landmark_id: Optional[str],
+    frame_steps: list[int],
+    *,
+    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
+    min_side: float = QUERY_FOV_MIN_SIDE,
+    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
+) -> bool:
+    """True if landmark appears with QUERY-level FOV metrics in some shown frame."""
+    if not landmark_id or _is_floor_receptacle(landmark_id):
+        return False
+    for si in frame_steps:
+        step = step_by_index(episode, si)
+        if not step:
+            continue
+        oid = _visible_oid_matching(step, landmark_id)
+        if oid is None:
+            continue
+        if _distinguishable_encoding_sighting(
+            episode,
+            si,
+            oid,
+            min_bbox_area=min_bbox_area,
+            min_side=min_side,
+            min_visible_pixels=min_visible_pixels,
+        ):
+            return True
+    return False
+
+
+def _landmark_display_in_frames(
+    episode: dict, landmark_id: Optional[str], frame_steps: list[int]
+) -> Optional[str]:
+    """Referring display name for a destination landmark visible in shown frames."""
+    if not landmark_id or _is_floor_receptacle(landmark_id):
+        return None
+    for si in frame_steps:
+        step = step_by_index(episode, si)
+        if not step:
+            continue
+        oid = _visible_oid_matching(step, landmark_id)
+        if oid is None:
+            continue
+        name = _referring_display_name(episode, si, oid)
+        if name is not None:
+            return name
+    return None
+
+
+def _object_distinguishable_in_frames(
+    episode: dict,
+    obj_id: str,
+    frame_steps: list[int],
+    *,
+    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
+    min_side: float = QUERY_FOV_MIN_SIDE,
+    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
+) -> bool:
+    for si in frame_steps:
+        if _distinguishable_encoding_sighting(
+            episode,
+            si,
+            obj_id,
+            min_bbox_area=min_bbox_area,
+            min_side=min_side,
+            min_visible_pixels=min_visible_pixels,
+        ):
+            return True
+    return False
 
 
 def _relation_shift_magnitude(
@@ -688,23 +835,55 @@ def _relation_shift_magnitude(
 
 
 def _object_in_fov_at_step(episode: dict, obj_id: str, step_idx: int) -> bool:
+    """True if obj is in ``visible_objects`` or has a track row at this step in FOV.
+
+    Track lookup is **exact-step** (no stale carry-forward of an older True).
+    """
     step = step_by_index(episode, step_idx)
     if step and obj_id in (step.get('visible_objects') or {}):
         return True
     track = (episode.get('object_state_track') or {}).get(obj_id) or {}
-    entries = track.get('entries') or []
-    chosen = None
-    for entry in entries:
+    for entry in track.get('entries') or []:
         t = entry.get('step', entry.get('timestep'))
-        if t is None:
+        if t is None or int(t) != int(step_idx):
             continue
-        if int(t) <= int(step_idx):
-            chosen = entry
-        else:
-            break
-    if chosen is None:
-        return False
-    return bool(chosen.get('in_camera_fov') or chosen.get('visible'))
+        return bool(entry.get('in_camera_fov') or entry.get('visible'))
+    return False
+
+
+def _id_encode_kwargs(episode: dict) -> dict:
+    """FOV kwargs for ID encode distinguishability.
+
+    Soft ``ID_ENCODE_FOV_*`` floors apply when no DecisionTree is attached;
+    ``_distinguishable_encoding_sighting`` prefers the tree when present.
+    """
+    return dict(_ID_ENCODE_FOV)
+
+
+def _id_displaced_object_name(
+    episode: dict, step_idx: int, obj_id: str
+) -> Optional[tuple[str, str]]:
+    """Display name for a displaced prop at a distinguishable encode step.
+
+    Returns ``(object_type, disambiguator)``. Requires the object to be
+    uniquely nameable at ``step_idx`` (referring phrase when category is
+    ambiguous).
+    """
+    if not _distinguishable_encoding_sighting(
+        episode, int(step_idx), obj_id, **_id_encode_kwargs(episode)
+    ):
+        return None
+    step = step_by_index(episode, int(step_idx))
+    if step is None:
+        return None
+    vo = step.get('visible_objects') or {}
+    base = object_type_from_id(obj_id, vo)
+    if not base:
+        return None
+    phrase = _referring_disambiguator(episode, int(step_idx), obj_id)
+    if phrase is None:
+        return None
+    return base, phrase
 
 
 def _object_hidden_through(
@@ -756,27 +935,6 @@ def _last_distinguishable_sighting(
         ):
             best = si
     return best
-
-
-def _landmark_matches(visible_id: str, landmark_id: str) -> bool:
-    if visible_id == landmark_id:
-        return True
-    return str(visible_id).split('|')[0] == str(landmark_id).split('|')[0]
-
-
-def _landmark_distinguishable_in_frames(
-    episode: dict, landmark_id: Optional[str], frame_steps: list[int]
-) -> bool:
-    if not landmark_id or _is_floor_receptacle(landmark_id):
-        return False
-    for si in frame_steps:
-        step = step_by_index(episode, si)
-        if not step:
-            continue
-        for oid in (step.get('visible_objects') or {}):
-            if _landmark_matches(oid, landmark_id):
-                return True
-    return False
 
 
 def _candidates_for_event(episode: dict, event_id, obj_id: str) -> list[dict]:
@@ -894,12 +1052,41 @@ def _ego_pool_from_specs(
     return answer_dir, dir_pool, dir_seeds
 
 
+def _pad_id_ego_options(
+    answer: str, pool: list[str], seeds: list[str]
+) -> tuple[list[str], list[str]]:
+    """Pad diagnostic ego labels to four with opposite / orthogonal / bank fillers.
+
+    Diagnostic candidate bearings stay first. Fillers are tagged so rationale
+    does not pretend they came from receptacle teleports.
+    """
+    out = [lab for lab in pool if lab]
+    seeds_out = list(seeds)
+    if answer and answer not in out:
+        out.insert(0, answer)
+
+    def _add(lab: str, mode: str) -> None:
+        if lab and lab not in out and len(out) < 4:
+            out.append(lab)
+            seeds_out.append(mode)
+            seeds_out.append(_mode_seed(mode, lab))
+
+    _add(OPPOSITE.get(answer) or '', 'opposite_direction')
+    _add(ORTHOGONAL.get(answer) or '', 'orthogonal_direction')
+    for lab in EGO_DIRECTION_OPTIONS:
+        if len(out) >= 4:
+            break
+        _add(lab, 'ego_bank_filler')
+    return out[:4], seeds_out
+
+
 def _pick_best_id_query_step(
     episode: dict, obj_id: str, at_t: int, specs: list[dict]
 ) -> Optional[int]:
     """Prefer a hidden query step where candidate poses yield ≥2 unique ego labels.
 
-    Score: more unique labels first, then later step (more delay) among ties.
+    Score: more unique diagnostic labels first, then later step among ties.
+    Options are padded to four later in ``_try_ego_direction_fact``.
     """
     best: Optional[int] = None
     best_key = (-1, -1)
@@ -933,16 +1120,6 @@ def _partner_event(episode: dict, ev: dict) -> Optional[dict]:
         if row.get('event_id') == event_id and row.get('obj_id') == partner_id:
             return row
     return None
-
-
-def _object_distinguishable_in_frames(
-    episode: dict, obj_id: str, frame_steps: list[int]
-) -> bool:
-    for si in frame_steps:
-        step = step_by_index(episode, si)
-        if step and obj_id in (step.get('visible_objects') or {}):
-            return True
-    return False
 
 
 def _build_id_frame_steps(
@@ -980,12 +1157,13 @@ def _try_ego_direction_fact(
     template_mode: str,
     answer_source: list[str],
     extra_fields: dict,
+    disambiguator: str = '',
 ) -> Optional[PlannedFact]:
-    disambiguator = _referring_disambiguator(episode, enc_idx, obj_id)
-    if disambiguator is None:
-        return None
     answer_dir, dir_pool, dir_seeds = _ego_pool_from_specs(episode, specs, query_step)
     if not answer_dir or answer_dir not in dir_pool or len(dir_pool) < 2:
+        return None
+    dir_pool, dir_seeds = _pad_id_ego_options(answer_dir, dir_pool, dir_seeds)
+    if len(dir_pool) < 4:
         return None
     return PlannedFact(
         construct='invisible_displacement',
@@ -1013,13 +1191,17 @@ def _try_ego_direction_fact(
 def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     """One item per displacement_events row; direct (recall_direction) or swap modes.
 
-    Query step is chosen among hidden steps so candidate ego bearings stay unique;
-    colliding distractor labels are dropped rather than rejecting the event.
+    Displaced objects (and swap partners) must be **distinguishable** at an encode
+    step before the move (DecisionTree if attached, else soft ``ID_ENCODE_FOV_*``),
+    and **invisible** from the move through the query step. Destination landmarks
+    for direct moves still must be nameable in shown frames. Ego MC options are
+    diagnostic candidate bearings first, then padded to four from the ego bank.
     """
     events = episode.get('displacement_events') or []
     if not events:
         return []
 
+    enc_kw = _id_encode_kwargs(episode)
     out: list[PlannedFact] = []
     for ev in events:
         if len(out) >= max_items:
@@ -1031,19 +1213,17 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
         at_t = ev.get('at_timestep')
         if not obj_id or at_t is None:
             continue
+        # Encode: last distinguishable sighting before the hidden move.
         enc_idx = _last_distinguishable_sighting(
-            episode, obj_id, int(at_t), **_ID_ENCODE_FOV
+            episode, obj_id, int(at_t), **enc_kw
         )
         if enc_idx is None:
             continue
-        if not _distinguishable_encoding_sighting(
-            episode, enc_idx, obj_id, **_ID_ENCODE_FOV
-        ):
+        named = _id_displaced_object_name(episode, enc_idx, obj_id)
+        if named is None:
             continue
-        if not _object_visible_before(episode, obj_id, int(at_t)):
-            continue
+        object_type, disambiguator = named
 
-        object_type = object_type_from_id(obj_id)
         candidates = _candidates_for_event(episode, ev.get('event_id'), obj_id)
         specs = _option_specs_for_event(ev, candidates)
         # Prefer a pose where distractor bearings stay unique (latest-only often collapses).
@@ -1061,23 +1241,28 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
             if not partner_id or not _partner_event(episode, ev):
                 continue
             partner_enc = _last_distinguishable_sighting(
-                episode, partner_id, int(at_t), **_ID_ENCODE_FOV
+                episode, partner_id, int(at_t), **enc_kw
             )
             if partner_enc is None:
                 continue
-            if not _object_visible_before(episode, partner_id, int(at_t)):
+            if not _object_hidden_through(
+                episode, partner_id, int(at_t), int(query_step)
+            ):
                 continue
             frame_steps = _build_id_frame_steps(
                 enc_idx, int(at_t), int(query_step), extra_steps=[partner_enc]
             )
             if not _object_distinguishable_in_frames(
-                episode, partner_id, frame_steps
+                episode, partner_id, frame_steps, **enc_kw
             ):
                 continue
             images = _images_for_steps(episode, frame_steps)
             if not images:
                 continue
-            partner_type = object_type_from_id(partner_id)
+            partner_named = _id_displaced_object_name(episode, partner_enc, partner_id)
+            if partner_named is None:
+                continue
+            partner_type, _partner_disamb = partner_named
             fact = _try_ego_direction_fact(
                 episode,
                 ev,
@@ -1100,6 +1285,7 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                     'from_receptacle': ev.get('from_receptacle'),
                     'to_receptacle': to_r,
                 },
+                disambiguator=disambiguator,
             )
             if fact is not None:
                 out.append(fact)
@@ -1121,12 +1307,10 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                 continue
             new_location = loc
         else:
-            if not _landmark_distinguishable_in_frames(episode, to_r, frame_steps):
+            dest_name = _landmark_display_in_frames(episode, to_r, frame_steps)
+            if dest_name is None:
                 continue
-            loc = humanize_receptacle(to_r)
-            if loc is None:
-                continue
-            new_location = loc.replace('on/in the ', '')
+            new_location = dest_name
         images = _images_for_steps(episode, frame_steps)
         if not images:
             continue
@@ -1160,6 +1344,7 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                 'floor_anchor_landmark': floor_anchor_name,
                 'relation_shift_magnitude': shift,
             },
+            disambiguator=disambiguator,
         )
         if fact is not None:
             out.append(fact)
@@ -1170,7 +1355,7 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
                 construct='invisible_displacement',
                 status='unsupported',
                 reason=(
-                    'no_event_with_distinguishable_hidden_move_and_unique_options'
+                    'no_event_with_distinguishable_encode_hidden_query_and_unique_options'
                 ),
             )
         ]
@@ -1396,21 +1581,26 @@ def _object_world_pos(episode: dict, obj_id: str) -> Optional[tuple]:
 
 
 def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
-    """Objects that passed Q&A visibility (in some step's visible_objects).
+    """Landmarks with a QUERY-FOV distinguishable sighting (metrics + ego edge).
 
-    Distinguishing filter already applied at GT build time for visible_objects.
-    Prefer world_layout landmarks when they are also visible.
+    ``first_seen_step`` is the earliest such sighting, not a weak FOV scrape.
+    Prefer world_layout landmarks when they are also distinguishable.
     """
     seen: dict[str, dict] = {}
     sighting_count: dict[str, int] = {}
     for step in episode.get('steps') or []:
         si = int(step['step'])
         for oid, odata in (step.get('visible_objects') or {}).items():
+            if not _distinguishable_encoding_sighting(episode, si, oid):
+                continue
             sighting_count[oid] = sighting_count.get(oid, 0) + 1
             if oid in seen:
                 continue
             pos = odata.get('position')
             if pos is None:
+                continue
+            # Must be uniquely nameable at this sighting (or category-unique).
+            if _referring_display_name(episode, si, oid) is None:
                 continue
             seen[oid] = {
                 'obj_id': oid,
@@ -1421,25 +1611,19 @@ def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
                 'region_id': None,
                 'salience': 1.0,
             }
-    layout_ids = set()
     for lm in (episode.get('world_layout') or {}).get('landmarks') or []:
         lid = lm.get('landmark_id') or lm.get('obj_id')
         if not lid:
             continue
-        layout_ids.add(lid)
         if lid in seen:
             seen[lid]['from_layout'] = True
             seen[lid]['name'] = _landmark_display_name(lid, episode)
             seen[lid]['region_id'] = lm.get('region_id')
-            # Prefer catalog/layout pose for snapping (may be on receptacle)
             wp = _object_world_pos(episode, lid)
             if wp is not None:
                 seen[lid]['position'] = wp
-            # Layout landmarks get a salience boost; more sightings → higher weight
             seen[lid]['salience'] = 2.0 + 0.1 * sighting_count.get(lid, 1)
-        else:
-            # Layout-only landmarks are not distinguishable — skip (filter first)
-            continue
+        # Layout-only (never distinguishable in FOV) — skip
     for oid, row in seen.items():
         if not row['from_layout']:
             row['salience'] = 1.0 + 0.05 * sighting_count.get(oid, 1)
@@ -1645,9 +1829,13 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             n0, n1 = id_to_node[src_id], id_to_node[goal_id]
             if n0 == n1:
                 continue
-            source = meta[src_id]['name']
-            goal = meta[goal_id]['name']
-            if source == goal:
+            source = _referring_display_name(
+                episode, int(meta[src_id]['first_seen_step']), src_id
+            )
+            goal = _referring_display_name(
+                episode, int(meta[goal_id]['first_seen_step']), goal_id
+            )
+            if not source or not goal or source == goal:
                 continue
             sub = _traversed_subpath(traversed, n0, n1)
             if sub is None or len(sub) < 2:
@@ -1900,9 +2088,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         if not rel:
             return
         direction, distance = rel
-        source = meta[src_id]['name']
-        goal = meta[goal_id]['name']
-        if source == goal:
+        source = _referring_display_name(
+            episode, int(meta[src_id]['first_seen_step']), src_id
+        )
+        goal = _referring_display_name(
+            episode, int(meta[goal_id]['first_seen_step']), goal_id
+        )
+        if not source or not goal or source == goal:
             return
         answer = format_survey_relation(direction, distance, source_name=source)
         opp = {
@@ -2003,9 +2195,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             source_pos=meta[src_id]['position'],
             goal_pos=meta[goal_id]['position'],
         )
-        source = meta[src_id]['name']
-        goal = meta[goal_id]['name']
-        if source == goal:
+        source = _referring_display_name(
+            episode, int(meta[src_id]['first_seen_step']), src_id
+        )
+        goal = _referring_display_name(
+            episode, int(meta[goal_id]['first_seen_step']), goal_id
+        )
+        if not source or not goal or source == goal:
             return
         pool = [label]
         seeds: list[str] = []
@@ -2104,8 +2300,27 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     return out
 
 
+def _co_visible_distinguishable_step(
+    episode: dict, obj_ids: Sequence[str]
+) -> Optional[int]:
+    """Latest step where every obj_id is QUERY-FOV distinguishable."""
+    best = None
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if all(
+            _distinguishable_encoding_sighting(episode, si, oid) for oid in obj_ids
+        ):
+            best = si
+    return best
+
+
 def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C."""
+    """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C.
+
+    A, B, and C must each be FOV-distinguishable and uniquely nameable (referring
+    disambiguator when the category is ambiguous). Prefer a frame where all three
+    are co-visible; otherwise use each landmark's clear sighting frame.
+    """
     import math as _math
 
     landmarks = select_landmark_candidates(episode, top_n_per_region=4, max_total=18)
@@ -2119,7 +2334,6 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
         ]
 
     out: list[PlannedFact] = []
-    # Prefer a late query step where all three have been seen
     for i, a in enumerate(landmarks):
         for j, b in enumerate(landmarks):
             if i == j:
@@ -2134,16 +2348,67 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     continue
                 if a['name'] == b['name'] or a['name'] == c['name'] or b['name'] == c['name']:
                     continue
-                label = imagined_perspective_label(
-                    pos_a, pos_b, pos_c, ahead_half_width=AHEAD_HALF_WIDTH_FULL
-                )
+
+                sa = int(a['first_seen_step'])
+                sb = int(b['first_seen_step'])
+                sc = int(c['first_seen_step'])
+                name_a = _referring_display_name(episode, sa, a['obj_id'])
+                name_b = _referring_display_name(episode, sb, b['obj_id'])
+                name_c = _referring_display_name(episode, sc, c['obj_id'])
+                if name_a is None or name_b is None or name_c is None:
+                    continue
+
+                label = imagined_perspective_label(pos_a, pos_b, pos_c)
                 if not label or label not in EGO_DIRECTION_OPTIONS:
                     continue
-                query_step = max(
-                    int(a['first_seen_step']),
-                    int(b['first_seen_step']),
-                    int(c['first_seen_step']),
+
+                co_step = _co_visible_distinguishable_step(
+                    episode, [a['obj_id'], b['obj_id'], c['obj_id']]
                 )
+                if co_step is not None:
+                    # Re-resolve names at the co-visible frame (same ids).
+                    name_a = _referring_display_name(episode, co_step, a['obj_id']) or name_a
+                    name_b = _referring_display_name(episode, co_step, b['obj_id']) or name_b
+                    name_c = _referring_display_name(episode, co_step, c['obj_id']) or name_c
+                    query_step = co_step
+                    encoding_step = co_step
+                    images, image_roles = merge_role_images(
+                        [
+                            (
+                                _img(step_by_index(episode, co_step)),
+                                f'A/B/C co-visible · stand at {name_a}, face {name_b}, locate {name_c}',
+                            )
+                        ]
+                    )
+                else:
+                    # Each mentioned landmark must be distinguishable in its own frame.
+                    if not (
+                        _distinguishable_encoding_sighting(episode, sa, a['obj_id'])
+                        and _distinguishable_encoding_sighting(episode, sb, b['obj_id'])
+                        and _distinguishable_encoding_sighting(episode, sc, c['obj_id'])
+                    ):
+                        continue
+                    query_step = max(sa, sb, sc)
+                    encoding_step = min(sa, sb, sc)
+                    images, image_roles = merge_role_images(
+                        [
+                            (
+                                _img(step_by_index(episode, sa)),
+                                f'A · stand here ({name_a})',
+                            ),
+                            (
+                                _img(step_by_index(episode, sb)),
+                                f'B · face toward ({name_b})',
+                            ),
+                            (
+                                _img(step_by_index(episode, sc)),
+                                f'C · locate ({name_c})',
+                            ),
+                        ]
+                    )
+                if not images:
+                    continue
+
                 # Camera-frame distractor: C relative to actual agent pose (FOV)
                 ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
                 cam = (
@@ -2158,15 +2423,12 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     else None
                 )
                 mirrored = MIRRORED_LR.get(label)
-                # Wrong facing: stand at A facing away from B (toward -B)
                 wrong_b = {
                     'x': pos_a['x'] - (pos_b['x'] - pos_a['x']),
                     'y': pos_a['y'],
                     'z': pos_a['z'] - (pos_b['z'] - pos_a['z']),
                 }
-                wrong = imagined_perspective_label(
-                    pos_a, wrong_b, pos_c, ahead_half_width=AHEAD_HALF_WIDTH_FULL
-                )
+                wrong = imagined_perspective_label(pos_a, wrong_b, pos_c)
                 pool = [label]
                 seeds: list[str] = []
                 if cam and cam not in pool:
@@ -2195,33 +2457,12 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                         _math.atan2(pos_b['x'] - pos_a['x'], pos_b['z'] - pos_a['z'])
                     )
                     shift = abs((imag_h - pose['heading'] + 180) % 360 - 180)
-                images = merge_role_images(
-                    [
-                        (
-                            _img(step_by_index(episode, a['first_seen_step'])),
-                            f"A · stand here ({a['name']})",
-                        ),
-                        (
-                            _img(step_by_index(episode, b['first_seen_step'])),
-                            f"B · face toward ({b['name']})",
-                        ),
-                        (
-                            _img(step_by_index(episode, c['first_seen_step'])),
-                            f"C · locate ({c['name']})",
-                        ),
-                    ]
-                )
-                uniq_images, image_roles = images
                 out.append(
                     PlannedFact(
                         construct='perspective_taking',
                         status='ok',
                         query_step=query_step,
-                        encoding_step=min(
-                            int(a['first_seen_step']),
-                            int(b['first_seen_step']),
-                            int(c['first_seen_step']),
-                        ),
+                        encoding_step=encoding_step,
                         queried_object_id=c['obj_id'],
                         reference_object_id=a['obj_id'],
                         answer_label=label,
@@ -2229,24 +2470,25 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                             f'landmarks[{a["obj_id"]}].position (A)',
                             f'landmarks[{b["obj_id"]}].position (B)',
                             f'landmarks[{c["obj_id"]}].position (C)',
-                            'imagined_perspective_label(A, A→B, C)',
+                            'imagined_perspective_label(A, A→B, C; signed angle)',
                         ],
-                        image_paths=uniq_images,
+                        image_paths=images,
                         options_pool=pool[:4],
                         distractor_seeds=seeds,
                         extra={
-                            'A': a['name'],
-                            'B': b['name'],
-                            'C': c['name'],
-                            'source': a['name'],
-                            'goal': b['name'],
-                            'object_type': c['name'],
+                            'A': name_a,
+                            'B': name_b,
+                            'C': name_c,
+                            'source': name_a,
+                            'goal': name_b,
+                            'object_type': name_c,
                             'landmark_a_id': a['obj_id'],
                             'landmark_b_id': b['obj_id'],
                             'landmark_c_id': c['obj_id'],
                             'perspective_shift_magnitude': shift,
                             'frame_of_reference': 'allocentric',
                             'image_roles': image_roles,
+                            'abc_co_visible': co_step is not None,
                         },
                     )
                 )
@@ -2284,14 +2526,19 @@ def plan_episode(
     swm_max_delay: Optional[int] = None,
     su_min_delay: int = 2,
     su_max_delay: Optional[int] = None,
+    visibility_model_path: Optional[str] = None,
 ) -> list[PlannedFact]:
     from cm_benchmark.generator.visibility_filters import (
         apply_question_visibility_to_episode,
     )
 
-    # Draft-time safety net: drop tiny/indistinct FOV blobs even if the episode
-    # JSON was exported with question_visibility all-null / no joblib model.
-    episode = apply_question_visibility_to_episode(episode, inplace=False)
+    # Prefer DecisionTree joblib when present; else static question_visibility.
+    # Also attaches the model for distinguishability gates during planning.
+    episode = apply_question_visibility_to_episode(
+        episode,
+        inplace=False,
+        model_path=visibility_model_path,
+    )
 
     keys = constructs or list(PLANNERS.keys())
     facts: list[PlannedFact] = []
