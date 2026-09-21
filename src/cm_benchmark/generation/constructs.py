@@ -85,39 +85,63 @@ CONSTRUCT_TEMPLATES = {
     ],
     'route_knowledge': [
         (
-            'Which of these matches the sequence of turns you made traveling '
-            'from {source} to {goal}?'
+            'List, in order, the navigation actions you took to travel '
+            'from the {source} to the {goal}.'
         ),
     ],
-    'survey_based_route_planning': {
-        'direction_distance': [
-            (
-                "Using your knowledge of the environment's layout, "
-                'where is the {goal} relative to the {source}?'
-            ),
-        ],
-        'conditional_detour': [
-            (
-                "Using your knowledge of the environment's layout, where would you "
-                'first head to reach the {goal} from the {source}, given that {condition}?'
-            ),
-        ],
-    },
+    'survey_based_route_planning': [
+        (
+            "Using your knowledge of the environment's layout, list the "
+            'navigation actions that take you from the {source} to the {goal}.'
+        ),
+        (
+            "Based on what you've seen of this space, list the navigation "
+            'actions, in order, that go from the {source} to the {goal}.'
+        ),
+    ],
 }
+
+
+def _template_bank(construct: str, template_mode: Optional[str] = None) -> list:
+    bank = CONSTRUCT_TEMPLATES.get(construct)
+    if bank is None:
+        return []
+    if isinstance(bank, dict):
+        mode = template_mode if template_mode in bank else next(iter(bank), None)
+        return list(bank.get(mode) or [])
+    return list(bank)
+
+
+def _template_text(entry) -> str:
+    """Normalize a bank entry to a format string (unwrap accidental 1-tuples)."""
+    if isinstance(entry, tuple):
+        return ''.join(str(p) for p in entry) if entry else '(no template)'
+    return str(entry)
+
+
+def template_count(construct: str, template_mode: Optional[str] = None) -> int:
+    return len(_template_bank(construct, template_mode))
+
+
+def pick_template_index(
+    construct: str,
+    template_mode: Optional[str] = None,
+    *keys: Any,
+) -> int:
+    """Stable paraphrase index from item keys (source/goal ids, …)."""
+    n = template_count(construct, template_mode)
+    if n <= 1:
+        return 0
+    seed = '|'.join(str(k) for k in keys if k is not None)
+    return sum(ord(c) for c in seed) % n
 
 
 def select_template(construct: str, template_mode: Optional[str] = None, index: int = 0) -> str:
     """Pick a question template for a construct / mode."""
-    bank = CONSTRUCT_TEMPLATES.get(construct)
-    if bank is None:
+    templates = _template_bank(construct, template_mode)
+    if not templates:
         return '(no template)'
-    if isinstance(bank, dict):
-        mode = template_mode
-        if mode not in bank:
-            mode = next(iter(bank))
-        templates = bank.get(mode) or ['(no template)']
-        return templates[index % len(templates)]
-    return bank[index % len(bank)]
+    return _template_text(templates[index % len(templates)])
 
 
 def frame_sequence_cue(n_images: int) -> str:

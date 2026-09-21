@@ -5,36 +5,44 @@ route_knowledge:
   frame_of_reference: egocentric
   definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
   what_moves: observer (along a previously traversed route)
-  answer_type: ordered sequence of turns (graded as MCQ over full candidate sequences, not
-    free text)
+  answer_type: 'ordered sequence of collected navigation actions (move_ahead, rotate_left,
+    rotate_right, move_back). Not MCQ. [CODE] score = metric-simulate the parsed actions
+    (agent_move_m / agent_rotation_deg), snap each pose, and return success / validity /
+    efficiency separately.
+
+    '
   required_temporal_fields:
   - agent_trajectory
   - agent_actions
   - nav_graph
-  question_template: Which of these matches the sequence of turns you made traveling from
-    {source} to {goal}?
+  question_template: List, in order, the navigation actions you took to travel from the
+    {source} to the {goal}.
   ground_truth_method: 'Source/goal are landmarks chosen via select_landmark_candidates()
-    (salience-filtered through the visibility classifier, top-N weighted sample per region
-    — never nearest-distance, never uniform-random). For route_knowledge each landmark is
-    snapped to the nearest *visited* nav_graph node via snap_to_nearest_of(graph, pose, traversed_nodes)
-    (naming stays on the landmark; pathfinding uses the node). Candidate path = the real traversed
-    node sequence between those nodes. Reject any candidate below a minimum hop count calibrated
-    per-scene from that scene''s own distribution of landmark-pair shortest-path lengths (capped
-    for MC length) — do not import R2R''s 4-6 edge figure as a fixed target. Correct answer
-    = derive_turns() on the traversed node sequence, binned to episode_meta.agent.rotation_deg,
-    each turn labeled with its nearest landmark.
+    (salience-filtered through the visibility classifier, top-N weighted sample per region;
+    unique_category=False — never nearest-distance, never uniform-random). Duplicate
+    categories stay if _referring_display_name uniquely names them (GOAT-Bench 2024 instance
+    language; shared_rules referring-expression exception). Snap each landmark to the
+    nearest visited nav_graph node (naming stays on the landmark; pathfinding uses the
+    node). Reject pairs whose full-nav_graph geodesic is outside [MIN_PAIR_GEODESIC_M,
+    MAX_PAIR_GEODESIC_M] (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200 2024). Route does
+    not use a geodesic/Euclidean ratio. Build traversed_edges once per episode from
+    consecutive snapped agent poses (undirected set). Reference path = shortest_path()
+    on the nav_graph subgraph restricted to traversed_edges. Reject if no path exists or
+    hop count is below ROUTE_MIN_HOP_COUNT (2; one real edge — not R2R''s 4–6). Stored
+    answer is path_to_nav_actions() on that path (analysis reference only). Evaluation
+    metric-simulates the model''s parsed actions: snap each pose, filter traversed_edges to
+    exported graph edges, then score success (final snap within goal tolerance), validity
+    (every crossed edge is in that filtered set; illegal edges are logged), SPL
+    efficiency given success (S * ℓ / max(p, ℓ)), and route_efficiency (same SPL given
+    success and validity). Headline construct scores are route_success and
+    route_efficiency.
 
     '
-  distractor_pattern:
-  - reversed_sequence
-  - swapped_two_turns
-  - plausible_but_unwalked_route
+  distractor_pattern: []
   discriminators:
-  - the queried route WAS previously traversed by the agent
+  - the queried route WAS previously traversed by the agent (path exists on traversed_edges)
   - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
-  - path length >= the scene-calibrated minimum hop count
-  - answer requires retrieval of sequential/procedural route information
-  - the expected answer preserves the experienced order of turns, actions, or landmarks
+  - path length >= ROUTE_MIN_HOP_COUNT (2) and full-graph geodesic in [1, 30] m
+  - answer is a free action sequence in the collected vocabulary, not MCQ
+  - '[CODE] scorer: success, validity, SPL, route_efficiency (SPL | valid-success); illegal edges logged'
   - INVALID if the queried source-goal route was not previously traversed by the agent
-  - graded as multiple-choice over full candidate sequences, never free-text (keeps scoring
-    deterministic, consistent with the rest of the pipeline)

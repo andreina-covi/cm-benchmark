@@ -137,16 +137,38 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
 - Temporal SWM / spatial_updating encode at the latest *distinguishable*
   prior sighting (FOV metrics + ego edge), not raw ``last_seen_step`` (which
   may be a weak scrape of a large mesh).
-- Class 4 asks source→goal route recall (`route_knowledge` / `derive_turns`) or
-  survey layout judgments (`survey_based_route_planning`: direction/distance or
-  conditional first-hop under a recorded passage closure) — not full-trajectory
-  memorization.
+- Class 4 is **not MCQ**. The model writes a free sequence in the collected
+  action vocabulary (`move_ahead`, `rotate_left`, `rotate_right`,
+  `move_back`). State that vocabulary **once** in the eval harness
+  (`evaluation.protocol.SYSTEM_INSTRUCTION`); do not repeat it in item
+  templates or verbose preambles. [CODE] `route_knowledge` scoring
+  metric-simulates actions (`agent_move_m` / `agent_rotation_deg`), snaps
+  each pose, filters traversed_edges to exported graph edges, and returns
+  success, validity, SPL efficiency (`S * ℓ / max(p, ℓ)` given success),
+  and `route_efficiency` (same SPL given success and validity). Illegal
+  edges and the 2×2 `outcome` cell are always logged. `survey_based_route_planning`
+  uses the same metric simulator; `viewed_edges` is a radius proxy around the
+  trajectory (scene-calibrated spacing, not raycasting) and a superset of
+  `traversed_edges`. Validity = path ⊆ viewed_edges and at least one edge is
+  not traversed. Efficiency is SPL on the viewed_edges subgraph. Stored
+  `answer` is a `path_to_nav_actions` reference for analysis only.
 - `route_knowledge` pairs follow **walk order** on the snapped trajectory (not
-  salience order); min hops are scene-calibrated (floor 2, not a fixed R2R 4–6);
-  landmarks snap to visited nodes within `ROUTE_LANDMARK_SNAP_M` (2.5 m).
-- `survey_based_route_planning` rejects candidates where the agent is within
-  `SURVEY_MIN_AGENT_SOURCE_DIST_M` (2.0 m) of the source landmark at any shown
-  frame — otherwise "goal relative to source" collapses to egocentric.
+  salience order); path = shortest_path on traversed_edges; min hops =
+  `ROUTE_MIN_HOP_COUNT` (2, not a fixed R2R 4–6); class-4 pair length is
+  full-nav_graph geodesic in `[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]`
+  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200). Route omits a geo/eucl ratio.
+  Duplicate categories are allowed when `_referring_display_name` uniquely
+  names them (`unique_category=False`). Trajectory poses snap within one
+  8-neighbor step of `max(grid_size, agent_move_m)` (exports are
+  `snap_to_grid=False`; half `grid_size` is too tight at 0.15 m); landmarks
+  snap to visited nodes within `ROUTE_LANDMARK_SNAP_M` (2.5 m).
+- `survey_based_route_planning` requires: no path on traversed_edges; same-
+  timestep through-door evidence (open + agent near door + goal visible;
+  doors only); agent ≥ `SURVEY_MIN_AGENT_SOURCE_DIST_M` (1.0 m, ObjectNav/GOAT
+  success zone) from source at the source sighting frame; geodesic 1–30 m
+  plus `SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.05; HSSD nearly-straight) on
+  the **full** nav_graph; `viewed_edges` radius proxy around the trajectory
+  (scene-calibrated); frame captions "source sighted" / "goal sighted".
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.

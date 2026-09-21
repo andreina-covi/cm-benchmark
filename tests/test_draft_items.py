@@ -707,23 +707,79 @@ def test_survey_rejects_when_agent_near_source_landmark():
     assert _agent_near_landmark(episode, near, [0])
     assert not _agent_near_landmark(episode, far, [0])
     assert not _agent_near_landmark(episode, near, [0], min_dist_m=0.1)
-    assert SURVEY_MIN_AGENT_SOURCE_DIST_M >= 1.5
+    assert SURVEY_MIN_AGENT_SOURCE_DIST_M == 1.0
 
 
-def test_scene_min_hop_floor_is_two_not_hardcoded_four():
-    """Route hop minimum is scene-calibrated with floor=2 (not a fixed R2R 4–6)."""
+def test_route_min_hop_count_is_two_not_r2r():
+    """Route hop minimum is 2 (one edge), not R2R's 4–6."""
+    from cm_benchmark.generation.planner import ROUTE_MIN_HOP_COUNT
+
+    assert ROUTE_MIN_HOP_COUNT == 2
+
+
+def test_class4_pair_gate_is_geodesic_metres_not_percentile():
+    """Class-4 pair length is 1–30 m geodesic (OVON/GOAT/HSSD); ratio is survey-only."""
+    from cm_benchmark.generation.planner import (
+        MIN_PAIR_GEODESIC_M,
+        MAX_PAIR_GEODESIC_M,
+        SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+        _class4_pair_reject_reason,
+    )
     import networkx as nx
-    from cm_benchmark.generation.planner import _scene_min_hop_count
+
+    assert MIN_PAIR_GEODESIC_M == 1.0
+    assert MAX_PAIR_GEODESIC_M == 30.0
+    assert SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.05
 
     g = nx.Graph()
-    for i in range(3):
-        g.add_node(f'n{i}')
-    g.add_edge('n0', 'n1')
-    g.add_edge('n1', 'n2')
-    assert _scene_min_hop_count(g, ['n0', 'n1', 'n2']) == 2
-    g2 = nx.path_graph([f'n{i}' for i in range(10)])
-    hops = _scene_min_hop_count(g2, ['n0', 'n9'])
-    assert 2 <= hops <= 8
+    g.add_node('n0', pos=(0.0, 1.0, 0.0))
+    g.add_node('n1', pos=(4.0, 1.0, 0.0))
+    g.add_edge('n0', 'n1', weight=4.0)
+    # Straight corridor, geo=4 m, ratio=1.0: route keeps it; survey rejects 1.05.
+    assert (
+        _class4_pair_reject_reason(
+            g, {'x': 0.0, 'z': 0.0}, {'x': 4.0, 'z': 0.0}, 'n0', 'n1', min_ratio=None
+        )
+        is None
+    )
+    assert (
+        _class4_pair_reject_reason(
+            g,
+            {'x': 0.0, 'z': 0.0},
+            {'x': 4.0, 'z': 0.0},
+            'n0',
+            'n1',
+            min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+        )
+        == 'ratio_lt_1.05'
+    )
+    g.add_node('n_close', pos=(0.4, 1.0, 0.0))
+    g.add_edge('n0', 'n_close', weight=0.4)
+    assert (
+        _class4_pair_reject_reason(
+            g,
+            {'x': 0.0, 'z': 0.0},
+            {'x': 0.4, 'z': 0.0},
+            'n0',
+            'n_close',
+            min_ratio=None,
+        )
+        == 'geodesic_lt_1m'
+    )
+    g.add_node('n2', pos=(0.0, 1.0, 3.0))
+    g.add_edge('n1', 'n2', weight=5.0)
+    # Detour 4+5=9 over eucl 3 → ratio 3.0; both keep.
+    assert (
+        _class4_pair_reject_reason(
+            g,
+            {'x': 0.0, 'z': 0.0},
+            {'x': 0.0, 'z': 3.0},
+            'n0',
+            'n2',
+            min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+        )
+        is None
+    )
 
 
 def test_swm_reserves_recall_count_slots():
@@ -1071,7 +1127,7 @@ def test_spatial_updating_delay_range_is_configurable(delayed_episode):
 
 
 def test_route_knowledge_is_retrace_not_plan(folder_episode):
-    """Class-4 route items retrace walked A→B via derive_turns (not full dump)."""
+    """Class-4 route items retrace walked A→B as collected-format actions."""
     facts = plan_episode(
         folder_episode, constructs=['route_knowledge'], max_per_construct=2
     )
@@ -1089,10 +1145,19 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     assert fact.extra.get('source')
     assert fact.extra.get('goal')
     assert fact.extra.get('path_nodes')
-    assert ' → ' in (fact.answer_label or '')
+    assert fact.extra.get('answer_format') == 'action_sequence'
+    assert fact.extra.get('scoring') == 'success_validity_efficiency'
+    assert fact.extra.get('graph_scope') == 'traversed'
+    assert fact.extra.get('traversed_edges') is not None
+    assert fact.extra.get('action_sequence')
+    assert 'move_ahead' in (fact.answer_label or '')
     q = _core_question(fact).lower()
-    assert 'sequence of turns' in q or 'traveling' in q or 'matches' in q
-    assert 'plan a route' not in q
+    assert 'in order' in q
+    assert 'move_ahead' not in q
+    assert 'rotate_left' not in q
+    assert f"from the {fact.extra['source']}".lower() in q
+    assert f"to the {fact.extra['goal']}".lower() in q
+    assert 'which of these' not in q
 
 
 def test_survey_based_route_planning_unsupported_without_novel_path(folder_episode):
@@ -1108,14 +1173,22 @@ def test_survey_based_route_planning_unsupported_without_novel_path(folder_episo
             or 'novel' in reason
             or 'landmark' in reason
             or 'untraversed' in reason
+            or 'through_opening' in reason
+            or 'through-opening' in reason
+            or 'opening' in reason
         )
         return
     fact = facts[0]
-    assert fact.extra.get('direction')
-    assert fact.extra.get('distance_label')
-    assert 'turn left' not in (fact.answer_label or '').lower() or '@' not in (
-        fact.answer_label or ''
-    )
+    assert fact.extra.get('answer_format') == 'action_sequence'
+    assert fact.extra.get('scoring') == 'success_validity_efficiency'
+    assert fact.extra.get('graph_scope') == 'viewed'
+    assert fact.extra.get('viewed_edges') is not None
+    assert fact.extra.get('traversed_edges') is not None
+    assert fact.extra.get('action_sequence')
+    assert 'move_ahead' in (fact.answer_label or '')
+    roles = fact.extra.get('image_roles') or []
+    assert any('source sighted' in r for r in roles)
+    assert any('goal sighted' in r for r in roles)
 
 
 def test_object_type_skips_undefined_category():
@@ -1181,54 +1254,110 @@ def test_core_question_covers_active_template_placeholders():
     """Guard against KeyError when formatting templates."""
     from cm_benchmark.generation.planner import PlannedFact
 
+    from cm_benchmark.generation.constructs import template_count
+
     for construct, modes in (
         ('egocentric_encoding', [None]),
         ('invisible_displacement', ['recall_direction', 'swap']),
         ('spatial_updating', [None]),
         ('route_knowledge', [None]),
-        ('survey_based_route_planning', ['direction_distance', 'conditional_detour']),
+        ('survey_based_route_planning', [None]),
         ('perspective_taking', [None]),
         ('spatial_working_memory', ['recall_relation', 'recall_count']),
     ):
         for mode in modes:
-            tmpl = select_template(construct, template_mode=mode)
-            fact = PlannedFact(
-                construct=construct,
-                status='ok',
-                query_step=5,
-                encoding_step=2,
-                queried_object_id='Cup|1',
-                reference_object_id='Table|1',
-                answer_label='to your left',
-                extra={
-                    'object_type': 'Cup',
-                    'object_category': 'Cup',
-                    'reference_object': 'Table',
-                    'source': 'Kitchen',
-                    'goal': 'LivingRoom',
-                    'A': 'Armchair',
-                    'B': 'Sofa',
-                    'C': 'Lamp',
-                    'new_location': 'Shelf',
-                    'other_object_type': 'Plate',
-                    'condition': 'the door is closed',
-                    'k': 3,
-                    'template_mode': mode,
-                    'disambiguator': '',
-                },
-            )
-            q = _core_question(fact)
-            assert '{object' not in q
-            assert '{k}' not in q
-            assert '{disambiguator}' not in q
-            assert '{new_location}' not in q
-            assert '{other_object_type}' not in q
-            assert '{A}' not in q and '{C}' not in q
-            assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q or 'Armchair' in q
-            # Unique category → no referring phrase / no double spaces around type.
-            if '{disambiguator}' in tmpl:
-                assert 'Cup  ' not in q
-                assert 'close to' not in q.lower()
+            n_tmpl = max(1, template_count(construct, mode))
+            for tidx in range(n_tmpl):
+                tmpl = select_template(construct, template_mode=mode, index=tidx)
+                assert isinstance(tmpl, str)
+                fact = PlannedFact(
+                    construct=construct,
+                    status='ok',
+                    query_step=5,
+                    encoding_step=2,
+                    queried_object_id='Cup|1',
+                    reference_object_id='Table|1',
+                    answer_label='to your left',
+                    extra={
+                        'object_type': 'Cup',
+                        'object_category': 'Cup',
+                        'reference_object': 'Table',
+                        'source': 'Kitchen',
+                        'goal': 'LivingRoom',
+                        'A': 'Armchair',
+                        'B': 'Sofa',
+                        'C': 'Lamp',
+                        'new_location': 'Shelf',
+                        'other_object_type': 'Plate',
+                        'condition': 'the door is closed',
+                        'k': 3,
+                        'template_mode': mode,
+                        'template_index': tidx,
+                        'disambiguator': '',
+                    },
+                )
+                q = _core_question(fact)
+                assert '{object' not in q
+                assert '{k}' not in q
+                assert '{disambiguator}' not in q
+                assert '{new_location}' not in q
+                assert '{other_object_type}' not in q
+                assert '{A}' not in q and '{C}' not in q
+                assert tmpl.split('{')[0] in q or 'Cup' in q or 'Kitchen' in q or 'Armchair' in q
+                # Unique category → no referring phrase / no double spaces around type.
+                if '{disambiguator}' in tmpl:
+                    assert 'Cup  ' not in q
+                    assert 'close to' not in q.lower()
+
+
+def test_class4_templates_match_taxonomy_wording():
+    from cm_benchmark.generation.constructs import pick_template_index, template_count
+
+    route = select_template('route_knowledge')
+    assert isinstance(route, str)
+    assert '{source}' in route and '{goal}' in route
+    assert 'move_ahead' not in route
+    assert 'which of these' not in route.lower()
+
+    assert template_count('survey_based_route_planning') == 2
+    t0 = select_template('survey_based_route_planning', index=0)
+    t1 = select_template('survey_based_route_planning', index=1)
+    assert t0 != t1
+    assert 'move_ahead' not in t0 and 'move_ahead' not in t1
+    assert pick_template_index('survey_based_route_planning', None, 'a', 'b') == (
+        pick_template_index('survey_based_route_planning', None, 'a', 'b')
+    )
+
+
+def test_class4_slide_panel_shows_source_goal_path_and_scoring():
+    from cm_benchmark.generation.slide_copy import class4_slide_panel
+
+    route = class4_slide_panel(
+        'route_knowledge',
+        {
+            'source': 'Chair',
+            'goal': 'Table',
+            'path_nodes': ['n0', 'n1', 'n2', 'n3'],
+            'action_sequence': ['move_ahead', 'rotate_left', 'move_ahead'],
+            'hop_count': 3,
+        },
+    )
+    assert 'Chair' in route['task'] and 'Table' in route['task']
+    assert 'Retrace' in route['task']
+    assert 'n0' in route['path'] and 'n3' in route['path']
+    assert 'move_ahead' in route['actions']
+    assert 'validity' in route['scoring']
+    assert 'exclusive gold' in route['actions']
+
+    survey = class4_slide_panel(
+        'survey_based_route_planning',
+        {'source': 'Door', 'goal': 'Window', 'path_nodes': ['a', 'b']},
+        answer='move_ahead → rotate_right → move_ahead',
+    )
+    assert 'Plan' in survey['task']
+    assert 'Door' in survey['task'] and 'Window' in survey['task']
+    assert 'viewed' in survey['graph']
+    assert 'unwalked' in survey['scoring']
 
 
 def test_core_question_includes_disambiguator_only_when_set():
@@ -1359,6 +1488,8 @@ def test_route_knowledge_does_not_leak_action_list(folder_episode):
     if not ok:
         pytest.skip('no ok route item')
     assert ok[0].get('agent_actions') is None
+    assert ok[0].get('options') == {}
+    assert 'move_ahead' in (ok[0].get('answer') or '')
 
 
 def test_write_draft_json(folder_episode, tmp_path):

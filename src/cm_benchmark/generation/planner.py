@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -27,6 +27,7 @@ from cm_benchmark.generation.constructs import (
     imagined_perspective_label,
     net_pose_changed,
     object_type_from_id,
+    pick_template_index,
     resolve_referring_disambiguator,
     step_by_index,
     xyz_as_dict,
@@ -642,14 +643,26 @@ def _is_floor_receptacle(receptacle_id: Optional[str]) -> bool:
 # Floor destinations need a nearby distinguishable landmark for the question cue.
 FLOOR_ANCHOR_RADIUS_M = 1.2
 
-# Survey direction/distance must stay allocentric: if the agent stands at the
-# source landmark, "goal relative to source" collapses to "goal relative to me".
-SURVEY_MIN_AGENT_SOURCE_DIST_M = 2.0
+# Survey stays allocentric: agent inside the ObjectNav/GOAT success zone of the
+# source (1.0 m Euclidean) collapses "from the Chair" into "from you".
+# Check the source sighting frame only (not the goal frame).
+SURVEY_MIN_AGENT_SOURCE_DIST_M = 1.0
+# Agent must be near an open door (same timestep) for through-opening evidence.
+# AI2-THOR default visibilityDistance (Kolve et al. 2017).
+SURVEY_DOOR_AGENT_RADIUS_M = 1.5
+# HM3D-OVON / GOAT-Bench / HSSD-200 (2024): geodesic start→goal in [1, 30] m.
+# Not a Euclidean percentile; not R2R's 5 m / 4–6 hops (wrong graph scale).
+MIN_PAIR_GEODESIC_M = 1.0
+MAX_PAIR_GEODESIC_M = 30.0
+# HSSD-200 CVPR 2024 supplement: geo/eucl < 1.05 is "nearly straight-line".
+# Survey-only. Route omits it — a walked path is the construct.
+SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.05
 
 # Route-knowledge: snap landmarks onto the walked path with a slightly larger
 # radius than the default 1.5 m so room-scale furniture near the trajectory
-# still becomes an endpoint; MC sequence length caps stay explicit (not R2R).
+# still becomes an endpoint. Action-sequence length caps stay explicit (not R2R).
 ROUTE_LANDMARK_SNAP_M = 2.5
+ROUTE_MIN_HOP_COUNT = 2  # at least one real edge; length gate is geodesic metres
 ROUTE_MAX_SUBPATH_NODES = 32
 ROUTE_MAX_TURN_ARROWS = 16
 
@@ -1550,6 +1563,29 @@ def _rotation_deg(episode: dict) -> float:
     return 45.0
 
 
+def _reference_nav_actions(graph, path_nodes: Sequence[str], rotation_deg: float):
+    """Reference collected-format actions for a node path (not exclusive gold)."""
+    from cm_benchmark.generation.nav_graph import (
+        format_nav_actions,
+        path_start_heading_deg,
+        path_to_nav_actions,
+    )
+
+    heading = path_start_heading_deg(graph, path_nodes)
+    if heading is None:
+        return None
+    actions = path_to_nav_actions(
+        path_nodes, graph, start_heading_deg=heading, rotation_deg=rotation_deg
+    )
+    if not actions:
+        return None
+    return {
+        'actions': actions,
+        'answer_label': format_nav_actions(actions),
+        'start_heading_deg': heading,
+    }
+
+
 def _landmark_display_name(obj_id: str, episode: dict) -> str:
     layout = episode.get('world_layout') or {}
     for lm in layout.get('landmarks') or []:
@@ -1633,16 +1669,28 @@ def _distinguishable_landmark_candidates(episode: dict) -> list[dict]:
 
 
 def select_landmark_candidates(
-    episode: dict, *, top_n_per_region: int = 5, max_total: int = 40
+    episode: dict,
+    *,
+    top_n_per_region: int = 5,
+    max_total: int = 40,
+    unique_category: bool = True,
 ) -> list[dict]:
     """Salience-filtered landmarks: visibility first, then top-N weighted per region.
 
-    Never nearest-distance-only and never uniform-random — matches taxonomy
-    ``select_landmark_candidates()`` for class-4 endpoints.
+    Never nearest-distance-only and never uniform-random. Class-4 endpoints
+    pass ``unique_category=False`` and uniquely name duplicates via
+    ``_referring_display_name`` (GOAT-Bench 2024 instance language; shared
+    taxonomy referring-expression exception). Other callers keep the default
+    True so source/goal names stay category-unique.
     """
     candidates = _distinguishable_landmark_candidates(episode)
     if not candidates:
         return []
+    if unique_category:
+        counts = Counter(lm.get('name') for lm in candidates)
+        candidates = [lm for lm in candidates if counts.get(lm.get('name')) == 1]
+        if not candidates:
+            return []
     by_region: dict[str, list[dict]] = {}
     for lm in candidates:
         rid = lm.get('region_id') or '_unknown'
@@ -1655,34 +1703,86 @@ def select_landmark_candidates(
     return selected[:max_total]
 
 
-def _scene_min_hop_count(
-    graph, landmark_nodes: list[str], *, floor: int = 2, default: int = 4, cap: int = 8
-) -> int:
-    """Calibrate min hop count from this scene's landmark-pair shortest paths.
-
-    Uses ~25th percentile of pairwise lengths, capped so MC routes stay short
-    (not R2R's fixed 4–6, and not the house-wide diameter). Floor is 2 so
-    short but real walks in compact houses are not rejected by a hard 3–4.
-    """
+def _full_graph_geodesic_m(graph, n0: str, n1: str) -> Optional[float]:
+    """Weighted shortest-path length on the full nav_graph, or None."""
     import networkx as nx
 
-    nodes = list(dict.fromkeys(landmark_nodes))
-    if len(nodes) < 2:
-        return default
-    lengths: list[int] = []
-    for i, a in enumerate(nodes):
-        for b in nodes[i + 1 :]:
-            if a not in graph or b not in graph:
-                continue
-            try:
-                lengths.append(len(nx.shortest_path(graph, a, b)) - 1)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                continue
-    if not lengths:
-        return default
-    lengths.sort()
-    idx = max(0, int(0.25 * (len(lengths) - 1)))
-    return max(floor, min(int(lengths[idx]), cap))
+    if n0 not in graph or n1 not in graph:
+        return None
+    try:
+        return float(nx.shortest_path_length(graph, n0, n1, weight='weight'))
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
+
+
+def _class4_pair_reject_reason(
+    graph,
+    src_pos,
+    goal_pos,
+    n0: str,
+    n1: str,
+    *,
+    min_ratio: Optional[float] = None,
+) -> Optional[str]:
+    """None if the pair passes the 2024 object-goal geodesic band.
+
+    Hard gate: full-graph geodesic in ``[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]``
+    (HM3D-OVON / GOAT-Bench / HSSD-200). Optional ``min_ratio`` is survey-only
+    (HSSD geo/eucl 1.05). Route callers pass ``min_ratio=None``.
+    """
+    geo = _full_graph_geodesic_m(graph, n0, n1)
+    if geo is None:
+        return 'no_full_graph_path'
+    if geo < float(MIN_PAIR_GEODESIC_M):
+        return 'geodesic_lt_1m'
+    if geo > float(MAX_PAIR_GEODESIC_M):
+        return 'geodesic_gt_30m'
+    if min_ratio is None:
+        return None
+    a = xyz_as_dict(src_pos)
+    b = xyz_as_dict(goal_pos)
+    if a is None or b is None:
+        return 'missing_landmark_pos'
+    eucl = math.hypot(a['x'] - b['x'], a['z'] - b['z'])
+    if eucl < 1e-9:
+        return 'euclidean_zero'
+    if (geo / eucl) < float(min_ratio):
+        return 'ratio_lt_1.05'
+    return None
+
+
+def _format_pair_rejects(rejects: Counter, fallback: str) -> str:
+    if not rejects:
+        return fallback
+    parts = ','.join(f'{k}={v}' for k, v in rejects.most_common())
+    return f'{fallback}:{parts}'
+
+
+def _scene_spacing_positions(episode: dict, landmarks: Sequence[dict]) -> list:
+    """Landmark and region poses for view-radius calibration."""
+    out: list = []
+    for lm in landmarks or []:
+        if isinstance(lm, dict) and lm.get('position') is not None:
+            out.append(lm['position'])
+    layout = episode.get('world_layout') or {}
+    for region in layout.get('regions') or []:
+        if not isinstance(region, dict):
+            continue
+        pos = region.get('position') or region.get('centroid') or region.get('center')
+        if pos is not None:
+            out.append(pos)
+    return out
+
+
+def _serialize_traversed_edges(edges) -> list[list[str]]:
+    out: list[list[str]] = []
+    for edge in edges or []:
+        if not edge or len(edge) != 2:
+            continue
+        a, b = edge[0], edge[1]
+        out.append([a, b] if a <= b else [b, a])
+    out.sort()
+    return out
 
 
 def _nearest_landmark_name(
@@ -1721,7 +1821,9 @@ def _build_landmark_node_map(
                 graph, lm['position'], candidate_nodes, max_distance_m=max_distance_m
             )
         else:
-            nid = snap_landmark_to_graph(graph, lm['position'])
+            nid = snap_landmark_to_graph(
+                graph, lm['position'], max_distance_m=max_distance_m
+            )
         if nid is None:
             continue
         id_to_node[oid] = nid
@@ -1743,28 +1845,28 @@ def _load_nav_graph_or_none(episode: dict):
         return None
 
 
-def _traversed_subpath(traversed: list[str], start_node: str, end_node: str) -> Optional[list[str]]:
-    """First contiguous walk from start_node to a later end_node."""
-    try:
-        i0 = traversed.index(start_node)
-    except ValueError:
-        return None
-    for j in range(i0 + 1, len(traversed)):
-        if traversed[j] == end_node:
-            return traversed[i0 : j + 1]
-    return None
+def _episode_traversed_subgraph(episode: dict, graph):
+    """Snap trajectory once; return (snapped, traversed_nodes, traversed_sub)."""
+    from cm_benchmark.generation.nav_graph import (
+        snap_trajectory_to_graph,
+        subgraph_from_traversed_edges,
+        traversed_edges_from_snapped,
+        traversed_node_ids,
+    )
+
+    snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
+    traversed = traversed_node_ids(snapped)
+    edges = traversed_edges_from_snapped(snapped)
+    sub = subgraph_from_traversed_edges(graph, edges)
+    return snapped, traversed, edges, sub
 
 
 def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Retrace an EXPERIENCED path as derive_turns() sequence (graph-backed)."""
+    """Retrace an EXPERIENCED path as collected-format actions on traversed_edges."""
     from cm_benchmark.generation.nav_graph import (
-        derive_turns,
-        format_turn_sequence,
-        perturb_turn_sequence,
-        snap_trajectory_to_graph,
-        traversed_node_ids,
-        was_traversed,
+        shortest_path,
     )
+    import networkx as nx
 
     graph = _load_nav_graph_or_none(episode)
     if graph is None:
@@ -1776,9 +1878,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
 
-    snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
-    traversed = traversed_node_ids(snapped)
-    if len(traversed) < 3:
+    _snapped, traversed, edges, walked = _episode_traversed_subgraph(episode, graph)
+    if len(traversed) < 3 or walked.number_of_edges() < 1:
         return [
             PlannedFact(
                 construct='route_knowledge',
@@ -1787,8 +1888,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
 
-    landmarks = select_landmark_candidates(episode)
-    id_to_node, node_to_name, meta = _build_landmark_node_map(
+    landmarks = select_landmark_candidates(episode, unique_category=False)
+    id_to_node, _node_to_name, meta = _build_landmark_node_map(
         graph,
         landmarks,
         candidate_nodes=traversed,
@@ -1804,9 +1905,10 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
         ]
 
     rot = _rotation_deg(episode)
-    min_hops = _scene_min_hop_count(graph, list(id_to_node.values()))
-    # Order pairs by walk appearance so source→goal follows the experienced path
-    # (salience order alone often tries the reverse and rejects every pair).
+    min_hops = ROUTE_MIN_HOP_COUNT
+    traversed_edge_list = _serialize_traversed_edges(edges)
+    rejects: Counter = Counter()
+
     def _walk_index(oid: str) -> int:
         try:
             return traversed.index(id_to_node[oid])
@@ -1828,6 +1930,18 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 continue
             n0, n1 = id_to_node[src_id], id_to_node[goal_id]
             if n0 == n1:
+                rejects['same_snapped_node'] += 1
+                continue
+            pair_reason = _class4_pair_reject_reason(
+                graph,
+                meta[src_id]['position'],
+                meta[goal_id]['position'],
+                n0,
+                n1,
+                min_ratio=None,
+            )
+            if pair_reason:
+                rejects[pair_reason] += 1
                 continue
             source = _referring_display_name(
                 episode, int(meta[src_id]['first_seen_step']), src_id
@@ -1835,56 +1949,42 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             goal = _referring_display_name(
                 episode, int(meta[goal_id]['first_seen_step']), goal_id
             )
-            if not source or not goal or source == goal:
+            if not source or not goal:
+                rejects['unnamed_endpoint'] += 1
                 continue
-            sub = _traversed_subpath(traversed, n0, n1)
-            if sub is None or len(sub) < 2:
+            if source == goal:
+                rejects['source_name_eq_goal'] += 1
                 continue
-            hops = len(sub) - 1
+            try:
+                path = shortest_path(walked, n0, n1)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                rejects['no_walked_path'] += 1
+                continue
+            if len(path) < 2:
+                rejects['empty_path'] += 1
+                continue
+            hops = len(path) - 1
             if hops < min_hops:
+                rejects['hops_lt_2'] += 1
                 continue
-            # Keep MC routes short: decision-point sequences, not full-episode dumps
-            if len(sub) > ROUTE_MAX_SUBPATH_NODES:
+            if len(path) > ROUTE_MAX_SUBPATH_NODES:
+                rejects['path_too_long'] += 1
                 continue
-            if not was_traversed(sub, traversed):
-                continue
-            # Require some real translation along the walk
             if not _has_real_move_between(
                 episode,
                 int(meta[src_id]['first_seen_step']),
-                max(int(meta[goal_id]['first_seen_step']), int(meta[src_id]['first_seen_step']) + 1),
+                max(
+                    int(meta[goal_id]['first_seen_step']),
+                    int(meta[src_id]['first_seen_step']) + 1,
+                ),
             ):
-                if len(sub) < 3:
+                if len(path) < 3:
+                    rejects['no_real_move'] += 1
                     continue
 
-            turns = derive_turns(
-                sub, graph, rotation_deg=rot, landmark_at_node=node_to_name
-            )
-            if not turns:
-                continue
-            if not any((t.get('label') or 'straight') != 'straight' for t in turns):
-                continue
-            answer = format_turn_sequence(turns)
-            if not answer or answer.count('→') > ROUTE_MAX_TURN_ARROWS:
-                continue
-            pool = [answer]
-            seeds: list[str] = []
-            for mode in (
-                'reversed_sequence',
-                'swapped_two_turns',
-                'plausible_but_unwalked_route',
-            ):
-                pert = perturb_turn_sequence(turns, mode)
-                if not pert:
-                    continue
-                lab = format_turn_sequence(pert)
-                if lab and lab not in pool:
-                    pool.append(lab)
-                    seeds.append(mode)
-                    seeds.append(_mode_seed(mode, lab))
-                if len(pool) >= 4:
-                    break
-            if len(pool) < 2:
+            ref = _reference_nav_actions(walked, path, rot)
+            if ref is None or ref['answer_label'].count('→') > ROUTE_MAX_TURN_ARROWS:
+                rejects['actions_unusable'] += 1
                 continue
 
             t0 = int(meta[src_id]['first_seen_step'])
@@ -1909,14 +2009,12 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     status='ok',
                     query_step=t1,
                     encoding_step=t0,
-                    answer_label=answer,
+                    answer_label=ref['answer_label'],
                     answer_source=[
-                        f'nav_graph.snap_trajectory[{n0}→{n1}]',
-                        'derive_turns(traversed_subpath)',
+                        f'nav_graph.traversed_edges.shortest_path[{n0}→{n1}]',
+                        'path_to_nav_actions(traversed_subgraph)',
                     ],
                     image_paths=images,
-                    options_pool=pool[:4],
-                    distractor_seeds=seeds,
                     extra={
                         'source': source,
                         'goal': goal,
@@ -1926,13 +2024,21 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'goal_landmark_id': goal_id,
                         'source_node': n0,
                         'goal_node': n1,
-                        'path_nodes': sub,
+                        'path_nodes': path,
                         'min_hop_count': min_hops,
                         'hop_count': hops,
-                        'turn_labels': [t.get('label') for t in turns],
+                        'action_sequence': ref['actions'],
+                        'start_heading_deg': ref['start_heading_deg'],
+                        'traversed_edges': traversed_edge_list,
+                        'answer_format': 'action_sequence',
+                        'scoring': 'success_validity_efficiency',
+                        'graph_scope': 'traversed',
                         'object_type': goal,
                         'frame_of_reference': 'egocentric',
                         'image_roles': image_roles,
+                        'template_index': pick_template_index(
+                            'route_knowledge', None, src_id, goal_id
+                        ),
                     },
                 )
             )
@@ -1944,106 +2050,135 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             PlannedFact(
                 construct='route_knowledge',
                 status='unsupported',
-                reason='no_experienced_landmark_to_landmark_walk',
+                reason=_format_pair_rejects(
+                    rejects, 'no_experienced_landmark_to_landmark_walk'
+                ),
+                extra={'pair_reject_counts': dict(rejects)},
             )
         ]
     return out
 
 
-def _passage_was_visible(episode: dict, passage_id: Optional[str]) -> bool:
-    if not passage_id:
+def _passage_is_door(passage_id: Optional[str], passage_meta: Optional[dict]) -> bool:
+    """Doors only — windows are out of scope until nav_graph coverage is confirmed."""
+    meta = passage_meta or {}
+    ptype = str(meta.get('passage_type') or '').lower()
+    if ptype in ('door', 'doorway'):
+        return True
+    if ptype in ('window', 'opening', 'hole'):
         return False
-    for step in episode.get('steps') or []:
-        for oid in (step.get('visible_objects') or {}):
+    pid = str(passage_id or meta.get('passage_id') or meta.get('obj-id') or '')
+    low = pid.lower()
+    if low.startswith('window'):
+        return False
+    return low.startswith('door')
+
+
+def _passage_position_at(
+    episode: dict, passage_id: str, timestep: int
+) -> Optional[object]:
+    """Door pose at ``timestep`` from visible_objects, else any prior sighting."""
+    step = step_by_index(episode, int(timestep))
+    if step:
+        for oid, odata in (step.get('visible_objects') or {}).items():
             if _landmark_matches(oid, passage_id):
+                pos = odata.get('position')
+                if pos is not None:
+                    return pos
+    for s in episode.get('steps') or []:
+        for oid, odata in (s.get('visible_objects') or {}).items():
+            if _landmark_matches(oid, passage_id):
+                pos = odata.get('position')
+                if pos is not None:
+                    return pos
+    layout = episode.get('world_layout') or {}
+    for p in layout.get('passages') or []:
+        pid = p.get('passage_id') or p.get('obj-id')
+        if pid and _landmark_matches(str(pid), passage_id):
+            pos = p.get('position')
+            if pos is not None:
+                return pos
+    return None
+
+
+def _object_visible_at_step(episode: dict, obj_id: str, timestep: int) -> bool:
+    """True if ``obj_id`` appears in visible_objects (or FOV track) at ``timestep``."""
+    step = step_by_index(episode, int(timestep))
+    if step and _visible_oid_matching(step, obj_id) is not None:
+        return True
+    for track in episode.get('object_state_track') or []:
+        if not _landmark_matches(str(track.get('object_id') or ''), obj_id):
+            continue
+        for row in track.get('states') or []:
+            if int(row.get('timestep', -1)) != int(timestep):
+                continue
+            if row.get('in_camera_fov') or row.get('visible'):
                 return True
     return False
 
 
-def _connection_perceptually_evidenced(
+def _connection_through_opening(
     episode: dict, src_id: str, goal_id: str, meta: dict
 ) -> bool:
-    """Taxonomy: connection must be seen (doorway/passage or both regions), not layout-only."""
+    """Montello vista-space evidence: open door + agent near it + goal visible.
+
+    All three must hold on the **same** timestep. Doors only (no windows).
+    """
     layout = episode.get('world_layout') or {}
+    passage_meta = {
+        p.get('passage_id'): p
+        for p in (layout.get('passages') or [])
+        if p.get('passage_id')
+    }
     src_region = meta.get(src_id, {}).get('region_id')
     goal_region = meta.get(goal_id, {}).get('region_id')
-    # Passage connecting the two regions visible in some frame
-    for row in layout.get('connectivity') or []:
-        a, b = row.get('from_region'), row.get('to_region')
-        pid = row.get('passage_id')
-        if not pid or a is None or b is None or a == b:
-            continue
-        pair = {a, b}
-        if src_region and goal_region and pair == {src_region, goal_region}:
-            if _passage_was_visible(episode, pid):
-                return True
-    # Both landmarks distinguishable in frames (already true) + any doorway seen
-    for step in episode.get('steps') or []:
-        for oid in (step.get('visible_objects') or {}):
-            if str(oid).lower().startswith('door'):
-                return True
-    # Same-region pairs: sightline via shared region observation
+    # Same-region pairs are not through-opening survey evidence.
     if src_region and goal_region and src_region == goal_region:
+        return False
+
+    for row in episode.get('passage_state') or []:
+        if row.get('is_open') is not True:
+            continue
+        pid = row.get('passage_id') or row.get('obj-id')
+        if not pid:
+            continue
+        pmeta = passage_meta.get(pid) or {}
+        if not _passage_is_door(pid, pmeta):
+            continue
+        fr = row.get('from_region') or pmeta.get('from_region')
+        tr = row.get('to_region') or pmeta.get('to_region')
+        if src_region and goal_region and fr is not None and tr is not None:
+            if {fr, tr} != {src_region, goal_region}:
+                continue
+        t = row.get('timestep')
+        if t is None:
+            continue
+        t = int(t)
+        door_pos = _passage_position_at(episode, pid, t)
+        if door_pos is None:
+            continue
+        agent_pos, _ = agent_pose_at_step(episode, t)
+        ap = xyz_as_dict(agent_pos)
+        dp = xyz_as_dict(door_pos)
+        if ap is None or dp is None:
+            continue
+        if math.hypot(ap['x'] - dp['x'], ap['z'] - dp['z']) > SURVEY_DOOR_AGENT_RADIUS_M:
+            continue
+        # Goal-side landmark must be visible in this same frame.
+        if not _object_visible_at_step(episode, goal_id, t):
+            continue
         return True
     return False
 
 
-def _recorded_passage_closures(episode: dict) -> list[dict]:
-    """Passages observed closed at some timestep (real passage_state, never invented)."""
-    layout = episode.get('world_layout') or {}
-    passage_meta = {
-        p.get('passage_id'): p for p in (layout.get('passages') or []) if p.get('passage_id')
-    }
-    closed: list[dict] = []
-    seen = set()
-    for row in episode.get('passage_state') or []:
-        if row.get('is_open') is not False:
-            continue
-        pid = row.get('passage_id')
-        if not pid or pid in seen:
-            continue
-        meta = passage_meta.get(pid) or {}
-        fr = row.get('from_region') or meta.get('from_region')
-        tr = row.get('to_region') or meta.get('to_region')
-        if fr is None or tr is None or fr == tr:
-            continue
-        # Need a pose for the door to remove nearby edges
-        pos = None
-        for step in episode.get('steps') or []:
-            vis = step.get('visible_objects') or {}
-            for oid, odata in vis.items():
-                if _landmark_matches(oid, pid):
-                    pos = odata.get('position')
-                    break
-            if pos is not None:
-                break
-        if pos is None:
-            continue
-        seen.add(pid)
-        closed.append(
-            {
-                'passage_id': pid,
-                'from_region': fr,
-                'to_region': tr,
-                'position': pos,
-                'timestep': row.get('timestep'),
-            }
-        )
-    return closed
-
-
 def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Survey layout judgments: direction/distance and optional conditional_detour."""
+    """Plan a never-walked source→goal as collected-format actions on the full graph."""
     from cm_benchmark.generation.nav_graph import (
-        direction_distance_between_landmarks,
-        first_hop_direction_label,
-        format_survey_relation,
-        is_valid_untraversed_shortcut,
-        remove_edges_near_position,
+        calibrate_view_radius_m,
+        path_exists,
         sanitize_world_layout,
         shortest_path,
-        snap_trajectory_to_graph,
-        traversed_node_ids,
+        viewed_edges_from_trajectory,
     )
     import networkx as nx
 
@@ -2061,10 +2196,11 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         ]
 
-    snapped = snap_trajectory_to_graph(graph, episode.get('agent_trajectory') or [])
-    traversed = traversed_node_ids(snapped)
-    landmarks = select_landmark_candidates(episode)
-    id_to_node, _node_to_name, meta = _build_landmark_node_map(graph, landmarks)
+    _snapped, _traversed, edges, walked = _episode_traversed_subgraph(episode, graph)
+    landmarks = select_landmark_candidates(episode, unique_category=False)
+    id_to_node, _node_to_name, meta = _build_landmark_node_map(
+        graph, landmarks, max_distance_m=ROUTE_LANDMARK_SNAP_M
+    )
     ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
     if len(ids) < 2:
         return [
@@ -2075,226 +2211,141 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         ]
 
-    closures = _recorded_passage_closures(episode)
+    rot = _rotation_deg(episode)
+    view_radius = calibrate_view_radius_m(
+        graph, _scene_spacing_positions(episode, [meta[oid] for oid in ids])
+    )
+    viewed_edges, _viewed_nodes = viewed_edges_from_trajectory(
+        graph,
+        episode.get('agent_trajectory') or [],
+        view_radius,
+        traversed_edges=edges,
+    )
+    viewed_edge_list = _serialize_traversed_edges(viewed_edges)
+    traversed_edge_list = _serialize_traversed_edges(edges)
     out: list[PlannedFact] = []
-
-    def _emit_direction_distance(src_id, goal_id, n0, n1, cand):
-        nonlocal out
-        if not _connection_perceptually_evidenced(episode, src_id, goal_id, meta):
-            return
-        rel = direction_distance_between_landmarks(
-            meta[src_id]['position'], meta[goal_id]['position'], episode=episode
-        )
-        if not rel:
-            return
-        direction, distance = rel
-        source = _referring_display_name(
-            episode, int(meta[src_id]['first_seen_step']), src_id
-        )
-        goal = _referring_display_name(
-            episode, int(meta[goal_id]['first_seen_step']), goal_id
-        )
-        if not source or not goal or source == goal:
-            return
-        answer = format_survey_relation(direction, distance, source_name=source)
-        opp = {
-            'ahead of': 'behind',
-            'behind': 'ahead of',
-            'to the left of': 'to the right of',
-            'to the right of': 'to the left of',
-        }.get(direction, direction)
-        alt_dists = [d for d in ('within_reach', 'nearby', 'far', 'beyond') if d != distance]
-        pool = [answer]
-        seeds: list[str] = []
-        decoy1 = format_survey_relation(opp, distance, source_name=source)
-        if decoy1 not in pool:
-            pool.append(decoy1)
-            seeds += ['opposite_direction', _mode_seed('opposite_direction', decoy1)]
-        if alt_dists:
-            decoy2 = format_survey_relation(direction, alt_dists[0], source_name=source)
-            if decoy2 not in pool:
-                pool.append(decoy2)
-                seeds += ['wrong_distance', _mode_seed('wrong_distance', decoy2)]
-        if alt_dists and opp != direction:
-            decoy3 = format_survey_relation(opp, alt_dists[-1], source_name=source)
-            if decoy3 not in pool:
-                pool.append(decoy3)
-                seeds += ['known_route_answer', _mode_seed('known_route_answer', decoy3)]
-        if len(pool) < 2:
-            return
-        t0 = int(meta[src_id]['first_seen_step'])
-        t1 = int(meta[goal_id]['first_seen_step'])
-        if _agent_near_landmark(episode, meta[src_id]['position'], [t0, t1]):
-            return
-        images, image_roles = merge_role_images(
-            [
-                (_img(step_by_index(episode, t0)), f'source · {source}'),
-                (_img(step_by_index(episode, t1)), f'goal · {goal}'),
-            ]
-        )
-        out.append(
-            PlannedFact(
-                construct='survey_based_route_planning',
-                status='ok',
-                query_step=max(t0, t1),
-                encoding_step=min(t0, t1),
-                answer_label=answer,
-                answer_source=[
-                    f'landmarks[{src_id}].position',
-                    f'landmarks[{goal_id}].position',
-                    f'nav_graph.shortest_path[{n0}→{n1}] (untraversed)',
-                ],
-                image_paths=images,
-                options_pool=pool[:4],
-                distractor_seeds=seeds,
-                extra={
-                    'source': source,
-                    'goal': goal,
-                    'A': source,
-                    'B': goal,
-                    'template_mode': 'direction_distance',
-                    'source_landmark_id': src_id,
-                    'goal_landmark_id': goal_id,
-                    'path_nodes': cand,
-                    'direction': direction,
-                    'distance_label': distance,
-                    'object_type': goal,
-                    'frame_of_reference': 'allocentric',
-                    'image_roles': image_roles,
-                },
-            )
-        )
-
-    def _emit_conditional_detour(src_id, goal_id, n0, n1, closure):
-        nonlocal out
-        blocked = remove_edges_near_position(graph, closure['position'])
-        try:
-            detour = shortest_path(blocked, n0, n1)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return
-        if len(detour) < 2:
-            return
-        # Must differ from open-graph first hop (otherwise condition is inert)
-        try:
-            open_path = shortest_path(graph, n0, n1)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return
-        if len(open_path) >= 2 and open_path[1] == detour[1]:
-            return
-        label = first_hop_direction_label(
-            blocked,
-            detour,
-            source_pos=meta[src_id]['position'],
-            goal_pos=meta[goal_id]['position'],
-        )
-        if not label or label not in EGO_DIRECTION_OPTIONS:
-            return
-        open_label = first_hop_direction_label(
-            graph,
-            open_path,
-            source_pos=meta[src_id]['position'],
-            goal_pos=meta[goal_id]['position'],
-        )
-        source = _referring_display_name(
-            episode, int(meta[src_id]['first_seen_step']), src_id
-        )
-        goal = _referring_display_name(
-            episode, int(meta[goal_id]['first_seen_step']), goal_id
-        )
-        if not source or not goal or source == goal:
-            return
-        pool = [label]
-        seeds: list[str] = []
-        opp = OPPOSITE.get(label)
-        if opp and opp not in pool:
-            pool.append(opp)
-            seeds += ['opposite_direction', _mode_seed('opposite_direction', opp)]
-        if open_label and open_label not in pool:
-            pool.append(open_label)
-            seeds += ['known_route_answer', _mode_seed('known_route_answer', open_label)]
-        mir = MIRRORED_LR.get(label)
-        if mir and mir not in pool:
-            pool.append(mir)
-            seeds += ['wrong_distance', _mode_seed('wrong_distance', mir)]
-        for filler in EGO_DIRECTION_OPTIONS:
-            if len(pool) >= 4:
-                break
-            if filler not in pool:
-                pool.append(filler)
-        if len(pool) < 2:
-            return
-        pid = closure['passage_id']
-        condition = f'the {object_type_from_id(pid)} is closed'
-        t0 = int(meta[src_id]['first_seen_step'])
-        t1 = int(meta[goal_id]['first_seen_step'])
-        if _agent_near_landmark(episode, meta[src_id]['position'], [t0, t1]):
-            return
-        images, image_roles = merge_role_images(
-            [
-                (_img(step_by_index(episode, t0)), f'source · {source}'),
-                (_img(step_by_index(episode, t1)), f'goal · {goal}'),
-            ]
-        )
-        out.append(
-            PlannedFact(
-                construct='survey_based_route_planning',
-                status='ok',
-                query_step=max(t0, t1),
-                encoding_step=min(t0, t1),
-                answer_label=label,
-                answer_source=[
-                    f'passage_state[{pid}].is_open=false',
-                    f'nav_graph.shortest_path[{n0}→{n1}] (edge removed near {pid})',
-                    'first_hop_direction_label',
-                ],
-                image_paths=images,
-                options_pool=pool[:4],
-                distractor_seeds=seeds,
-                extra={
-                    'source': source,
-                    'goal': goal,
-                    'A': source,
-                    'B': goal,
-                    'condition': condition,
-                    'template_mode': 'conditional_detour',
-                    'passage_id': pid,
-                    'source_landmark_id': src_id,
-                    'goal_landmark_id': goal_id,
-                    'path_nodes': detour,
-                    'object_type': goal,
-                    'frame_of_reference': 'allocentric',
-                    'image_roles': image_roles,
-                },
-            )
-        )
+    rejects: Counter = Counter()
 
     for i, src_id in enumerate(ids):
         for goal_id in ids[i + 1 :]:
             n0, n1 = id_to_node[src_id], id_to_node[goal_id]
             if n0 == n1:
+                rejects['same_snapped_node'] += 1
+                continue
+            # Never-traversed: no path on the walked-edge subgraph.
+            if path_exists(walked, n0, n1):
+                rejects['path_on_traversed'] += 1
+                continue
+            if not _connection_through_opening(episode, src_id, goal_id, meta):
+                rejects['no_through_door'] += 1
+                continue
+            pair_reason = _class4_pair_reject_reason(
+                graph,
+                meta[src_id]['position'],
+                meta[goal_id]['position'],
+                n0,
+                n1,
+                min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+            )
+            if pair_reason:
+                rejects[pair_reason] += 1
                 continue
             try:
-                cand = shortest_path(graph, n0, n1)
+                path = shortest_path(graph, n0, n1)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
+                rejects['no_full_graph_path'] += 1
                 continue
-            if not is_valid_untraversed_shortcut(cand, traversed, graph):
+            if len(path) < 2:
+                rejects['empty_path'] += 1
                 continue
-            before = len(out)
-            _emit_direction_distance(src_id, goal_id, n0, n1, cand)
-            if len(out) > before and len(out) >= max_items:
+            source = _referring_display_name(
+                episode, int(meta[src_id]['first_seen_step']), src_id
+            )
+            goal = _referring_display_name(
+                episode, int(meta[goal_id]['first_seen_step']), goal_id
+            )
+            if not source or not goal:
+                rejects['unnamed_endpoint'] += 1
+                continue
+            if source == goal:
+                rejects['source_name_eq_goal'] += 1
+                continue
+            ref = _reference_nav_actions(graph, path, rot)
+            if ref is None:
+                rejects['actions_unusable'] += 1
+                continue
+            t0 = int(meta[src_id]['first_seen_step'])
+            t1 = int(meta[goal_id]['first_seen_step'])
+            if _agent_near_landmark(episode, meta[src_id]['position'], [t0]):
+                rejects['agent_near_source'] += 1
+                continue
+            images, image_roles = merge_role_images(
+                [
+                    (
+                        _img(step_by_index(episode, t0)),
+                        f'source sighted · {source}',
+                    ),
+                    (
+                        _img(step_by_index(episode, t1)),
+                        f'goal sighted · {goal}',
+                    ),
+                ]
+            )
+            out.append(
+                PlannedFact(
+                    construct='survey_based_route_planning',
+                    status='ok',
+                    query_step=max(t0, t1),
+                    encoding_step=min(t0, t1),
+                    answer_label=ref['answer_label'],
+                    answer_source=[
+                        f'nav_graph.full.shortest_path[{n0}→{n1}]',
+                        'path_to_nav_actions(full_graph)',
+                        f'nav_graph.traversed_edges.no_path[{n0}→{n1}]',
+                        'passage_state through-opening (same timestep)',
+                        f'nav_graph.viewed_edges.radius={view_radius:.3f}',
+                    ],
+                    image_paths=images,
+                    extra={
+                        'source': source,
+                        'goal': goal,
+                        'A': source,
+                        'B': goal,
+                        'template_index': pick_template_index(
+                            'survey_based_route_planning', None, src_id, goal_id
+                        ),
+                        'source_landmark_id': src_id,
+                        'goal_landmark_id': goal_id,
+                        'source_node': n0,
+                        'goal_node': n1,
+                        'path_nodes': path,
+                        'hop_count': len(path) - 1,
+                        'action_sequence': ref['actions'],
+                        'start_heading_deg': ref['start_heading_deg'],
+                        'traversed_edges': traversed_edge_list,
+                        'viewed_edges': viewed_edge_list,
+                        'view_radius_m': view_radius,
+                        'answer_format': 'action_sequence',
+                        'scoring': 'success_validity_efficiency',
+                        'graph_scope': 'viewed',
+                        'object_type': goal,
+                        'frame_of_reference': 'allocentric',
+                        'image_roles': image_roles,
+                    },
+                )
+            )
+            if len(out) >= max_items:
                 return out
-            for closure in closures:
-                before = len(out)
-                _emit_conditional_detour(src_id, goal_id, n0, n1, closure)
-                if len(out) > before and len(out) >= max_items:
-                    return out
 
     if not out:
         return [
             PlannedFact(
                 construct='survey_based_route_planning',
                 status='unsupported',
-                reason='no_novel_untraversed_landmark_pair',
+                reason=_format_pair_rejects(
+                    rejects, 'no_through_opening_untraversed_landmark_pair'
+                ),
+                extra={'pair_reject_counts': dict(rejects)},
             )
         ]
     return out
@@ -2317,9 +2368,11 @@ def _co_visible_distinguishable_step(
 def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
     """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C.
 
-    A, B, and C must each be FOV-distinguishable and uniquely nameable (referring
-    disambiguator when the category is ambiguous). Prefer a frame where all three
-    are co-visible; otherwise use each landmark's clear sighting frame.
+    A, B, and C must each be FOV-distinguishable and uniquely nameable.
+    ``select_landmark_candidates`` keeps unique-category landmarks here
+    (default); class-4 is the construct that allows referring phrases for
+    duplicates. Prefer a frame where all three are co-visible; otherwise use
+    each landmark's clear sighting frame.
     """
     import math as _math
 

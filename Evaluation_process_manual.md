@@ -29,7 +29,7 @@ Runs on every candidate item before it's eligible for human review. This is the 
 
 ### 2.1 Structural checks (schema-level, per item)
 - `answer_source` is non-null and resolves to a real field/row in the episode store (invariant #2).
-- `answer` is one of `options`; exactly one option is correct.
+- For MCQ constructs, `answer` is one of `options`; exactly one option is correct. Class-4 (`route_knowledge`, `survey_based_route_planning`) has empty `options`: the model writes a free action sequence; [CODE] scoring is metric simulation (success / validity / SPL), not option match. The allowed action names are stated once in `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION` (the Model Runner wraps every item with it) — not in the per-item question.
 - `frame_of_reference` is set and matches what the construct requires (fixed per construct, or explicit in multi-frame items).
 - For temporal constructs (class 2–4): question text situates “now” / “{k} steps ago”
   relative to the live navigation stream (online sequential protocol). Do **not** require
@@ -46,13 +46,13 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `invisible_displacement` → confirm `displacement_event.hidden_during == true` and object is not visible from move through query; recompute ego bearing at query pose. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
 - `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers.
 - `perspective_taking` → confirm three distinguishable landmarks A/B/C; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
-- `route_knowledge` → confirm the queried path is present in snapped `agent_trajectory`; recompute `derive_turns()` MCQ sequence; check scene-calibrated min hop count.
-- `survey_based_route_planning` → confirm path absent from trajectory and connection was perceptually evidenced; for `direction_distance` recompute pose relation; for `conditional_detour` confirm `{condition}` matches a recorded `passage_state` closure and recompute first-hop on the modified graph.
+- `route_knowledge` → confirm the queried path exists on the traversed_edges subgraph; stored answer is a reference `path_to_nav_actions()` string (not exclusive gold). Score a model reply with `score_route_action_sequence`: metric-simulate actions, snap each pose, filter traversed_edges to exported graph edges. Log success (goal tolerance), validity (illegal edges), `outcome` (2×2 cell), SPL `efficiency` given success (`S * ℓ / max(p, ℓ)`), and `route_efficiency` (SPL given valid-success). Headline numbers are `route_success` and `route_efficiency`. Check hop floor 2 and full-graph geodesic in [1, 30] m.
+- `survey_based_route_planning` → confirm no path on traversed_edges; same-timestep through-door evidence (open + agent near door + goal visible); agent not within 1.0 m of the source on the source sighting frame. Score with `score_survey_action_sequence` (same metric simulator as route): success (goal tolerance), validity (path ⊆ viewed_edges and at least one edge ∉ traversed_edges), SPL efficiency on the viewed_edges subgraph. Check geodesic in [1, 30] m and geo/eucl ≥ 1.05.
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
-### 2.3 Distractor diagnosticity check
-Each construct declares a `distractor_pattern` (e.g., `[opposite_direction, orthogonal_direction, plausible_wrong_axis]`). For every item, confirm:
+### 2.3 Distractor diagnosticity checks
+Class-4 items have empty `options` / `distractor_pattern` (free action sequences). For every **MCQ** construct, confirm:
 - each distractor maps to a named failure mode in that construct's pattern (not a generic random option),
 - `distractor_rationale` names which failure mode each wrong option encodes,
 - no distractor is accidentally also geometrically correct (recompute each distractor the same way as the answer — this catches a common generator bug where two options tie).
@@ -115,7 +115,7 @@ Every rejection (Layer A or B) should carry a **reason code** that maps to one o
 - a specific `discriminators` line (construct-faithfulness bug),
 - a `shared_rules` line (leakage / ambiguity bug),
 - a `distractor_pattern` entry (weak distractor bug),
-- a metadata/data gap (e.g., missing `nav_graph` for class-4, or no recorded `passage_state` closure for `conditional_detour`).
+- a metadata/data gap (e.g., missing `nav_graph` for class-4, or no same-timestep through-door evidence for `survey_based_route_planning`).
 
 Aggregate reason codes per construct per generator version. This turns human review from a one-off gate into the mechanism that tells you *which template to fix next*, which is more useful to you right now (early, iterating on `templates.py`/`constructs.py`) than a single pass/fail number.
 

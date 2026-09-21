@@ -94,6 +94,7 @@ def build_nav_graph(
 
     G = nx.Graph()
     G.graph['grid_size'] = grid_size
+    G.graph['agent_move_m'] = float(params.get('agent_move_m') or grid_size)
     G.graph['agent_rotation_deg'] = float(
         params.get('agent_rotation_deg') or 45.0
     )
@@ -132,31 +133,63 @@ def build_nav_graph(
     return G
 
 
+def trajectory_snap_tolerance(graph: nx.Graph) -> float:
+    """Default agent-pose snap radius: one 8-neighbor step of the coarser lattice.
+
+    Exports set ``snap_to_grid=False`` and often ``agent_move_m != grid_size``
+    (e.g. 0.20 m steps on a 0.15 m GetReachablePositions grid). Half
+    ``grid_size`` (0.075 m at 0.15) then drops legitimate walked poses that
+    sit between cells or beside a missing reachable node. One 8-neighbor
+    step of ``max(grid_size, agent_move_m)`` still rejects poses that are
+    actually far from the graph.
+    """
+    grid = float(graph.graph.get('grid_size') or 0.25)
+    move = float(graph.graph.get('agent_move_m') or grid)
+    return max(grid, move) * _SQRT2 + 1e-6
+
+
+def nodes_within_radius(
+    graph: nx.Graph,
+    world_pos,
+    radius: float,
+) -> list[tuple[str, float]]:
+    """Graph nodes whose xz position is within ``radius`` of ``world_pos``.
+
+    Same distance used by ``snap_position_to_graph``; this returns every hit,
+    not only the nearest.
+    """
+    xyz = _as_xyz(world_pos)
+    if xyz is None or graph.number_of_nodes() == 0:
+        return []
+    r = float(radius)
+    hits: list[tuple[str, float]] = []
+    for nid, data in graph.nodes(data=True):
+        pos = data.get('pos')
+        if pos is None:
+            continue
+        d = _xz_dist(xyz, pos)
+        if d <= r:
+            hits.append((nid, d))
+    return hits
+
+
 def snap_position_to_graph(
     graph: nx.Graph,
     world_pos,
     *,
     tolerance: Optional[float] = None,
 ) -> Optional[str]:
-    """Nearest graph node within tolerance (default: half grid_size), else None."""
-    xyz = _as_xyz(world_pos)
-    if xyz is None or graph.number_of_nodes() == 0:
-        return None
+    """Nearest graph node within tolerance, else None.
+
+    Default tolerance is half ``grid_size`` (strict on-node). Trajectory
+    snapping should pass ``trajectory_snap_tolerance(graph)`` instead.
+    """
     grid = float(graph.graph.get('grid_size') or 0.25)
     tol = float(tolerance) if tolerance is not None else grid / 2.0
-    best_id = None
-    best_d = float('inf')
-    for nid, data in graph.nodes(data=True):
-        pos = data.get('pos')
-        if pos is None:
-            continue
-        d = _xz_dist(xyz, pos)
-        if d < best_d:
-            best_d = d
-            best_id = nid
-    if best_id is None or best_d > tol:
+    hits = nodes_within_radius(graph, world_pos, tol)
+    if not hits:
         return None
-    return best_id
+    return min(hits, key=lambda item: item[1])[0]
 
 
 def snap_landmark_to_graph(
@@ -230,20 +263,30 @@ def snap_trajectory_to_graph(
 ) -> list[dict]:
     """Map each agent pose to nearest node; drop steps beyond tolerance.
 
+    Default tolerance is ``trajectory_snap_tolerance`` (one 8-neighbor step
+    of ``max(grid_size, agent_move_m)``), not half ``grid_size``.
+
     Returns ordered list of ``{step, node_id, position, snapped}``.
     Consecutive duplicate node_ids are collapsed (agent standing still).
     """
     out: list[dict] = []
     last_node = None
+    tol = (
+        float(tolerance)
+        if tolerance is not None
+        else trajectory_snap_tolerance(graph)
+    )
     for entry in agent_trajectory or []:
         if not isinstance(entry, dict):
             continue
         step = entry.get('step', entry.get('timestep'))
         pos = entry.get('position') or entry.get('pos')
-        nid = snap_position_to_graph(graph, pos, tolerance=tolerance)
+        nid = snap_position_to_graph(graph, pos, tolerance=tol)
         if nid is None:
-            logger.debug(
-                'trajectory step %s has no graph node within snap tolerance', step
+            logger.warning(
+                'trajectory step %s has no graph node within snap tolerance; '
+                'rejecting pose rather than snapping far',
+                step,
             )
             continue
         if nid == last_node:
@@ -262,6 +305,148 @@ def snap_trajectory_to_graph(
 
 def traversed_node_ids(snapped_trajectory: Sequence[dict]) -> list[str]:
     return [row['node_id'] for row in snapped_trajectory if row.get('node_id')]
+
+
+def traversed_edges_from_snapped(
+    snapped_trajectory: Sequence[dict],
+) -> set[tuple[str, str]]:
+    """Undirected, deduplicated edge set from consecutive snapped agent poses.
+
+    Collapses backtracking / repeated visits into set membership — not a walk
+    sequence. Edge keys are sorted ``(node_a, node_b)`` pairs.
+    """
+    edges: set[tuple[str, str]] = set()
+    nodes = [row['node_id'] for row in snapped_trajectory if row.get('node_id')]
+    for a, b in zip(nodes, nodes[1:]):
+        if a == b:
+            continue
+        edges.add((a, b) if a <= b else (b, a))
+    return edges
+
+
+def calibrate_view_radius_m(
+    graph: nx.Graph,
+    positions: Sequence,
+    *,
+    percentile: float = 0.5,
+) -> float:
+    """Scene-calibrated vista radius from typical landmark/room xz spacing.
+
+    Median pairwise xz distance of the supplied poses, floored at
+    ``trajectory_snap_tolerance`` so viewed_nodes cover snapped trajectory
+    nodes (viewed_edges ⊇ exported traversed_edges). Not a class-4 pair
+    reject gate — pair length is geodesic metres on the full nav_graph.
+    """
+    floor = trajectory_snap_tolerance(graph)
+    coords: list[tuple[float, float]] = []
+    for pos in positions or []:
+        xyz = _as_xyz(pos)
+        if xyz is None:
+            continue
+        coords.append((xyz[0], xyz[2]))
+    dists: list[float] = []
+    for i, a in enumerate(coords):
+        for b in coords[i + 1 :]:
+            d = math.hypot(a[0] - b[0], a[1] - b[1])
+            if d > 1e-9:
+                dists.append(d)
+    if not dists:
+        return floor
+    dists.sort()
+    idx = max(0, int(float(percentile) * (len(dists) - 1)))
+    return max(floor, float(dists[idx]))
+
+
+def viewed_nodes_from_trajectory(
+    graph: nx.Graph,
+    agent_trajectory: Sequence[dict],
+    radius: float,
+) -> set[str]:
+    """Nodes within ``radius`` of any recorded agent pose (not just snaps)."""
+    viewed: set[str] = set()
+    r = float(radius)
+    for entry in agent_trajectory or []:
+        if not isinstance(entry, dict):
+            continue
+        pos = entry.get('position') or entry.get('pos')
+        for nid, _d in nodes_within_radius(graph, pos, r):
+            viewed.add(nid)
+    return viewed
+
+
+def viewed_edges_from_nodes(
+    graph: nx.Graph, viewed_nodes: Iterable[str]
+) -> set[tuple[str, str]]:
+    """Exported graph edges whose both endpoints are viewed."""
+    viewed = set(viewed_nodes or [])
+    out: set[tuple[str, str]] = set()
+    for a, b in graph.edges():
+        if a in viewed and b in viewed:
+            out.add((a, b) if a <= b else (b, a))
+    return out
+
+
+def viewed_edges_from_trajectory(
+    graph: nx.Graph,
+    agent_trajectory: Sequence[dict],
+    radius: float,
+    *,
+    traversed_edges: Optional[Iterable[tuple[str, str]]] = None,
+) -> tuple[set[tuple[str, str]], set[str]]:
+    """Radius-proxy viewed_edges (superset of exported traversed_edges).
+
+    Depth / raycasting is deferred. Union with exported traversed edges so the
+    inclusion holds even if a pose snaps but sits just outside ``radius``.
+    """
+    nodes = viewed_nodes_from_trajectory(graph, agent_trajectory, radius)
+    edges = viewed_edges_from_nodes(graph, nodes)
+    if traversed_edges:
+        edges |= filter_traversed_to_exported(graph, traversed_edges)
+    return edges, nodes
+
+
+def subgraph_from_traversed_edges(
+    graph: nx.Graph, traversed_edges: Iterable[tuple[str, str]]
+) -> nx.Graph:
+    """Copy of ``graph`` restricted to ``traversed_edges`` only.
+
+    Does not re-infer adjacency from distance. Edges present in the exported
+    graph keep their weights; a consecutive snap pair missing from the export
+    is still added (agent walked it) with an xz weight, and logged.
+    """
+    G = nx.Graph()
+    G.graph.update(dict(graph.graph))
+    for edge in traversed_edges:
+        if not edge or len(edge) != 2:
+            continue
+        a, b = edge[0], edge[1]
+        if a not in graph or b not in graph:
+            continue
+        if a not in G:
+            G.add_node(a, **dict(graph.nodes[a]))
+        if b not in G:
+            G.add_node(b, **dict(graph.nodes[b]))
+        if graph.has_edge(a, b):
+            G.add_edge(a, b, **dict(graph.edges[a, b]))
+        else:
+            pa = graph.nodes[a].get('pos')
+            pb = graph.nodes[b].get('pos')
+            w = _xz_dist(pa, pb) if pa and pb else 1.0
+            G.add_edge(a, b, weight=w)
+            logger.debug(
+                'traversed snap edge %s–%s absent from exported nav_graph; '
+                'kept from trajectory',
+                a,
+                b,
+            )
+    return G
+
+
+def path_exists(graph: nx.Graph, source: str, target: str) -> bool:
+    """True if ``source`` and ``target`` are connected in ``graph``."""
+    if source not in graph or target not in graph:
+        return False
+    return nx.has_path(graph, source, target)
 
 
 def shortest_path(
@@ -441,6 +626,694 @@ def derive_turns(
     return out
 
 
+# Collected-export action names (SPOC / AI2-THOR navigation CSV).
+NAV_ACTION_MOVE_AHEAD = 'move_ahead'
+NAV_ACTION_MOVE_BACK = 'move_back'
+NAV_ACTION_ROTATE_LEFT = 'rotate_left'
+NAV_ACTION_ROTATE_RIGHT = 'rotate_right'
+
+NAV_ACTION_ALIASES = {
+    'move_ahead': NAV_ACTION_MOVE_AHEAD,
+    'moveahead': NAV_ACTION_MOVE_AHEAD,
+    'move ahead': NAV_ACTION_MOVE_AHEAD,
+    'forward': NAV_ACTION_MOVE_AHEAD,
+    'straight': NAV_ACTION_MOVE_AHEAD,
+    'move_back': NAV_ACTION_MOVE_BACK,
+    'moveback': NAV_ACTION_MOVE_BACK,
+    'move back': NAV_ACTION_MOVE_BACK,
+    'backward': NAV_ACTION_MOVE_BACK,
+    'back': NAV_ACTION_MOVE_BACK,
+    'rotate_left': NAV_ACTION_ROTATE_LEFT,
+    'rotateleft': NAV_ACTION_ROTATE_LEFT,
+    'rotate left': NAV_ACTION_ROTATE_LEFT,
+    'turn left': NAV_ACTION_ROTATE_LEFT,
+    'turn_left': NAV_ACTION_ROTATE_LEFT,
+    'rotate_right': NAV_ACTION_ROTATE_RIGHT,
+    'rotateright': NAV_ACTION_ROTATE_RIGHT,
+    'rotate right': NAV_ACTION_ROTATE_RIGHT,
+    'turn right': NAV_ACTION_ROTATE_RIGHT,
+    'turn_right': NAV_ACTION_ROTATE_RIGHT,
+}
+
+# Look / idle tokens from the stream — ignore for xz graph walking.
+_NAV_ACTION_IGNORE = frozenset(
+    {
+        'look_up',
+        'lookup',
+        'look up',
+        'look_down',
+        'lookdown',
+        'look down',
+        'pass',
+        'none',
+        'stop',
+        'done',
+    }
+)
+
+
+def canonicalize_nav_action(token: str) -> Optional[str]:
+    """Map a free-text token onto the collected action vocabulary, or None."""
+    if token is None:
+        return None
+    raw = str(token).strip()
+    if not raw:
+        return None
+    key = raw.lower().replace('-', '_').strip()
+    key = ' '.join(key.split())
+    compact = key.replace('_', '').replace(' ', '')
+    if key in _NAV_ACTION_IGNORE or compact in {s.replace('_', '').replace(' ', '') for s in _NAV_ACTION_IGNORE}:
+        return None
+    if key in NAV_ACTION_ALIASES:
+        return NAV_ACTION_ALIASES[key]
+    if compact in NAV_ACTION_ALIASES:
+        return NAV_ACTION_ALIASES[compact]
+    # "rotate_right 90" / "MoveAhead," leftovers
+    for alias, canon in NAV_ACTION_ALIASES.items():
+        if key.startswith(alias + ' ') or key.startswith(alias + '_') or compact.startswith(
+            alias.replace('_', '').replace(' ', '')
+        ):
+            return canon
+    return None
+
+
+def parse_nav_actions(raw) -> Optional[list[str]]:
+    """Parse a model reply or collected list into canonical action names.
+
+    Accepts a string (comma / arrow / newline separated), a list of strings,
+    or collected ``[{action, degrees}, …]`` rows. Returns None if *no* token
+    could be parsed (empty after ignore-only is ``[]``).
+    """
+    if raw is None:
+        return None
+    tokens: list[str] = []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        for sep in ('→', '->', ';', ',', '\n', '|'):
+            text = text.replace(sep, ' ')
+        tokens = [t for t in text.split() if t and t not in {'and', 'then', 'to'}]
+        # Re-join split multiword aliases: "move ahead", "rotate left"
+        merged: list[str] = []
+        i = 0
+        while i < len(tokens):
+            pair = f'{tokens[i]} {tokens[i + 1]}' if i + 1 < len(tokens) else ''
+            if pair.lower() in NAV_ACTION_ALIASES or pair.lower() in _NAV_ACTION_IGNORE:
+                merged.append(pair)
+                i += 2
+            else:
+                merged.append(tokens[i])
+                i += 1
+        tokens = merged
+    elif isinstance(raw, (list, tuple)):
+        for entry in raw:
+            if isinstance(entry, dict):
+                act = entry.get('action')
+                if act is not None:
+                    tokens.append(str(act))
+            elif entry is not None:
+                tokens.append(str(entry))
+    else:
+        return None
+
+    out: list[str] = []
+    saw_unknown = False
+    for tok in tokens:
+        if canonicalize_nav_action(tok) is None and str(tok).strip().lower() in _NAV_ACTION_IGNORE:
+            continue
+        canon = canonicalize_nav_action(tok)
+        if canon is None:
+            # skip punctuation-only leftovers
+            if str(tok).strip() in {'.', '?', '!', ':'}:
+                continue
+            saw_unknown = True
+            continue
+        out.append(canon)
+    if saw_unknown and not out:
+        return None
+    return out
+
+
+def format_nav_actions(actions: Sequence[str]) -> str:
+    """Render canonical actions as ``move_ahead → rotate_left → move_ahead``."""
+    return ' → '.join(a for a in actions if a)
+
+
+def path_start_heading_deg(
+    graph: nx.Graph, path_nodes: Sequence[str]
+) -> Optional[float]:
+    """Heading of the first hop (AI2-THOR yaw, +Z = 0)."""
+    nodes = list(path_nodes)
+    if len(nodes) < 2:
+        return None
+    p0 = graph.nodes[nodes[0]].get('pos')
+    p1 = graph.nodes[nodes[1]].get('pos')
+    if not p0 or not p1:
+        return None
+    return _heading_xz_deg(p0, p1)
+
+
+def path_to_nav_actions(
+    path_nodes: Sequence[str],
+    graph: nx.Graph,
+    *,
+    start_heading_deg: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+) -> list[str]:
+    """Convert a node path to collected-format actions (rotate_* + move_ahead).
+
+    ``start_heading_deg`` defaults to the first-hop heading so a matching
+    walk begins with ``move_ahead``.
+    """
+    rot = float(
+        rotation_deg
+        if rotation_deg is not None
+        else graph.graph.get('agent_rotation_deg') or 45.0
+    ) or 45.0
+    nodes = list(path_nodes)
+    if len(nodes) < 2:
+        return []
+    heading = start_heading_deg
+    if heading is None:
+        heading = path_start_heading_deg(graph, nodes)
+    if heading is None:
+        return []
+    heading = float(heading) % 360.0
+    out: list[str] = []
+    for a, b in zip(nodes, nodes[1:]):
+        pa = graph.nodes[a].get('pos')
+        pb = graph.nodes[b].get('pos')
+        if not pa or not pb:
+            continue
+        needed = _heading_xz_deg(pa, pb)
+        if needed is None:
+            continue
+        delta = _signed_delta_deg(heading, needed)
+        n = int(round(delta / rot))
+        max_n = int(round(180.0 / rot))
+        n = max(-max_n, min(max_n, n))
+        if n > 0:
+            out.extend([NAV_ACTION_ROTATE_RIGHT] * n)
+        elif n < 0:
+            out.extend([NAV_ACTION_ROTATE_LEFT] * abs(n))
+        out.append(NAV_ACTION_MOVE_AHEAD)
+        heading = needed
+    return out
+
+
+def neighbor_in_heading(
+    graph: nx.Graph,
+    node_id: str,
+    heading_deg: float,
+    *,
+    half_width_deg: Optional[float] = None,
+) -> Optional[str]:
+    """Neighbor whose xz bearing is closest to ``heading_deg``, within a wedge."""
+    if node_id not in graph:
+        return None
+    rot = float(graph.graph.get('agent_rotation_deg') or 45.0) or 45.0
+    width = float(half_width_deg) if half_width_deg is not None else rot / 2.0 + 1e-6
+    src = graph.nodes[node_id].get('pos')
+    if not src:
+        return None
+    best = None
+    best_err = float('inf')
+    for nbr in graph.neighbors(node_id):
+        dst = graph.nodes[nbr].get('pos')
+        if not dst:
+            continue
+        bear = _heading_xz_deg(src, dst)
+        if bear is None:
+            continue
+        err = abs(_signed_delta_deg(heading_deg, bear))
+        if err <= width and err < best_err:
+            best_err = err
+            best = nbr
+    return best
+
+
+def execute_nav_actions(
+    graph: nx.Graph,
+    start_node: str,
+    actions: Sequence[str],
+    *,
+    start_heading_deg: float = 0.0,
+    rotation_deg: Optional[float] = None,
+) -> tuple[Optional[str], float, bool]:
+    """Walk ``actions`` on ``graph`` from ``start_node``.
+
+    Discrete neighbor-hop helper (not the route scorer). A blocked
+    ``move_ahead`` / ``move_back`` stops the walk and sets the flag False.
+    """
+    if start_node not in graph:
+        return None, float(start_heading_deg) % 360.0, False
+    rot = float(
+        rotation_deg
+        if rotation_deg is not None
+        else graph.graph.get('agent_rotation_deg') or 45.0
+    ) or 45.0
+    node = start_node
+    heading = float(start_heading_deg) % 360.0
+    parsed = parse_nav_actions(list(actions))
+    if parsed is None:
+        return node, heading, False
+    for act in parsed:
+        if act == NAV_ACTION_ROTATE_RIGHT:
+            heading = (heading + rot) % 360.0
+        elif act == NAV_ACTION_ROTATE_LEFT:
+            heading = (heading - rot) % 360.0
+        elif act == NAV_ACTION_MOVE_AHEAD:
+            nxt = neighbor_in_heading(graph, node, heading)
+            if nxt is None:
+                return node, heading, False
+            node = nxt
+        elif act == NAV_ACTION_MOVE_BACK:
+            nxt = neighbor_in_heading(graph, node, (heading + 180.0) % 360.0)
+            if nxt is None:
+                return node, heading, False
+            node = nxt
+    return node, heading, True
+
+
+def filter_traversed_to_exported(
+    graph: nx.Graph, traversed_edges: Iterable[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    """Keep only traversed edges that also exist on the exported graph."""
+    out: set[tuple[str, str]] = set()
+    for edge in traversed_edges or []:
+        if not edge or len(edge) != 2:
+            continue
+        a, b = edge[0], edge[1]
+        if a not in graph or b not in graph:
+            continue
+        if not graph.has_edge(a, b):
+            continue
+        out.add((a, b) if a <= b else (b, a))
+    return out
+
+
+def _heading_step_xz(heading_deg: float, step_m: float) -> tuple[float, float]:
+    """AI2-THOR: yaw 0 faces +Z; positive yaw toward +X."""
+    rad = math.radians(float(heading_deg) % 360.0)
+    return step_m * math.sin(rad), step_m * math.cos(rad)
+
+
+def _spl_ratio(opt_m: Optional[float], path_m: float, *, success: bool) -> float:
+    """Anderson SPL: ``S * ℓ / max(p, ℓ)``. Failures are 0; never exceeds 1."""
+    if not success:
+        return 0.0
+    if opt_m is None:
+        return 0.0
+    opt = float(opt_m)
+    path = float(path_m)
+    if opt <= 1e-9 and path <= 1e-9:
+        return 1.0
+    if opt <= 1e-9:
+        return 0.0
+    return opt / max(path, opt)
+
+
+def _route_outcome(success: bool, validity: bool) -> str:
+    if success and validity:
+        return 'valid_success'
+    if success:
+        return 'invalid_success'
+    if validity:
+        return 'valid_fail'
+    return 'invalid_fail'
+
+
+def _route_score_record(
+    *,
+    success: bool,
+    validity: bool,
+    parse_ok: bool,
+    end_node,
+    actions,
+    snapped_nodes=None,
+    simulated_length_m: float = 0.0,
+    crossed_edges=None,
+    illegal_edges=None,
+    novel_edges=None,
+    shortest_path_m: Optional[float] = None,
+    shortest_path_full_m: Optional[float] = None,
+    efficiency: float = 0.0,
+    route_efficiency: float = 0.0,
+) -> dict:
+    crossed = [tuple(e) for e in (crossed_edges or [])]
+    illegal = [tuple(e) for e in (illegal_edges or [])]
+    novel = [tuple(e) for e in (novel_edges or [])]
+    return {
+        'success': bool(success),
+        'success_raw': bool(success),
+        'validity': bool(validity),
+        'route_success': bool(success and validity),
+        'efficiency': float(efficiency),
+        'route_efficiency': float(route_efficiency),
+        'outcome': _route_outcome(success, validity),
+        'parse_ok': bool(parse_ok),
+        'end_node': end_node,
+        'actions': list(actions or []),
+        'snapped_nodes': list(snapped_nodes or []),
+        'simulated_length_m': float(simulated_length_m),
+        'shortest_path_m': shortest_path_m,
+        'shortest_path_full_m': shortest_path_full_m,
+        'crossed_edges': crossed,
+        'illegal_edges': illegal,
+        'novel_edges': novel,
+    }
+
+
+def _crossed_undirected(snapped: Sequence[str]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for a, b in zip(snapped, snapped[1:]):
+        if a == b:
+            continue
+        out.append((a, b) if a <= b else (b, a))
+    return out
+
+
+def _goal_reached(graph: nx.Graph, end_node, goal_node, goal_tol: float) -> bool:
+    if end_node not in graph or goal_node not in graph:
+        return False
+    goal_pos = graph.nodes[goal_node].get('pos')
+    end_pos = graph.nodes[end_node].get('pos')
+    return bool(goal_pos and end_pos and _xz_dist(end_pos, goal_pos) <= goal_tol)
+
+
+def _shortest_on_edges(
+    graph: nx.Graph,
+    edges: Iterable[tuple[str, str]],
+    source_node: str,
+    goal_node: str,
+) -> Optional[float]:
+    exported = filter_traversed_to_exported(graph, edges)
+    if not exported:
+        return None
+    walked = subgraph_from_traversed_edges(graph, exported)
+    try:
+        return float(
+            nx.shortest_path_length(walked, source_node, goal_node, weight='weight')
+        )
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
+
+
+def simulate_nav_action_sequence(
+    graph: nx.Graph,
+    source_node: str,
+    raw_actions,
+    *,
+    start_heading_deg: float = 0.0,
+    start_pos=None,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    snap_tolerance: Optional[float] = None,
+    goal_tolerance: Optional[float] = None,
+) -> dict:
+    """Metric walk shared by route and survey scorers.
+
+    ``ok`` is False on unparseable input or the first pose that does not snap.
+    """
+    parsed = parse_nav_actions(raw_actions)
+    snap_tol = (
+        float(snap_tolerance)
+        if snap_tolerance is not None
+        else trajectory_snap_tolerance(graph)
+    )
+    goal_tol = (
+        float(goal_tolerance) if goal_tolerance is not None else snap_tol
+    )
+    empty = {
+        'ok': False,
+        'parse_ok': parsed is not None,
+        'actions': list(parsed or []),
+        'snapped': [],
+        'simulated_length_m': 0.0,
+        'end_node': None,
+        'snap_tolerance': snap_tol,
+        'goal_tolerance': goal_tol,
+    }
+    if parsed is None:
+        empty['parse_ok'] = False
+        return empty
+    if source_node not in graph:
+        return empty
+    rot = float(
+        rotation_deg
+        if rotation_deg is not None
+        else graph.graph.get('agent_rotation_deg') or 45.0
+    ) or 45.0
+    step = float(
+        move_m
+        if move_m is not None
+        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or 0.25
+    )
+    heading = float(start_heading_deg) % 360.0
+    origin = _as_xyz(start_pos) or graph.nodes[source_node].get('pos')
+    if origin is None:
+        return empty
+    x, y, z = float(origin[0]), float(origin[1]), float(origin[2])
+    start_nid = snap_position_to_graph(graph, (x, y, z), tolerance=snap_tol)
+    if start_nid is None:
+        return empty
+
+    snapped = [start_nid]
+    sim_len = 0.0
+    for act in parsed:
+        if act == NAV_ACTION_ROTATE_RIGHT:
+            heading = (heading + rot) % 360.0
+        elif act == NAV_ACTION_ROTATE_LEFT:
+            heading = (heading - rot) % 360.0
+        elif act == NAV_ACTION_MOVE_AHEAD:
+            dx, dz = _heading_step_xz(heading, step)
+            x += dx
+            z += dz
+            sim_len += step
+        elif act == NAV_ACTION_MOVE_BACK:
+            dx, dz = _heading_step_xz(heading, step)
+            x -= dx
+            z -= dz
+            sim_len += step
+        else:
+            continue
+        nid = snap_position_to_graph(graph, (x, y, z), tolerance=snap_tol)
+        if nid is None:
+            return {
+                'ok': False,
+                'parse_ok': True,
+                'actions': parsed,
+                'snapped': snapped,
+                'simulated_length_m': sim_len,
+                'end_node': snapped[-1],
+                'snap_tolerance': snap_tol,
+                'goal_tolerance': goal_tol,
+            }
+        if nid != snapped[-1]:
+            snapped.append(nid)
+    return {
+        'ok': True,
+        'parse_ok': True,
+        'actions': parsed,
+        'snapped': snapped,
+        'simulated_length_m': sim_len,
+        'end_node': snapped[-1],
+        'snap_tolerance': snap_tol,
+        'goal_tolerance': goal_tol,
+    }
+
+
+def _fail_from_sim(sim: dict) -> dict:
+    return _route_score_record(
+        success=False,
+        validity=False,
+        parse_ok=sim.get('parse_ok', False),
+        end_node=sim.get('end_node'),
+        actions=sim.get('actions') or [],
+        snapped_nodes=sim.get('snapped') or [],
+        simulated_length_m=float(sim.get('simulated_length_m') or 0.0),
+    )
+
+
+def score_route_action_sequence(
+    graph: nx.Graph,
+    source_node: str,
+    goal_node: str,
+    raw_actions,
+    traversed_edges: Iterable[tuple[str, str]],
+    *,
+    start_heading_deg: float = 0.0,
+    start_pos=None,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    snap_tolerance: Optional[float] = None,
+    goal_tolerance: Optional[float] = None,
+) -> dict:
+    """[CODE] route_knowledge scorer: metric simulation, not node hopping.
+
+    Returns ``success``, ``validity``, and two SPL fields as separate values.
+
+    * Simulate with ``agent_move_m`` / ``agent_rotation_deg`` (continuous xz).
+    * Snap each pose; reject at the first pose that does not snap.
+    * ``success`` / ``success_raw``: final snap within ``goal_tolerance``.
+    * ``validity``: every snapped edge is in the exported-only subset of
+      ``traversed_edges``. Always logged (``illegal_edges``, ``outcome``).
+    * ``efficiency``: SPL given success: ``S * ℓ / max(p, ℓ)`` on the filtered
+      traversed subgraph (0 on failure, capped at 1).
+    * ``route_efficiency``: same SPL given success **and** validity (construct
+      score). ``route_success`` is the valid-success bit.
+    """
+    sim = simulate_nav_action_sequence(
+        graph,
+        source_node,
+        raw_actions,
+        start_heading_deg=start_heading_deg,
+        start_pos=start_pos,
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        snap_tolerance=snap_tolerance,
+        goal_tolerance=goal_tolerance,
+    )
+    if not sim['ok']:
+        return _fail_from_sim(sim)
+    if goal_node not in graph:
+        return _fail_from_sim({**sim, 'ok': False})
+
+    snapped = sim['snapped']
+    sim_len = float(sim['simulated_length_m'])
+    exported = filter_traversed_to_exported(graph, traversed_edges)
+    crossed = _crossed_undirected(snapped)
+    illegal = [edge for edge in crossed if edge not in exported]
+    validity = not illegal
+    success = _goal_reached(graph, snapped[-1], goal_node, sim['goal_tolerance'])
+
+    opt_traversed = _shortest_on_edges(graph, exported, source_node, goal_node)
+    try:
+        opt_full = float(
+            nx.shortest_path_length(graph, source_node, goal_node, weight='weight')
+        )
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        opt_full = None
+    opt_nav = opt_traversed if opt_traversed is not None else opt_full
+    efficiency = _spl_ratio(opt_nav, sim_len, success=success)
+    route_efficiency = _spl_ratio(
+        opt_traversed, sim_len, success=bool(success and validity)
+    )
+    return _route_score_record(
+        success=success,
+        validity=validity,
+        parse_ok=True,
+        end_node=snapped[-1],
+        actions=sim['actions'],
+        snapped_nodes=snapped,
+        simulated_length_m=sim_len,
+        crossed_edges=crossed,
+        illegal_edges=illegal,
+        shortest_path_m=opt_traversed,
+        shortest_path_full_m=opt_full,
+        efficiency=efficiency,
+        route_efficiency=route_efficiency,
+    )
+
+
+def score_survey_action_sequence(
+    graph: nx.Graph,
+    source_node: str,
+    goal_node: str,
+    raw_actions,
+    viewed_edges: Iterable[tuple[str, str]],
+    traversed_edges: Iterable[tuple[str, str]],
+    *,
+    start_heading_deg: float = 0.0,
+    start_pos=None,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    snap_tolerance: Optional[float] = None,
+    goal_tolerance: Optional[float] = None,
+) -> dict:
+    """[CODE] survey scorer: same metric simulator as route_knowledge.
+
+    * ``success``: final snap within goal tolerance.
+    * ``validity``: every crossed edge is in exported ``viewed_edges``, and at
+      least one crossed edge is **not** in exported ``traversed_edges``.
+    * ``efficiency``: SPL given success against the shortest path in the
+      viewed_edges subgraph (this construct's optimal, not traversed-only).
+    """
+    sim = simulate_nav_action_sequence(
+        graph,
+        source_node,
+        raw_actions,
+        start_heading_deg=start_heading_deg,
+        start_pos=start_pos,
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        snap_tolerance=snap_tolerance,
+        goal_tolerance=goal_tolerance,
+    )
+    if not sim['ok']:
+        return _fail_from_sim(sim)
+    if goal_node not in graph:
+        return _fail_from_sim({**sim, 'ok': False})
+
+    snapped = sim['snapped']
+    sim_len = float(sim['simulated_length_m'])
+    viewed = filter_traversed_to_exported(graph, viewed_edges)
+    traversed = filter_traversed_to_exported(graph, traversed_edges)
+    crossed = _crossed_undirected(snapped)
+    illegal = [edge for edge in crossed if edge not in viewed]
+    novel = [edge for edge in crossed if edge not in traversed]
+    validity = (not illegal) and bool(novel)
+    success = _goal_reached(graph, snapped[-1], goal_node, sim['goal_tolerance'])
+    opt_viewed = _shortest_on_edges(graph, viewed, source_node, goal_node)
+    efficiency = _spl_ratio(opt_viewed, sim_len, success=success)
+    return _route_score_record(
+        success=success,
+        validity=validity,
+        parse_ok=True,
+        end_node=snapped[-1],
+        actions=sim['actions'],
+        snapped_nodes=snapped,
+        simulated_length_m=sim_len,
+        crossed_edges=crossed,
+        illegal_edges=illegal,
+        novel_edges=novel,
+        shortest_path_m=opt_viewed,
+        efficiency=efficiency,
+        route_efficiency=0.0,
+    )
+
+
+def action_sequence_reaches_goal(
+    graph: nx.Graph,
+    source_node: str,
+    goal_node: str,
+    raw_actions,
+    *,
+    start_heading_deg: float = 0.0,
+    rotation_deg: Optional[float] = None,
+    traversed_edges: Optional[Iterable[tuple[str, str]]] = None,
+    **kwargs,
+) -> dict:
+    """Compatibility wrapper around ``score_route_action_sequence``."""
+    edges = traversed_edges
+    if edges is None:
+        edges = list(graph.edges())
+        edges = [(a, b) if a <= b else (b, a) for a, b in edges]
+    scored = score_route_action_sequence(
+        graph,
+        source_node,
+        goal_node,
+        raw_actions,
+        edges,
+        start_heading_deg=start_heading_deg,
+        rotation_deg=rotation_deg,
+        **kwargs,
+    )
+    scored['reached_goal'] = scored['success']
+    return scored
+
+
 def format_turn_sequence(turns: Sequence[dict], *, compress_straight: bool = True) -> str:
     """Render derive_turns output as ``straight → turn left @ Doorway``.
 
@@ -610,8 +1483,8 @@ def remove_edges_near_position(
 ) -> nx.Graph:
     """Copy of ``graph`` with edges whose midpoint is within ``radius_m`` of pos removed.
 
-    Used for conditional_detour: block a recorded closed passage without inventing
-    edges — only existing nearby edges are dropped.
+    Kept for offline graph edits / experiments. Survey generation no longer uses
+    conditional_detour (doors are static in current data).
     """
     xyz = _as_xyz(world_pos)
     if xyz is None:

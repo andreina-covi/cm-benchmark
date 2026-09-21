@@ -9,16 +9,30 @@ import networkx as nx
 import pytest
 
 from cm_benchmark.generation.nav_graph import (
+    _spl_ratio,
+    action_sequence_reaches_goal,
     build_nav_graph,
+    calibrate_view_radius_m,
     derive_turns,
+    filter_traversed_to_exported,
     filter_valid_connectivity,
+    format_nav_actions,
     format_turn_sequence,
     is_valid_untraversed_shortcut,
+    parse_nav_actions,
+    path_exists,
+    path_to_nav_actions,
     perturb_turn_sequence,
     sanitize_world_layout,
+    score_route_action_sequence,
+    score_survey_action_sequence,
     shortest_path,
     snap_position_to_graph,
     snap_trajectory_to_graph,
+    trajectory_snap_tolerance,
+    subgraph_from_traversed_edges,
+    traversed_edges_from_snapped,
+    viewed_edges_from_trajectory,
     was_traversed,
 )
 
@@ -68,6 +82,58 @@ def test_snap_trajectory_collapses_duplicates_and_drops_far(tiny_graph):
     ]
     snapped = snap_trajectory_to_graph(tiny_graph, traj)
     assert [r['node_id'] for r in snapped] == ['n0', 'n1', 'n2']
+
+
+def test_trajectory_snap_tolerance_covers_export_grid_mismatch():
+    """0.20 m unsnapped steps on a 0.15 m grid exceed grid/2 (0.075 m)."""
+    raw = {
+        'snapshots': {
+            'episode_start': {
+                'params': {
+                    'grid_size': 0.15,
+                    'agent_move_m': 0.2,
+                    'agent_rotation_deg': 45.0,
+                },
+                'nodes': [
+                    {'node_id': 'n0', 'x': 0.0, 'y': 1.0, 'z': 0.0},
+                    {'node_id': 'n1', 'x': 0.15, 'y': 1.0, 'z': 0.0},
+                ],
+                'edges': [],
+            }
+        }
+    }
+    graph = build_nav_graph(raw)
+    assert graph.graph['agent_move_m'] == 0.2
+    # 0.10 m from n0: half-grid (0.075) rejects; trajectory snap accepts.
+    assert snap_position_to_graph(graph, (0.0, 1.0, 0.10)) is None
+    snapped = snap_trajectory_to_graph(
+        graph,
+        [
+            {'step': 0, 'position': (0.0, 1.0, 0.10)},  # 0.10 m > 0.075
+            {'step': 1, 'position': (0.15, 1.0, 0.22)},  # 0.22 m, still one step
+            {'step': 2, 'position': (5.0, 1.0, 5.0)},  # far
+        ],
+    )
+    assert [r['node_id'] for r in snapped] == ['n0', 'n1']
+    assert trajectory_snap_tolerance(graph) > 0.15 / 2.0
+
+
+def test_traversed_edges_are_undirected_set(tiny_graph):
+    traj = [
+        {'step': 0, 'position': (0.0, 1.0, 0.0)},
+        {'step': 1, 'position': (0.25, 1.0, 0.0)},
+        {'step': 2, 'position': (0.5, 1.0, 0.0)},
+        {'step': 3, 'position': (0.25, 1.0, 0.0)},  # backtrack
+        {'step': 4, 'position': (0.0, 1.0, 0.0)},
+    ]
+    snapped = snap_trajectory_to_graph(tiny_graph, traj)
+    edges = traversed_edges_from_snapped(snapped)
+    # Backtracking collapses: only n0–n1 and n1–n2 once each.
+    assert edges == {('n0', 'n1'), ('n1', 'n2')}
+    sub = subgraph_from_traversed_edges(tiny_graph, edges)
+    assert path_exists(sub, 'n0', 'n2')
+    assert not path_exists(sub, 'n0', 'n8')
+    assert shortest_path(sub, 'n0', 'n2') == ['n0', 'n1', 'n2']
 
 
 def test_was_traversed_contiguous_subsequence():
@@ -145,3 +211,249 @@ def test_shortest_path_uses_exported_or_built_edges(tiny_graph):
     p = shortest_path(tiny_graph, 'n0', 'n8')
     assert p[0] == 'n0' and p[-1] == 'n8'
     assert nx.is_simple_path(tiny_graph, p)
+
+
+def test_parse_nav_actions_accepts_collected_and_prose():
+    assert parse_nav_actions('move_ahead → rotate_left → move_ahead') == [
+        'move_ahead',
+        'rotate_left',
+        'move_ahead',
+    ]
+    assert parse_nav_actions(
+        [{'action': 'MoveAhead'}, {'action': 'rotate_right', 'degrees': 45}]
+    ) == ['move_ahead', 'rotate_right']
+    assert parse_nav_actions('look_up, move ahead, then rotate right') == [
+        'move_ahead',
+        'rotate_right',
+    ]
+
+
+def test_spl_ratio_is_success_gated_and_capped():
+    assert _spl_ratio(2.0, 2.0, success=True) == 1.0
+    assert _spl_ratio(2.0, 4.0, success=True) == 0.5
+    assert _spl_ratio(2.0, 1.0, success=True) == 1.0
+    assert _spl_ratio(2.0, 4.0, success=False) == 0.0
+    assert _spl_ratio(None, 4.0, success=True) == 0.0
+    assert _spl_ratio(0.0, 0.0, success=True) == 1.0
+
+
+def test_path_to_nav_actions_roundtrip_reaches_goal(tiny_graph):
+    from cm_benchmark.generation.nav_graph import path_start_heading_deg
+
+    path = ['n0', 'n1', 'n2']
+    heading = path_start_heading_deg(tiny_graph, path)
+    actions = path_to_nav_actions(path, tiny_graph, start_heading_deg=heading)
+    assert actions[0] == 'move_ahead'
+    assert format_nav_actions(actions)
+    scored = action_sequence_reaches_goal(
+        tiny_graph, 'n0', 'n2', actions, start_heading_deg=heading
+    )
+    assert scored['parse_ok'] is True
+    assert scored['reached_goal'] is True
+    assert scored['success'] is True
+    assert scored['end_node'] == 'n2'
+    fail = action_sequence_reaches_goal(
+        tiny_graph, 'n0', 'n2', 'rotate_left, rotate_right', start_heading_deg=heading
+    )
+    assert fail['reached_goal'] is False
+    assert fail['success'] is False
+    assert fail['efficiency'] == 0.0
+    assert fail['route_efficiency'] == 0.0
+
+
+def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
+    from cm_benchmark.evaluation.score import score_route_knowledge
+    from cm_benchmark.generation.nav_graph import path_start_heading_deg
+
+    heading = path_start_heading_deg(tiny_graph, ['n0', 'n1', 'n2'])
+    actions = path_to_nav_actions(
+        ['n0', 'n1', 'n2'], tiny_graph, start_heading_deg=heading
+    )
+    walked = [('n0', 'n1'), ('n1', 'n2')]
+    scored = score_route_action_sequence(
+        tiny_graph, 'n0', 'n2', actions, walked, start_heading_deg=heading
+    )
+    assert scored['success'] is True
+    assert scored['success_raw'] is True
+    assert scored['validity'] is True
+    assert scored['route_success'] is True
+    assert scored['outcome'] == 'valid_success'
+    assert scored['illegal_edges'] == []
+    assert 0.0 < scored['efficiency'] <= 1.0
+    assert scored['route_efficiency'] == scored['efficiency']
+    assert scored['simulated_length_m'] > 0
+
+    # Fake snap-only edge is dropped before validity / efficiency.
+    mixed = [('n0', 'n1'), ('n1', 'n2'), ('n0', 'ghost')]
+    assert ('n0', 'ghost') not in filter_traversed_to_exported(tiny_graph, mixed)
+
+    # Off-graph walk rejects at the first pose that does not snap.
+    off = score_route_action_sequence(
+        tiny_graph,
+        'n0',
+        'n2',
+        ['move_ahead'] * 8,
+        walked,
+        start_heading_deg=heading,
+    )
+    assert off['success'] is False
+    assert off['validity'] is False
+    assert off['efficiency'] == 0.0
+    assert off['route_efficiency'] == 0.0
+    assert off['outcome'] == 'invalid_fail'
+
+    # Success is a goal-distance check, not exact node equality.
+    near = score_route_action_sequence(
+        tiny_graph,
+        'n0',
+        'n2',
+        ['move_ahead'],
+        walked,
+        start_heading_deg=heading,
+        goal_tolerance=0.3,
+    )
+    assert near['end_node'] == 'n1'
+    assert near['success'] is True
+    assert near['validity'] is True
+    assert 0.0 < near['efficiency'] <= 1.0
+
+    # Validity is independent: reaching via an untraversed edge is invalid.
+    # SPL given success stays; construct SPL (route_efficiency) is 0.
+    invalid = score_route_action_sequence(
+        tiny_graph,
+        'n0',
+        'n2',
+        actions,
+        [('n0', 'n1')],
+        start_heading_deg=heading,
+    )
+    assert invalid['success'] is True
+    assert invalid['validity'] is False
+    assert invalid['route_success'] is False
+    assert invalid['outcome'] == 'invalid_success'
+    assert ('n1', 'n2') in invalid['illegal_edges']
+    assert 0.0 < invalid['efficiency'] <= 1.0
+    assert invalid['route_efficiency'] == 0.0
+
+    item = {
+        'context': {
+            'source_node': 'n0',
+            'goal_node': 'n2',
+            'traversed_edges': walked,
+            'start_heading_deg': heading,
+        }
+    }
+    wrapped = score_route_knowledge(item, tiny_graph, actions)
+    assert wrapped['success'] is True
+    assert wrapped['validity'] is True
+    assert wrapped['route_success'] is True
+    assert wrapped['efficiency'] == wrapped['route_efficiency']
+    assert wrapped['illegal_edges'] == []
+
+
+def test_viewed_edges_are_superset_of_exported_traversed(tiny_graph):
+    traj = [
+        {'step': 0, 'position': (0.0, 1.0, 0.0)},
+        {'step': 1, 'position': (0.25, 1.0, 0.0)},
+        {'step': 2, 'position': (0.5, 1.0, 0.0)},
+    ]
+    snapped = snap_trajectory_to_graph(tiny_graph, traj)
+    traversed = traversed_edges_from_snapped(snapped)
+    exported = filter_traversed_to_exported(tiny_graph, traversed)
+    radius = calibrate_view_radius_m(
+        tiny_graph,
+        [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0), (3.0, 1.0, 0.0), (10.0, 1.0, 0.0)],
+    )
+    assert radius >= trajectory_snap_tolerance(tiny_graph)
+    viewed, nodes = viewed_edges_from_trajectory(
+        tiny_graph, traj, radius, traversed_edges=traversed
+    )
+    assert exported <= viewed
+    for nid in (row['node_id'] for row in snapped):
+        assert nid in nodes
+    for a, b in viewed:
+        assert tiny_graph.has_edge(a, b)
+        assert a in nodes or (a, b) in exported or (b, a) in exported
+
+
+def test_calibrate_view_radius_uses_scene_spacing_not_a_constant(tiny_graph):
+    tight = calibrate_view_radius_m(
+        tiny_graph,
+        [(0.0, 1.0, 0.0), (0.8, 1.0, 0.0), (1.6, 1.0, 0.0)],
+    )
+    wide = calibrate_view_radius_m(
+        tiny_graph,
+        [(0.0, 1.0, 0.0), (4.0, 1.0, 0.0), (8.0, 1.0, 0.0)],
+    )
+    assert wide > tight
+    assert tight >= trajectory_snap_tolerance(tiny_graph)
+
+
+def test_score_survey_action_sequence_viewed_and_novel(tiny_graph):
+    from cm_benchmark.evaluation.score import score_survey_based_route_planning
+    from cm_benchmark.generation.nav_graph import path_start_heading_deg
+
+    traversed = [('n0', 'n1'), ('n1', 'n2')]
+    viewed = list(tiny_graph.edges())
+    heading_walked = path_start_heading_deg(tiny_graph, ['n0', 'n1', 'n2'])
+    walked_actions = path_to_nav_actions(
+        ['n0', 'n1', 'n2'], tiny_graph, start_heading_deg=heading_walked
+    )
+    only_walked = score_survey_action_sequence(
+        tiny_graph,
+        'n0',
+        'n2',
+        walked_actions,
+        viewed,
+        traversed,
+        start_heading_deg=heading_walked,
+    )
+    assert only_walked['success'] is True
+    assert only_walked['validity'] is False
+    assert only_walked['novel_edges'] == []
+    assert 0.0 < only_walked['efficiency'] <= 1.0
+
+    novel_path = ['n0', 'n3', 'n6', 'n7', 'n8']
+    heading_novel = path_start_heading_deg(tiny_graph, novel_path)
+    novel_actions = path_to_nav_actions(
+        novel_path, tiny_graph, start_heading_deg=heading_novel
+    )
+    planned = score_survey_action_sequence(
+        tiny_graph,
+        'n0',
+        'n8',
+        novel_actions,
+        viewed,
+        traversed,
+        start_heading_deg=heading_novel,
+    )
+    assert planned['success'] is True
+    assert planned['validity'] is True
+    assert planned['novel_edges']
+    assert 0.0 < planned['efficiency'] <= 1.0
+
+    unseen = score_survey_action_sequence(
+        tiny_graph,
+        'n0',
+        'n8',
+        novel_actions,
+        traversed,
+        traversed,
+        start_heading_deg=heading_novel,
+    )
+    assert unseen['success'] is True
+    assert unseen['validity'] is False
+    assert unseen['illegal_edges']
+
+    item = {
+        'context': {
+            'source_node': 'n0',
+            'goal_node': 'n8',
+            'viewed_edges': viewed,
+            'traversed_edges': traversed,
+            'start_heading_deg': heading_novel,
+        }
+    }
+    wrapped = score_survey_based_route_planning(item, tiny_graph, novel_actions)
+    assert wrapped['success'] is True
+    assert wrapped['validity'] is True

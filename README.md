@@ -3,7 +3,11 @@
 A **spatial-cognition QA benchmark** for vision-language models (VLMs).  
 The goal is to test whether models build and use an internal **cognitive map** — not whether they can answer from language priors alone.
 
-Items are **multi-image frame sequences** from 3D environments plus a **multiple-choice question**. Every answer must be traceable to simulator metadata (poses, visibility, spatial relations), never invented by an LLM.
+Items are **multi-image frame sequences** from 3D environments plus a question.
+Classes 1–3 are **multiple-choice**. Class 4 (`route_knowledge`,
+`survey_based_route_planning`) is a **free collected-format action sequence**
+(not MCQ). Every answer must be traceable to simulator metadata (poses,
+visibility, spatial relations, nav graph), never invented by an LLM.
 
 ---
 
@@ -50,7 +54,7 @@ CSV / simulator collection
                 ▼
 ┌───────────────────────────────┐
 │  Model Evaluation Pipeline    │  ← consume frozen set ONLY
-│  Model Runner → Scorer        │
+│  Model Runner (wrap_item_for_eval) → Scorer │
 │  Error analysis / reports     │
 └───────────────────────────────┘
 ```
@@ -456,7 +460,7 @@ episode
 1. **First-draft Q&A (code)** — deterministic templates compose items from DB/JSON; answer + `answer_source` locked to edges/tracks/layout.
 2. **Optional paraphrase (LLM later)** — may rewrite *question wording only*; never invent geometry or change the answer.
 3. **Ground-truth validation (code)** — recompute answers from poses / edges / tracks.
-4. **VLM evaluation** — images + question only; exact-match against frozen answers.
+4. **VLM evaluation** — images + question only. Classes 1–3: exact-match on the option letter. Class 4: [CODE] metric simulation (success / validity / SPL), not string match.
 
 Prefer the **DB** in pipeline code; use JSON as a portable snapshot.
 
@@ -492,6 +496,10 @@ python -m cm_benchmark.generation.draft_items \
 | `concise` | Short construct template |
 | `verbose` | Optional GT-grounded preamble + same query — **must not leak the answer**. For `spatial_working_memory` / `invisible_displacement` only, verbose may also name other static scene objects **without** direction/distance/relation (taxonomy shared_rules exception). |
 
+Output-format contracts (MCQ letter vs class-4 action names) live in the eval
+harness (`cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`), not in the
+per-item question. `wrap_item_for_eval(item)` is what the Model Runner sends.
+
 Paired items share `answer` / `answer_source` and link via `paired_item_id`.
 
 ### Multi-image / online sequential wording (classes 2–4)
@@ -515,12 +523,21 @@ flags are optional. Generation is deterministic.
 
 ### Class 4 — route / survey (important)
 
+Action vocabulary (`move_ahead`, `rotate_left`, `rotate_right`, `move_back`) is
+stated **once** in `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`, not in
+item templates. Do **not** emit a question that expects recall of the full
+egomotion list across hundreds of steps.
+
+Landmarks come from `select_landmark_candidates(unique_category=False)`.
+Duplicates stay when `_referring_display_name` can uniquely name them (e.g.
+`Chair close to the Table`); otherwise that object is skipped. Pair length is
+full-nav_graph geodesic in **[1, 30] m** (HM3D-OVON / GOAT-Bench / HSSD-200).
+An exported `nav_graph` is required but not sufficient — see Evidence.
+
 | Construct | What the draft asks | Evidence |
 |-----------|---------------------|----------|
-| `route_knowledge` | MCQ over `derive_turns()` sequences for a walked A→B (scene-calibrated min hops) | `nav_graph` + snapped trajectory; `select_landmark_candidates` for naming |
-| `survey_based_route_planning` | **direction_distance**: layout relation of B to A; **conditional_detour**: first-hop after removing edges near a *recorded* closed passage | Landmark poses + untraversed check + `passage_state`; never turn sequences |
-
-Do **not** emit a single question that expects recall of the full egomotion list across hundreds of steps.
+| `route_knowledge` | Free action sequence for a **walked** source→goal; [CODE] logs success, validity, SPL, and `route_efficiency` (SPL on valid-success) | Path exists on `traversed_edges`; landmarks snapped to **visited** nodes (2.5 m); hop floor 2 (not R2R 4–6); **no** geo/eucl ratio |
+| `survey_based_route_planning` | Free action sequence for a **never-walked** source→goal; [CODE] uses viewed_edges validity + SPL | No path on `traversed_edges`; same-timestep through-door (`passage_state`: open door, agent ≤ 1.5 m, goal visible); agent ≥ 1.0 m from source on the **source** frame; geo/eucl ≥ 1.05 (HSSD nearly-straight); `viewed_edges` radius proxy around the trajectory (scoring, not pair pick) |
 
 ### Construct coverage (v0, strict)
 
@@ -533,8 +550,8 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 | `invisible_displacement` | full: direct (`recall_direction` — receptacle or Floor+anchor within `FLOOR_ANCHOR_RADIUS`) and swap; ego bearing; `relation_shift_magnitude` difficulty |
 | `spatial_updating` | full when **net pose** changes (position or heading), object static via `object_state_track`, not visible at final; duplicate encode/answer pairs dropped |
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
-| `route_knowledge` | full (MCQ over walked turn sequences; salience landmarks; calibrated min hops) |
-| `survey_based_route_planning` | full for untraversed + perceptually evidenced pairs; optional `conditional_detour` from recorded closures |
+| `route_knowledge` | full (free actions on traversed_edges; success/validity/SPL + route_efficiency; geodesic 1–30 m; hop floor 2; referring names) |
+| `survey_based_route_planning` | full (never-traversed + through-door; geodesic 1–30 m; geo/eucl ≥ 1.05; agent–source 1.0 m on source frame; viewed_edges SPL) |
 | `perspective_taking` | full: A/B/C landmarks, signed A→B vs A→C angle (`imagined_perspective_label`; left/right/behind + boundary margin); no intrinsic-front metadata |
 
 ### Display names
@@ -554,7 +571,7 @@ Verification fields stay `null`.
 | `agent_trajectory` | One pose per frame in `image_paths`, in image order (`null` if unavailable) |
 | `agent_actions` | Only actions in `(encoding_step, query_step]` — the delay / motion the item tests |
 
-`route_knowledge` items carry **no** `agent_actions`: the answer *is* the collapsed action sequence, so the raw list would leak it. The full episode trajectory stays in episode GT, referenced via `answer_source`.
+Class-4 items (`route_knowledge`, `survey_based_route_planning`) carry **no** `agent_actions` and **no** MCQ `options`: the model must write the action sequence. The stored `answer` is a `path_to_nav_actions` reference for analysis (not exclusive gold). Both constructs metric-simulate parsed actions: route scores on `traversed_edges`; survey on `viewed_edges` (path ⊆ viewed and at least one edge ∉ traversed). If no pair survives the gates, the draft is `unsupported` and `reason` lists per-pair skip counts. The full episode trajectory stays in episode GT, referenced via `answer_source`.
 
 ### Build example slides
 
@@ -562,7 +579,8 @@ The presentation builder selects strict (`status: ok`) concise examples
 automatically for all eight constructs. A construct without sufficient GT gets
 an explicit blocker slide instead of a fabricated example. Temporal items with
 more than two images receive ordered sequence slides (six frames per slide)
-before their Q&A slide.
+before their Q&A slide. Class-4 examples show source, goal, a compact shortest
+path, and one valid action sequence — not an empty MCQ options box.
 
 ```bash
 .venv-pptx/bin/python scripts/build_avance_presentation.py \
@@ -612,7 +630,9 @@ pytest tests/ -q
 | `test_navigation_generation.py` | Tiny CSVs + folder episode (displacement / survey) |
 | `test_episode_store.py` | SQLite save / load / query |
 | `test_episode_paths.py` | Episode root vs `annotations/` discovery |
-| `test_draft_items.py` | First-draft Q&A (styles, multi-frame, route segments) |
+| `test_draft_items.py` | First-draft Q&A (styles, multi-frame, class-4 geodesic 1–30 m / survey 1.05) |
+| `test_eval_protocol.py` | Class-4 system instruction + [CODE] success / validity / SPL |
+| `test_nav_graph.py` | Trajectory snap, traversed/viewed edges, metric simulator |
 | `test_annotate_frames.py` | Numbered points + legend |
 | `test_visibility_filters.py` | Q&A FOV keep/drop metrics |
 
