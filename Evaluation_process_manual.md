@@ -1,6 +1,8 @@
 # cm-benchmark — Evaluation Process Manual
 
-**Scope:** How we decide an item (question + answer + distractors + `answer_source`) is *correct and well-built* before it can enter the FREEZE'd, VLM-evaluated set. This manual governs the **Item Generation Pipeline** (`generator/` → `generation/` → FREEZE), not the downstream Model Evaluation Pipeline.
+**Scope:** How we decide an item is well-built before FREEZE. This is the Item
+Generation Pipeline, not model scoring. Class-4 scoring details:
+[`docs/generation.md`](docs/generation.md).
 
 **Non-goal:** This is not a rubric for grading VLM answers. Item correctness and model scoring are separate concerns (invariant #3: scoring is deterministic code, no LLM judge).
 
@@ -46,8 +48,8 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `invisible_displacement` → confirm `displacement_event.hidden_during == true` and object is not visible from move through query; recompute ego bearing at query pose. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
 - `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers.
 - `perspective_taking` → confirm three distinguishable landmarks A/B/C; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
-- `route_knowledge` → confirm the queried path exists on the traversed_edges subgraph; stored answer is a reference `follow_path_actions()` string (not exclusive gold; greedy follower, verified to score a valid success). Score a model reply with `score_route_action_sequence`: metric-simulate actions, snap each pose, filter traversed_edges to exported graph edges. Log success (goal tolerance), validity (illegal edges), `outcome` (2×2 cell), SPL `efficiency` given success (`S * ℓ / max(p, ℓ)`), and `route_efficiency` (SPL given valid-success). Headline numbers are `route_success` and `route_efficiency`. Check hop floor 2, full-graph geodesic in [1, 30] m, geodesic/Euclidean ratio >= 1.1, and real turn count in [2, 12].
-- `survey_based_route_planning` → confirm no path on traversed_edges; same-timestep through-door evidence (open + agent near door + goal visible); agent not within 1.0 m of the source on the source sighting frame. Score with `score_survey_action_sequence` (same metric simulator as route): success (goal tolerance), validity (path ⊆ viewed_edges and at least one edge ∉ traversed_edges), SPL efficiency on the viewed_edges subgraph. Check geodesic in [1, 30] m and geo/eucl ≥ 1.05.
+- `route_knowledge` → path exists on traversed_edges; score with `score_route_action_sequence` (success / validity / SPL).
+- `survey_based_route_planning` → no path on traversed_edges; through-door evidence; score with `score_survey_action_sequence` (same simulator; validity requires at least one unwalked viewed edge).
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 

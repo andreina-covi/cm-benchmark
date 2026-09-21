@@ -405,6 +405,38 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     assert wrapped['illegal_edges'] == []
 
 
+def test_survey_route_efficiency_is_spl_not_a_constant_zero(tiny_graph):
+    """Survey's headline SPL is computed on viewed_edges, like route's on traversed."""
+    from cm_benchmark.generation.nav_graph import (
+        path_start_heading_deg,
+        path_to_nav_actions,
+        score_survey_action_sequence,
+    )
+
+    path = ['n0', 'n1', 'n2']
+    heading = path_start_heading_deg(tiny_graph, path)
+    actions = path_to_nav_actions(path, tiny_graph, start_heading_deg=heading)
+    viewed = [('n0', 'n1'), ('n1', 'n2')]
+
+    # Whole path is viewed but never walked: a valid success must score > 0.
+    scored = score_survey_action_sequence(
+        tiny_graph, 'n0', 'n2', actions, viewed, [], start_heading_deg=heading
+    )
+    assert scored['outcome'] == 'valid_success'
+    assert 0.0 < scored['route_efficiency'] <= 1.0
+    assert scored['route_efficiency'] == scored['efficiency']
+
+    # Nothing novel (every edge already walked) is a success but not valid,
+    # so the construct SPL drops to 0 while plain SPL given success stays.
+    not_novel = score_survey_action_sequence(
+        tiny_graph, 'n0', 'n2', actions, viewed, viewed, start_heading_deg=heading
+    )
+    assert not_novel['success'] is True
+    assert not_novel['validity'] is False
+    assert 0.0 < not_novel['efficiency'] <= 1.0
+    assert not_novel['route_efficiency'] == 0.0
+
+
 def test_viewed_edges_are_superset_of_exported_traversed(tiny_graph):
     traj = [
         {'step': 0, 'position': (0.0, 1.0, 0.0)},

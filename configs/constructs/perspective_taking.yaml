@@ -1,40 +1,26 @@
-# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
-# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+# Excerpt of configs/taxonomy.yaml. Edit taxonomy first, then re-sync.
 perspective_taking:
   class: 3
   frame_of_reference: allocentric
-  definition: 'Compute a relation from an imagined viewpoint: standing at landmark A, facing
-    landmark B (heading = direction A->B), report where a third landmark C is. This is the
-    Object Perspective/Spatial Orientation Test paradigm (Kozhevnikov & Hegarty, 2001) — heading
-    is defined RELATIONALLY by two positions, not by any object''s intrinsic front, which
-    removes the prior blocker (reference_entity_facing_heading unavailable in AI2-THOR) with
-    zero new metadata needed.
-
-    '
+  definition: >
+    Standing at landmark A, facing B, report where landmark C is.
+    Heading is A→B (two positions), not an object's intrinsic front.
   what_moves: observer (imagined; viewpoint adopted, not executed)
   difficulty_axis:
-  - perspective_shift_magnitude
-  answer_type: 'direction of landmark C from the imagined viewpoint (standing at A, facing
-    B)
-
-    '
+    - perspective_shift_magnitude
+  answer_type: direction of landmark C from the imagined viewpoint (standing at A, facing B)
   required_temporal_fields: []
-  question_template: Imagine standing at the {A}, facing the {B}. From that position, where
-    is the {C}?
-  ground_truth_method: 'A, B, C are three distinct landmarks, each distinguishable in >=1
-    shown frame (same visibility-grounding standard as every other construct). Imagined heading
-    = normalize(pos(B) - pos(A)). Answer = C''s position transformed into the egocentric frame
-    defined by (pos(A), imagined heading) — a standard 2D rotation, computed from real positions
-    only.
-
-    '
+  question_template: >
+    Imagine standing at the {A}, facing the {B}. From that position, where is the {C}?
+  ground_truth_method: >
+    Three distinguishable landmarks A, B, C. Imagined heading is A→B.
+    Answer is where C sits in that frame (left / right / behind).
+    No object-intrinsic facing is required.
   distractor_pattern:
-  - camera_frame_answer
-  - mirrored_left_right
-  - wrong_facing_assumption
+    - camera_frame_answer
+    - mirrored_left_right
+    - wrong_facing_assumption
   discriminators:
-  - A, B, C are three distinct landmarks, each distinguishable in >=1 shown frame
-  - agent does NOT actually move to viewpoint A (no real action — imagined only)
-  - answer is in the imagined (A, A->B heading) frame, never the agent's actual current frame
-  - heading is computed relationally from A and B positions — no object-intrinsic-front metadata
-    required or used
+    - A, B, C are three distinct, distinguishable landmarks
+    - the agent does not actually move to A
+    - answer is in the imagined (A, A→B) frame, not the camera frame

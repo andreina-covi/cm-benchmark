@@ -654,6 +654,12 @@ SURVEY_DOOR_AGENT_RADIUS_M = 1.5
 # Not a Euclidean percentile; not R2R's 5 m / 4–6 hops (wrong graph scale).
 MIN_PAIR_GEODESIC_M = 1.0
 MAX_PAIR_GEODESIC_M = 30.0
+# That band is absolute and was calibrated on large real-scanned homes. A small
+# ProcTHOR house can put every candidate pair just above the 1 m floor, so the
+# band stops discriminating and ranking only picks the hardest of a uniformly
+# easy set. Pairs must also clear this percentile of the scene's OWN landmark
+# geodesic distribution — both halves apply, not either/or.
+SCENE_PAIR_GEODESIC_PERCENTILE = 0.5
 # HSSD-200 CVPR 2024 supplement: geo/eucl < 1.05 is "nearly straight-line".
 SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.05
 # Habitat's PointNav episode generator rejects geo/eucl < 1.1 on every episode:
@@ -1870,6 +1876,45 @@ def _full_graph_geodesic_m(graph, n0: str, n1: str) -> Optional[float]:
         return None
 
 
+def calibrate_scene_geodesic_floor_m(
+    graph,
+    node_ids: Sequence[str],
+    *,
+    percentile: float = SCENE_PAIR_GEODESIC_PERCENTILE,
+) -> Optional[float]:
+    """Scene-relative pair-length floor: a percentile of this scene's own spread.
+
+    Same shape as ``calibrate_view_radius_m`` (percentile index over the scene's
+    sorted pairwise distances), but on full-graph geodesic metres between the
+    snapped landmark nodes rather than Euclidean landmark spacing. Computed once
+    per episode and passed into ``_class4_pair_reject_reason``.
+
+    Returns None when the scene has no usable distribution (fewer than two
+    connected landmark pairs), in which case only the absolute band applies.
+    """
+    import networkx as nx
+
+    uniq = [n for n in dict.fromkeys(node_ids) if n in graph]
+    if len(uniq) < 2:
+        return None
+    dists: list[float] = []
+    for i, src in enumerate(uniq):
+        # One Dijkstra per source, not one per pair: landmark sets reach 40.
+        try:
+            lengths = nx.single_source_dijkstra_path_length(graph, src, weight='weight')
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+        for dst in uniq[i + 1 :]:
+            d = lengths.get(dst)
+            if d is not None and d > 1e-9:
+                dists.append(float(d))
+    if not dists:
+        return None
+    dists.sort()
+    idx = max(0, int(float(percentile) * (len(dists) - 1)))
+    return float(dists[idx])
+
+
 def _class4_pair_reject_reason(
     graph,
     src_pos,
@@ -1878,12 +1923,15 @@ def _class4_pair_reject_reason(
     n1: str,
     *,
     min_ratio: Optional[float] = None,
+    min_scene_geodesic_m: Optional[float] = None,
 ) -> Optional[str]:
     """None if the pair passes the 2024 object-goal geodesic band.
 
     Hard gate: full-graph geodesic in ``[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]``
-    (HM3D-OVON / GOAT-Bench / HSSD-200). ``min_ratio`` is the geodesic/Euclidean
-    detour gate both class-4 constructs apply: survey at
+    (HM3D-OVON / GOAT-Bench / HSSD-200). ``min_scene_geodesic_m`` adds the
+    scene-relative half of that gate (see
+    ``calibrate_scene_geodesic_floor_m``); both must pass. ``min_ratio`` is the
+    geodesic/Euclidean detour gate both class-4 constructs apply: survey at
     ``SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO`` (HSSD 1.05), route at
     ``ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO`` (Habitat PointNav 1.1).
     """
@@ -1894,6 +1942,8 @@ def _class4_pair_reject_reason(
         return 'geodesic_lt_1m'
     if geo > float(MAX_PAIR_GEODESIC_M):
         return 'geodesic_gt_30m'
+    if min_scene_geodesic_m is not None and geo < float(min_scene_geodesic_m):
+        return 'geodesic_below_scene_median'
     if min_ratio is None:
         return None
     a = xyz_as_dict(src_pos)
@@ -2080,6 +2130,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             oid,
         ),
     )
+    scene_geodesic_floor = calibrate_scene_geodesic_floor_m(
+        graph, [id_to_node[oid] for oid in ordered_ids]
+    )
     # Walk order enumerates pairs; the emitted subset is ranked by difficulty
     # below. Taking the first passing pairs in walk order yields the walk's
     # nearest neighbours, which are the easiest pairs in the scene.
@@ -2099,6 +2152,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 n0,
                 n1,
                 min_ratio=ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
+                min_scene_geodesic_m=scene_geodesic_floor,
             )
             if pair_reason:
                 rejects[pair_reason] += 1
@@ -2422,7 +2476,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     viewed_sub = subgraph_from_traversed_edges(graph, viewed_edges)
     viewed_edge_list = _serialize_traversed_edges(viewed_edges)
     traversed_edge_list = _serialize_traversed_edges(edges)
-    out: list[PlannedFact] = []
+    scene_geodesic_floor = calibrate_scene_geodesic_floor_m(
+        graph, [id_to_node[oid] for oid in ids]
+    )
+    # Same as route: collect every valid pair, then emit the hardest. Returning
+    # at the first max_items hits takes them in `ids` order, which is salience,
+    # not difficulty.
+    candidates: list[tuple[tuple, PlannedFact]] = []
     rejects: Counter = Counter()
 
     for i, src_id in enumerate(ids):
@@ -2445,6 +2505,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 n0,
                 n1,
                 min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+                min_scene_geodesic_m=scene_geodesic_floor,
             )
             if pair_reason:
                 rejects[pair_reason] += 1
@@ -2496,7 +2557,10 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     ),
                 ]
             )
-            out.append(
+            hops = len(path) - 1
+            turn_count = int(ref['turn_count'])
+            geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
+            fact = (
                 PlannedFact(
                     construct='survey_based_route_planning',
                     status='ok',
@@ -2526,8 +2590,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                         'source_node': n0,
                         'goal_node': n1,
                         'path_nodes': path,
-                        'hop_count': len(path) - 1,
-                        'turn_count': ref['turn_count'],
+                        'hop_count': hops,
+                        'turn_count': turn_count,
+                        'geodesic_m': round(geodesic_m, 3),
                         'action_sequence': ref['actions'],
                         'start_heading_deg': ref['start_heading_deg'],
                         'traversed_edges': traversed_edge_list,
@@ -2542,10 +2607,10 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     },
                 )
             )
-            if len(out) >= max_items:
-                return out
+            # Harder first: more real turns, then longer geodesic.
+            candidates.append(((turn_count, geodesic_m, hops), fact))
 
-    if not out:
+    if not candidates:
         return [
             PlannedFact(
                 construct='survey_based_route_planning',
@@ -2556,7 +2621,8 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 extra={'pair_reject_counts': dict(rejects)},
             )
         ]
-    return out
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [fact for _rank, fact in candidates[:max_items]]
 
 
 def _co_visible_distinguishable_step(

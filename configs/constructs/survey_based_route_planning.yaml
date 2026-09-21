@@ -1,64 +1,35 @@
-# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
-# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+# Excerpt of configs/taxonomy.yaml. Edit taxonomy first, then re-sync.
 survey_based_route_planning:
   class: 4
   frame_of_reference: allocentric
-  definition: 'Plan a NEVER-walked source→goal as an ordered navigation-action sequence
-    using survey (layout) knowledge. Evidence of the link is a same-timestep through-door
-    glimpse (Montello vista space), not a walked route. Distinct from route_knowledge,
-    which recalls an experienced walk and is scored on the traversed subgraph only.
-
-    '
+  definition: >
+    Plan a never-walked source→goal using layout knowledge. Evidence is a
+    through-door glimpse, not a walked route.
   what_moves: none required
-  answer_type: 'ordered sequence of collected navigation actions (move_ahead, rotate_left,
-    rotate_right, move_back). Not MCQ. [CODE] score = metric-simulate the parsed actions
-    (same simulator as route_knowledge). Success = goal tolerance; validity = path ⊆
-    viewed_edges and at least one edge ∉ traversed_edges; efficiency = SPL on the
-    viewed_edges subgraph.
-
-    '
+  answer_type: >
+    ordered sequence of collected navigation actions
+    (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
+    [CODE] scores success / validity / SPL on viewed_edges
+    (must use at least one unwalked edge).
   required_temporal_fields:
-  - agent_trajectory
-  - nav_graph
-  - passage_state
+    - agent_trajectory
+    - nav_graph
+    - passage_state
   question_template:
-  - Using your knowledge of the environment's layout, list the navigation actions that
-    take you from the {source} to the {goal}.
-  - Based on what you've seen of this space, list the navigation actions, in order, that
-    go from the {source} to the {goal}.
-  ground_truth_method: 'Source/goal selected via select_landmark_candidates(unique_category=False)
-    and snapped with snap_landmark_to_graph(). Duplicate categories stay if uniquely
-    nameable via _referring_display_name. Never-traversed check: shortest_path() on the
-    traversed_edges subgraph must NOT exist. Reference path = shortest_path() on the
-    viewed_edges subgraph — not the full nav_graph, since validity is scored on
-    viewed_edges — and the stored answer is follow_path_actions() on it (analysis
-    reference only), replayed through the scorer and dropped unless it is a valid
-    success. Perceptual
-    evidence: same timestep with door is_open, agent within door radius, and goal-side
-    landmark visible (doors only; windows out of scope). Reject if agent is within
-    SURVEY_MIN_AGENT_SOURCE_DIST_M (1.0 m, ObjectNav/GOAT success zone) of the source at
-    the source sighting frame. Reject pairs whose full-nav_graph geodesic is outside 1–30
-    m (HM3D-OVON / GOAT-Bench / HSSD-200) or whose geo/eucl ratio is below
-    SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO (1.05; HSSD nearly-straight). Shown-frame
-    captions: "source sighted" / "goal sighted". viewed_edges is a radius proxy (not
-    depth/raycasting): a node is viewed if it lies within a scene-calibrated radius of any
-    agent_trajectory pose; an edge is viewed if both endpoints are. Evaluation uses the
-    route metric simulator; validity requires the walk stay on viewed_edges and leave
-    traversed_edges at least once. Efficiency is SPL against the viewed_edges shortest
-    path.
-
-    '
+    - Using your knowledge of the environment's layout, list the navigation actions that
+      take you from the {source} to the {goal}.
+    - Based on what you've seen of this space, list the navigation actions, in order, that
+      go from the {source} to the {goal}.
+  ground_truth_method: >
+    Source and goal are named landmarks with no path on traversed_edges.
+    The link is evidenced by an open door (agent near the door, goal
+    visible in that same frame). The path is the shortest walk on
+    viewed_edges. Same scoring simulator as route_knowledge. Keep only
+    non-trivial pairs; emit the hardest surviving ones.
   distractor_pattern: []
   discriminators:
-  - queried path is absent from the traversed_edges subgraph (never walked)
-  - 'the connection between {source} and {goal} is evidenced through a specific open door on
-    one timestep: agent near that door AND the goal-side landmark visible in that same frame
-    (doors only; no windows)
-
-    '
-  - 'agent pose at the source sighting frame is at least SURVEY_MIN_AGENT_SOURCE_DIST_M
-    (1.0 m) from the source landmark (prevents collapse into egocentric_encoding)
-
-    '
-  - full-graph geodesic in [1, 30] m; geo/eucl >= 1.05 (HSSD nearly-straight)
-  - answer is a free action sequence; [CODE] scorer uses viewed_edges validity + SPL
+    - queried path was never walked (absent from traversed_edges)
+    - through-door evidence on one timestep (open door, agent near it, goal visible)
+    - agent is not standing at the source when it is first sighted
+    - the planned walk is non-trivial
+    - free action sequence; [CODE] scores viewed_edges validity + SPL

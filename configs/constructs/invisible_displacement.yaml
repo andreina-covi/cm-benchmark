@@ -30,18 +30,12 @@ invisible_displacement:
       Where is it relative to you now?
     swap: The {object_type} was moved to where the {other_object_type} used to be. Where is
       the {object_type} relative to you now?
-  ground_truth_method: 'Exporter (e.g. SPOC) logs the hidden move plus trial-teleport distractor
-    poses (then restores). This repo computes egocentric labels from agent_pose@query_step
-    and world poses (chosen / from / candidate positions). Floor destinations are checked
-    per-instance, not rejected wholesale: if to_receptacle == Floor, search for a nearest_landmark
-    within FLOOR_ANCHOR_RADIUS (default 1.2m, calibrate per scene) of the object''s true final
-    position; reject only that specific candidate if none is found. {new_location} resolves
-    to either the receptacle name (non-Floor) or "the floor near the {landmark}" (Floor case)
-    — never a bare "Floor" cue. Swap items use a distinguishable partner object seen before
-    the swap instead — never both cue types in one question. Do not emit receptacle-name-only
-    or bare-Floor questions (no destination cue).
-
-    '
+  ground_truth_method: >
+    Hidden move from displacement_events. Answer is the object's
+    egocentric bearing at the query pose. Floor destinations need a
+    nearby named landmark ("the floor near the {landmark}"), never a
+    bare Floor. Swap items name a previously seen partner object instead
+    of a receptacle.
   distractor_pattern:
   - original_location
   - nearby_receptacle

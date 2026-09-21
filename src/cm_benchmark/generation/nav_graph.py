@@ -1404,6 +1404,8 @@ def score_survey_action_sequence(
       least one crossed edge is **not** in exported ``traversed_edges``.
     * ``efficiency``: SPL given success against the shortest path in the
       viewed_edges subgraph (this construct's optimal, not traversed-only).
+    * ``route_efficiency``: the same SPL, but given success **and** validity —
+      the construct headline, matching score_route_action_sequence.
     """
     sim = simulate_nav_action_sequence(
         graph,
@@ -1432,6 +1434,9 @@ def score_survey_action_sequence(
     success = _goal_reached(graph, snapped[-1], goal_node, sim['goal_tolerance'])
     opt_viewed = _shortest_on_edges(graph, viewed, source_node, goal_node)
     efficiency = _spl_ratio(opt_viewed, sim_len, success=success)
+    route_efficiency = _spl_ratio(
+        opt_viewed, sim_len, success=bool(success and validity)
+    )
     return _route_score_record(
         success=success,
         validity=validity,
@@ -1445,7 +1450,7 @@ def score_survey_action_sequence(
         novel_edges=novel,
         shortest_path_m=opt_viewed,
         efficiency=efficiency,
-        route_efficiency=0.0,
+        route_efficiency=route_efficiency,
     )
 
 

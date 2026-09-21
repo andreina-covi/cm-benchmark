@@ -158,6 +158,176 @@ def u_corridor_episode():
     return _corridor_episode(cells, grid=g, scene_id='u_corridor')
 
 
+def _two_room_episode() -> dict:
+    """Two rooms joined by one open door; the agent only ever walks room A.
+
+    Room B is sighted through the doorway, so every A-B pair is never-walked but
+    viewed — the survey_based_route_planning setup. The collected episodes on
+    hand have no through-door evidence at all, so this is the only scene that
+    exercises the construct end to end.
+    """
+    g = 0.25
+
+    def frange(a, b):
+        out, x = [], a
+        while x <= b + 1e-9:
+            out.append(round(x, 3))
+            x += g
+        return out
+
+    def ego(target):
+        return {
+            'source': 'agent',
+            'target': target,
+            'distance_metric': 2.0,
+            'distance_label': 'near',
+            'visible': True,
+            'angle_relation': ['', '', 'front'],
+            'inferred': False,
+        }
+
+    def detection(category, position):
+        return {
+            'category': category,
+            'position': position,
+            'bbox': [100, 60, 220, 190],
+            'bbox_area': 15600.0,
+            'min_side': 120.0,
+            'visible_pixels': 12000.0,
+            'occupancy_ratio': 0.6,
+            'obj_distance': 2.0,
+            'local_point': [160, 125],
+        }
+
+    cells = set()
+    for x in frange(0.0, 2.0):
+        for z in frange(0.0, 3.0):
+            cells.add((x, z))
+    for z in frange(1.25, 1.75):
+        cells.add((2.25, z))
+    for x in frange(2.5, 4.5):
+        for z in frange(0.0, 3.0):
+            cells.add((x, z))
+    nodes = [
+        {'node_id': f'n{i}', 'x': x, 'y': 1.0, 'z': z}
+        for i, (x, z) in enumerate(sorted(cells))
+    ]
+    nav_graph = {
+        'snapshots': {
+            'episode_start': {
+                'params': {
+                    'grid_size': g,
+                    'agent_move_m': g,
+                    'agent_rotation_deg': 45.0,
+                    'edge_connectivity': '8',
+                },
+                'nodes': nodes,
+                'edges': [],
+            }
+        }
+    }
+    landmarks = {
+        'Fridge|1': ('Fridge', 'roomA', [0.0, 1.0, 0.0]),
+        'CounterTop|1': ('CounterTop', 'roomA', [0.0, 1.0, 3.0]),
+        'Toilet|1': ('Toilet', 'roomB', [4.5, 1.0, 0.0]),
+        'Bed|1': ('Bed', 'roomB', [4.5, 1.0, 3.0]),
+        'Sofa|1': ('Sofa', 'roomB', [3.0, 1.0, 1.5]),
+    }
+    walk = [(0.0, z) for z in frange(0.0, 3.0)]
+    walk += [(x, 3.0) for x in frange(0.25, 2.0)]
+    walk += [(2.0, z) for z in reversed(frange(1.5, 2.75))]
+    door_step = len(walk) - 1
+    # Toilet is sighted over more frames, so it sorts first by salience even
+    # though its pair is the easiest. That makes `ids` enumeration order and
+    # difficulty order disagree, which is what the ranking test needs.
+    shown_at = {
+        'Fridge|1': {8, 9},
+        'CounterTop|1': {16, 17, door_step - 1, door_step},
+        'Toilet|1': set(range(door_step - 5, door_step + 1)),
+        'Bed|1': {door_step - 1, door_step},
+        'Sofa|1': {door_step - 1, door_step},
+    }
+    trajectory, steps = [], []
+    yaw = 0.0
+    for i, (x, z) in enumerate(walk):
+        if i > 0:
+            px, pz = walk[i - 1]
+            yaw = 0.0 if z > pz else (180.0 if z < pz else (90.0 if x > px else 270.0))
+        pose = {'position': [x, 1.0, z], 'rotation': [0.0, yaw, 0.0]}
+        trajectory.append({'step': i, 'image_path': f'/img_{i}.png', **pose})
+        visible, ego_edges = {}, []
+        for oid, frames in shown_at.items():
+            if i in frames:
+                category, _region, position = landmarks[oid]
+                visible[oid] = detection(category, position)
+                ego_edges.append(ego(oid))
+        steps.append(
+            {
+                'step': i,
+                'image_path': f'/img_{i}.png',
+                'action': 'move_ahead',
+                'degrees': 45,
+                'agent': pose,
+                'visible_objects': visible,
+                'non_visible_objects': {},
+                'edges_egocentric': ego_edges,
+                'edges_allocentric': [],
+                'edges_object_frame': [],
+                'edges_inferred': [],
+            }
+        )
+    layout = {
+        'landmarks': [
+            {
+                'landmark_id': oid,
+                'obj-type': category,
+                'region_id': region,
+                'position': {'x': pos[0], 'y': pos[1], 'z': pos[2]},
+            }
+            for oid, (category, region, pos) in landmarks.items()
+        ],
+        'passages': [
+            {
+                'passage_id': 'door|1',
+                'passage_type': 'door',
+                'from_region': 'roomA',
+                'to_region': 'roomB',
+                'position': {'x': 2.25, 'y': 1.0, 'z': 1.5},
+            }
+        ],
+    }
+    return {
+        'episode_id': 'two_room',
+        'scene_id': 'two_room',
+        'environment': 'ai2thor',
+        'episode_meta': {
+            'camera': {'width': 396, 'height': 224, 'fov_vertical_deg': 59},
+            'agent': {'rotation_deg': 45, 'movement_constant': g},
+        },
+        'nav_graph': nav_graph,
+        'agent_trajectory': trajectory,
+        'steps': steps,
+        'world_layout': layout,
+        'passage_state': [
+            {
+                'passage_id': 'door|1',
+                'is_open': True,
+                'timestep': door_step,
+                'from_region': 'roomA',
+                'to_region': 'roomB',
+            }
+        ],
+        'agent_actions': [
+            {'step': i, 'action': 'move_ahead', 'degrees': 45} for i in range(len(walk))
+        ],
+    }
+
+
+@pytest.fixture
+def two_room_episode():
+    return _two_room_episode()
+
+
 @pytest.fixture
 def straight_corridor_episode():
     """Single straight run: no detour and no turns, so route must stay unsupported."""
@@ -911,6 +1081,148 @@ def test_route_emits_hardest_pairs_first(u_corridor_episode):
              if f.status == 'ok']
     ranks = [(f.extra['turn_count'], f.extra['geodesic_m']) for f in facts]
     assert ranks == sorted(ranks, reverse=True)
+
+
+def test_survey_emits_hardest_pairs_first(two_room_episode):
+    """Survey ranks by difficulty like route, instead of returning enumeration order.
+
+    ``ids`` is salience-ordered, so the first pair the loop reaches can be the
+    easiest in the scene; the fixture is built so that is true.
+    """
+    from cm_benchmark.generation.planner import (
+        ROUTE_LANDMARK_SNAP_M,
+        _build_landmark_node_map,
+        _load_nav_graph_or_none,
+        plan_survey_based_route_planning,
+        select_landmark_candidates,
+    )
+
+    every = [
+        f
+        for f in plan_survey_based_route_planning(two_room_episode, max_items=99)
+        if f.status == 'ok'
+    ]
+    assert len(every) >= 3, 'fixture must offer several survey pairs to rank'
+    ranks = [
+        (f.extra['turn_count'], f.extra['geodesic_m'], f.extra['hop_count'])
+        for f in every
+    ]
+    assert ranks == sorted(ranks, reverse=True)
+
+    graph = _load_nav_graph_or_none(two_room_episode)
+    landmarks = select_landmark_candidates(two_room_episode, unique_category=False)
+    id_to_node, _names, _meta = _build_landmark_node_map(
+        graph, landmarks, max_distance_m=ROUTE_LANDMARK_SNAP_M
+    )
+    ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
+    position = {oid.split('|')[0]: i for i, oid in enumerate(ids)}
+
+    def enumeration_key(fact):
+        a = position[fact.extra['source'].split()[0]]
+        b = position[fact.extra['goal'].split()[0]]
+        return (min(a, b), max(a, b))
+
+    first_in_enumeration = sorted(every, key=enumeration_key)[0]
+    top = plan_survey_based_route_planning(two_room_episode, max_items=2)
+    assert [f.extra['turn_count'] for f in top] == [r[0] for r in ranks[:2]]
+    # The old early-return would have emitted this one; ranking must not.
+    assert first_in_enumeration.extra['turn_count'] < ranks[0][0]
+    assert first_in_enumeration.answer_label not in [f.answer_label for f in top]
+
+
+def test_survey_reference_scores_valid_success(two_room_episode):
+    """Survey stores a viewed-edge path, so the scorer must accept it."""
+    from cm_benchmark.generation.planner import (
+        _load_nav_graph_or_none,
+        _rotation_deg,
+        plan_survey_based_route_planning,
+    )
+    from cm_benchmark.generation.nav_graph import score_survey_action_sequence
+
+    graph = _load_nav_graph_or_none(two_room_episode)
+    facts = [
+        f
+        for f in plan_survey_based_route_planning(two_room_episode, max_items=99)
+        if f.status == 'ok'
+    ]
+    assert facts
+    for fact in facts:
+        extra = fact.extra
+        score = score_survey_action_sequence(
+            graph,
+            extra['source_node'],
+            extra['goal_node'],
+            extra['action_sequence'],
+            [tuple(e) for e in extra['viewed_edges']],
+            [tuple(e) for e in extra['traversed_edges']],
+            start_heading_deg=extra['start_heading_deg'],
+            rotation_deg=_rotation_deg(two_room_episode),
+        )
+        assert score['outcome'] == 'valid_success'
+        assert score['illegal_edges'] == []
+        assert score['novel_edges'], 'survey must leave the traversed edge set'
+
+
+def test_scene_geodesic_floor_is_per_scene_and_adds_to_absolute_band():
+    """Scene-relative floor: a percentile of this scene's own pair distribution."""
+    import networkx as nx
+    from cm_benchmark.generation.planner import (
+        MIN_PAIR_GEODESIC_M,
+        SCENE_PAIR_GEODESIC_PERCENTILE,
+        _class4_pair_reject_reason,
+        calibrate_scene_geodesic_floor_m,
+    )
+
+    assert SCENE_PAIR_GEODESIC_PERCENTILE == 0.5
+
+    # Chain of five nodes 2 m apart: sorted pair geodesics are
+    # [2, 2, 2, 2, 4, 4, 4, 6, 6, 8]. Index is int(p * (n - 1)) = 4, the same
+    # nearest-rank convention calibrate_view_radius_m uses.
+    g = nx.Graph()
+    for i in range(5):
+        g.add_node(f'n{i}', pos=(2.0 * i, 1.0, 0.0))
+    for i in range(4):
+        g.add_edge(f'n{i}', f'n{i + 1}', weight=2.0)
+    nodes = [f'n{i}' for i in range(5)]
+
+    floor = calibrate_scene_geodesic_floor_m(g, nodes)
+    assert floor == 4.0
+    assert floor > MIN_PAIR_GEODESIC_M
+
+    near = ({'x': 0.0, 'z': 0.0}, {'x': 2.0, 'z': 0.0}, 'n0', 'n1')  # geodesic 2 m
+    far = ({'x': 0.0, 'z': 0.0}, {'x': 6.0, 'z': 0.0}, 'n0', 'n3')  # geodesic 6 m
+    # Both clear the absolute band; only the far pair clears the scene floor.
+    assert _class4_pair_reject_reason(g, *near) is None
+    assert (
+        _class4_pair_reject_reason(g, *near, min_scene_geodesic_m=floor)
+        == 'geodesic_below_scene_median'
+    )
+    assert _class4_pair_reject_reason(g, *far, min_scene_geodesic_m=floor) is None
+
+    # Undefined distribution leaves only the absolute band in force.
+    assert calibrate_scene_geodesic_floor_m(g, ['n0']) is None
+    assert calibrate_scene_geodesic_floor_m(g, []) is None
+
+
+def test_scene_geodesic_floor_is_stricter_than_the_absolute_floor(u_corridor_episode):
+    """On a real scene the scene-relative floor binds where the 1 m band does not."""
+    from cm_benchmark.generation.planner import (
+        MIN_PAIR_GEODESIC_M,
+        ROUTE_LANDMARK_SNAP_M,
+        _build_landmark_node_map,
+        _load_nav_graph_or_none,
+        calibrate_scene_geodesic_floor_m,
+        select_landmark_candidates,
+    )
+
+    graph = _load_nav_graph_or_none(u_corridor_episode)
+    landmarks = select_landmark_candidates(u_corridor_episode, unique_category=False)
+    id_to_node, _names, _meta = _build_landmark_node_map(
+        graph, landmarks, max_distance_m=ROUTE_LANDMARK_SNAP_M
+    )
+    floor = calibrate_scene_geodesic_floor_m(graph, list(id_to_node.values()))
+    assert floor is not None
+    assert floor >= MIN_PAIR_GEODESIC_M
 
 
 def test_class4_pair_gate_is_geodesic_metres_not_percentile():
