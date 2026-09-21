@@ -585,7 +585,7 @@ def slide_readout(construct: str, context: Optional[dict] = None) -> str:
         return (
             f"SOURCE ({ctx.get('source')}) and GOAL ({ctx.get('goal')}) "
             "carry a letter marker. The stored walk is one valid never-walked "
-            "plan (through-door evidence). Scoring uses viewed_edges with a "
+            "plan on viewed_edges. Scoring uses viewed_edges with a "
             "required untraversed hop — same simulator as route knowledge."
         )
     if construct == 'spatial_working_memory':

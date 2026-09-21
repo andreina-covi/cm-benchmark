@@ -647,9 +647,6 @@ FLOOR_ANCHOR_RADIUS_M = 1.2
 # source (1.0 m Euclidean) collapses "from the Chair" into "from you".
 # Check the source sighting frame only (not the goal frame).
 SURVEY_MIN_AGENT_SOURCE_DIST_M = 1.0
-# Agent must be near an open door (same timestep) for through-opening evidence.
-# AI2-THOR default visibilityDistance (Kolve et al. 2017).
-SURVEY_DOOR_AGENT_RADIUS_M = 1.5
 # HM3D-OVON / GOAT-Bench / HSSD-200 (2024): geodesic start→goal in [1, 30] m.
 # Not a Euclidean percentile; not R2R's 5 m / 4–6 hops (wrong graph scale).
 MIN_PAIR_GEODESIC_M = 1.0
@@ -661,12 +658,9 @@ MAX_PAIR_GEODESIC_M = 30.0
 # geodesic distribution — both halves apply, not either/or.
 SCENE_PAIR_GEODESIC_PERCENTILE = 0.5
 # HSSD-200 CVPR 2024 supplement: geo/eucl < 1.05 is "nearly straight-line".
+# These are caps: the working threshold is min(cap, this scene's own p50).
 SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.05
-# Habitat's PointNav episode generator rejects geo/eucl < 1.1 on every episode:
-# "If the ratio is nearly 1 ... the episode is easy; if larger than 1 the
-# episode is difficult because strategic navigation is required." Route needs
-# this as much as survey — without it the answer degenerates to move_ahead × N.
-ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.1
+ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP = 1.1
 
 # Route-knowledge: snap landmarks onto the walked path with a slightly larger
 # radius than the default 1.5 m so room-scale furniture near the trajectory
@@ -1876,6 +1870,52 @@ def _full_graph_geodesic_m(graph, n0: str, n1: str) -> Optional[float]:
         return None
 
 
+def _percentile_of(values: Sequence[float], percentile: float) -> float:
+    ordered = sorted(float(v) for v in values)
+    idx = max(0, int(float(percentile) * (len(ordered) - 1)))
+    return ordered[idx]
+
+
+def _scene_pair_geodesics_and_ratios(
+    graph, node_ids: Sequence[str]
+) -> tuple[list[float], list[float]]:
+    """Full-graph geodesic metres and geo/eucl ratios for unique node pairs.
+
+    One Dijkstra per source. Pairs with no path or zero Euclidean are skipped
+    (same filters ``_class4_pair_reject_reason`` applies before the ratio gate).
+    """
+    import networkx as nx
+
+    uniq = [n for n in dict.fromkeys(node_ids) if n in graph]
+    if len(uniq) < 2:
+        return [], []
+    geos: list[float] = []
+    ratios: list[float] = []
+    xz: dict[str, Optional[tuple[float, float]]] = {}
+    for nid in uniq:
+        d = xyz_as_dict(graph.nodes[nid].get('pos'))
+        xz[nid] = None if d is None else (d['x'], d['z'])
+    for i, src in enumerate(uniq):
+        try:
+            lengths = nx.single_source_dijkstra_path_length(graph, src, weight='weight')
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+        p0 = xz[src]
+        for dst in uniq[i + 1 :]:
+            d = lengths.get(dst)
+            if d is None or d <= 1e-9:
+                continue
+            geo = float(d)
+            geos.append(geo)
+            p1 = xz[dst]
+            if p0 is None or p1 is None:
+                continue
+            eucl = math.hypot(p0[0] - p1[0], p0[1] - p1[1])
+            if eucl > 1e-9:
+                ratios.append(geo / eucl)
+    return geos, ratios
+
+
 def calibrate_scene_geodesic_floor_m(
     graph,
     node_ids: Sequence[str],
@@ -1884,35 +1924,45 @@ def calibrate_scene_geodesic_floor_m(
 ) -> Optional[float]:
     """Scene-relative pair-length floor: a percentile of this scene's own spread.
 
-    Same shape as ``calibrate_view_radius_m`` (percentile index over the scene's
-    sorted pairwise distances), but on full-graph geodesic metres between the
-    snapped landmark nodes rather than Euclidean landmark spacing. Computed once
-    per episode and passed into ``_class4_pair_reject_reason``.
-
-    Returns None when the scene has no usable distribution (fewer than two
-    connected landmark pairs), in which case only the absolute band applies.
+    Same shape as ``calibrate_view_radius_m``. Computed once per episode.
+    Returns None when there is no usable distribution (absolute band only).
     """
-    import networkx as nx
+    geos, _ratios = _scene_pair_geodesics_and_ratios(graph, node_ids)
+    if not geos:
+        return None
+    return _percentile_of(geos, percentile)
 
-    uniq = [n for n in dict.fromkeys(node_ids) if n in graph]
-    if len(uniq) < 2:
-        return None
-    dists: list[float] = []
-    for i, src in enumerate(uniq):
-        # One Dijkstra per source, not one per pair: landmark sets reach 40.
-        try:
-            lengths = nx.single_source_dijkstra_path_length(graph, src, weight='weight')
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            continue
-        for dst in uniq[i + 1 :]:
-            d = lengths.get(dst)
-            if d is not None and d > 1e-9:
-                dists.append(float(d))
-    if not dists:
-        return None
-    dists.sort()
-    idx = max(0, int(float(percentile) * (len(dists) - 1)))
-    return float(dists[idx])
+
+def calibrate_scene_ratio_floor(
+    graph,
+    node_ids: Sequence[str],
+    *,
+    percentile: float = SCENE_PAIR_GEODESIC_PERCENTILE,
+    cap: float = ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP,
+) -> float:
+    """Scene-relative geo/eucl floor, never above ``cap``.
+
+    Same pairs and percentile as ``calibrate_scene_geodesic_floor_m``. An
+    open-plan scene whose median detour sits below the Habitat 1.1 cap gets
+    that lower, achievable bar instead of zero items.
+    """
+    _geos, ratios = _scene_pair_geodesics_and_ratios(graph, node_ids)
+    if not ratios:
+        return float(cap)
+    return min(float(cap), _percentile_of(ratios, percentile))
+
+
+def _scene_class4_floors(
+    graph, node_ids: Sequence[str], *, ratio_cap: float
+) -> tuple[Optional[float], float]:
+    """One Dijkstra pass: (geodesic floor or None, ratio floor capped)."""
+    geos, ratios = _scene_pair_geodesics_and_ratios(graph, node_ids)
+    geo_floor = (
+        _percentile_of(geos, SCENE_PAIR_GEODESIC_PERCENTILE) if geos else None
+    )
+    if not ratios:
+        return geo_floor, float(ratio_cap)
+    return geo_floor, min(float(ratio_cap), _percentile_of(ratios, SCENE_PAIR_GEODESIC_PERCENTILE))
 
 
 def _class4_pair_reject_reason(
@@ -1931,9 +1981,8 @@ def _class4_pair_reject_reason(
     (HM3D-OVON / GOAT-Bench / HSSD-200). ``min_scene_geodesic_m`` adds the
     scene-relative half of that gate (see
     ``calibrate_scene_geodesic_floor_m``); both must pass. ``min_ratio`` is the
-    geodesic/Euclidean detour gate both class-4 constructs apply: survey at
-    ``SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO`` (HSSD 1.05), route at
-    ``ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO`` (Habitat PointNav 1.1).
+    scene-calibrated geo/eucl floor from ``calibrate_scene_ratio_floor``
+    (capped at 1.1 for route, 1.05 for survey).
     """
     geo = _full_graph_geodesic_m(graph, n0, n1)
     if geo is None:
@@ -2130,8 +2179,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             oid,
         ),
     )
-    scene_geodesic_floor = calibrate_scene_geodesic_floor_m(
-        graph, [id_to_node[oid] for oid in ordered_ids]
+    route_nodes = [id_to_node[oid] for oid in ordered_ids]
+    scene_geodesic_floor, scene_ratio_floor = _scene_class4_floors(
+        graph, route_nodes, ratio_cap=ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP
     )
     # Walk order enumerates pairs; the emitted subset is ranked by difficulty
     # below. Taking the first passing pairs in walk order yields the walk's
@@ -2151,7 +2201,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 meta[goal_id]['position'],
                 n0,
                 n1,
-                min_ratio=ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
+                min_ratio=scene_ratio_floor,
                 min_scene_geodesic_m=scene_geodesic_floor,
             )
             if pair_reason:
@@ -2303,118 +2353,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
     return [fact for _rank, fact in candidates[:max_items]]
 
 
-def _passage_is_door(passage_id: Optional[str], passage_meta: Optional[dict]) -> bool:
-    """Doors only — windows are out of scope until nav_graph coverage is confirmed."""
-    meta = passage_meta or {}
-    ptype = str(meta.get('passage_type') or '').lower()
-    if ptype in ('door', 'doorway'):
-        return True
-    if ptype in ('window', 'opening', 'hole'):
-        return False
-    pid = str(passage_id or meta.get('passage_id') or meta.get('obj-id') or '')
-    low = pid.lower()
-    if low.startswith('window'):
-        return False
-    return low.startswith('door')
-
-
-def _passage_position_at(
-    episode: dict, passage_id: str, timestep: int
-) -> Optional[object]:
-    """Door pose at ``timestep`` from visible_objects, else any prior sighting."""
-    step = step_by_index(episode, int(timestep))
-    if step:
-        for oid, odata in (step.get('visible_objects') or {}).items():
-            if _landmark_matches(oid, passage_id):
-                pos = odata.get('position')
-                if pos is not None:
-                    return pos
-    for s in episode.get('steps') or []:
-        for oid, odata in (s.get('visible_objects') or {}).items():
-            if _landmark_matches(oid, passage_id):
-                pos = odata.get('position')
-                if pos is not None:
-                    return pos
-    layout = episode.get('world_layout') or {}
-    for p in layout.get('passages') or []:
-        pid = p.get('passage_id') or p.get('obj-id')
-        if pid and _landmark_matches(str(pid), passage_id):
-            pos = p.get('position')
-            if pos is not None:
-                return pos
-    return None
-
-
-def _object_visible_at_step(episode: dict, obj_id: str, timestep: int) -> bool:
-    """True if ``obj_id`` appears in visible_objects (or FOV track) at ``timestep``."""
-    step = step_by_index(episode, int(timestep))
-    if step and _visible_oid_matching(step, obj_id) is not None:
-        return True
-    for track in episode.get('object_state_track') or []:
-        if not _landmark_matches(str(track.get('object_id') or ''), obj_id):
-            continue
-        for row in track.get('states') or []:
-            if int(row.get('timestep', -1)) != int(timestep):
-                continue
-            if row.get('in_camera_fov') or row.get('visible'):
-                return True
-    return False
-
-
-def _connection_through_opening(
-    episode: dict, src_id: str, goal_id: str, meta: dict
-) -> bool:
-    """Montello vista-space evidence: open door + agent near it + goal visible.
-
-    All three must hold on the **same** timestep. Doors only (no windows).
-    """
-    layout = episode.get('world_layout') or {}
-    passage_meta = {
-        p.get('passage_id'): p
-        for p in (layout.get('passages') or [])
-        if p.get('passage_id')
-    }
-    src_region = meta.get(src_id, {}).get('region_id')
-    goal_region = meta.get(goal_id, {}).get('region_id')
-    # Same-region pairs are not through-opening survey evidence.
-    if src_region and goal_region and src_region == goal_region:
-        return False
-
-    for row in episode.get('passage_state') or []:
-        if row.get('is_open') is not True:
-            continue
-        pid = row.get('passage_id') or row.get('obj-id')
-        if not pid:
-            continue
-        pmeta = passage_meta.get(pid) or {}
-        if not _passage_is_door(pid, pmeta):
-            continue
-        fr = row.get('from_region') or pmeta.get('from_region')
-        tr = row.get('to_region') or pmeta.get('to_region')
-        if src_region and goal_region and fr is not None and tr is not None:
-            if {fr, tr} != {src_region, goal_region}:
-                continue
-        t = row.get('timestep')
-        if t is None:
-            continue
-        t = int(t)
-        door_pos = _passage_position_at(episode, pid, t)
-        if door_pos is None:
-            continue
-        agent_pos, _ = agent_pose_at_step(episode, t)
-        ap = xyz_as_dict(agent_pos)
-        dp = xyz_as_dict(door_pos)
-        if ap is None or dp is None:
-            continue
-        if math.hypot(ap['x'] - dp['x'], ap['z'] - dp['z']) > SURVEY_DOOR_AGENT_RADIUS_M:
-            continue
-        # Goal-side landmark must be visible in this same frame.
-        if not _object_visible_at_step(episode, goal_id, t):
-            continue
-        return True
-    return False
-
-
 def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
     """Plan a never-walked source→goal as collected-format actions on viewed_edges.
 
@@ -2429,7 +2367,6 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         subgraph_from_traversed_edges,
         viewed_edges_from_trajectory,
     )
-    import networkx as nx
 
     if episode.get('world_layout'):
         episode = dict(episode)
@@ -2476,8 +2413,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     viewed_sub = subgraph_from_traversed_edges(graph, viewed_edges)
     viewed_edge_list = _serialize_traversed_edges(viewed_edges)
     traversed_edge_list = _serialize_traversed_edges(edges)
-    scene_geodesic_floor = calibrate_scene_geodesic_floor_m(
-        graph, [id_to_node[oid] for oid in ids]
+    survey_nodes = [id_to_node[oid] for oid in ids]
+    scene_geodesic_floor, scene_ratio_floor = _scene_class4_floors(
+        graph, survey_nodes, ratio_cap=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO
     )
     # Same as route: collect every valid pair, then emit the hardest. Returning
     # at the first max_items hits takes them in `ids` order, which is salience,
@@ -2495,8 +2433,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             if path_exists(walked, n0, n1):
                 rejects['path_on_traversed'] += 1
                 continue
-            if not _connection_through_opening(episode, src_id, goal_id, meta):
-                rejects['no_through_door'] += 1
+            # Visual grounding: a path on the same viewed_edges subgraph scoring uses.
+            if not path_exists(viewed_sub, n0, n1):
+                rejects['no_viewed_path'] += 1
                 continue
             pair_reason = _class4_pair_reject_reason(
                 graph,
@@ -2504,17 +2443,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 meta[goal_id]['position'],
                 n0,
                 n1,
-                min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+                min_ratio=scene_ratio_floor,
                 min_scene_geodesic_m=scene_geodesic_floor,
             )
             if pair_reason:
                 rejects[pair_reason] += 1
                 continue
-            try:
-                path = shortest_path(viewed_sub, n0, n1)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                rejects['no_viewed_path'] += 1
-                continue
+            path = shortest_path(viewed_sub, n0, n1)
             if len(path) < 2:
                 rejects['empty_path'] += 1
                 continue
@@ -2571,7 +2506,6 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                         f'nav_graph.viewed_edges.shortest_path[{n0}→{n1}]',
                         'follow_path_actions(viewed_subgraph)',
                         f'nav_graph.traversed_edges.no_path[{n0}→{n1}]',
-                        'passage_state through-opening (same timestep)',
                         f'nav_graph.viewed_edges.radius={view_radius:.3f}',
                     ],
                     image_paths=images,
@@ -2616,7 +2550,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 construct='survey_based_route_planning',
                 status='unsupported',
                 reason=_format_pair_rejects(
-                    rejects, 'no_through_opening_untraversed_landmark_pair'
+                    rejects, 'no_untraversed_viewed_landmark_pair'
                 ),
                 extra={'pair_reject_counts': dict(rejects)},
             )

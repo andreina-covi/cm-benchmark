@@ -96,9 +96,9 @@ at least one unwalked edge). Stored `answer` is a reference sequence for
 analysis, not exclusive gold.
 
 Pair selection (both class-4 constructs): geodesic in 1–30 m **and** at least
-the scene’s own typical landmark-pair length; a detour ratio so the path is
-not a straight shot; emit the hardest surviving pairs. Route also requires
-real turns. Constants: `planner.py`.
+the scene’s own typical landmark-pair length; a detour ratio of at least this
+scene’s typical geo/eucl (capped at 1.1 for route, 1.05 for survey); emit the
+hardest surviving pairs. Route also requires real turns. Constants: `planner.py`.
 
 ---
 

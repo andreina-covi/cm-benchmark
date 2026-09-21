@@ -173,11 +173,10 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   `calibrate_scene_geodesic_floor_m` — the `SCENE_PAIR_GEODESIC_PERCENTILE`
   (0.5) point of that scene's own landmark-pair geodesic spread, computed once
   per episode with the same nearest-rank convention as
-  `calibrate_view_radius_m`. Both halves apply, not either/or: the 1–30 m band
-  is absolute and calibrated on large real-scanned homes, so in a small
-  ProcTHOR house every pair can sit just above the 1 m floor and the band stops
-  discriminating. Reject reason is `geodesic_below_scene_median`. Route also applies
-  `ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.1; Habitat PointNav) and a real-turn
+  `calibrate_scene_geodesic_floor_m`. Route's detour gate is
+  `calibrate_scene_ratio_floor` capped at `ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP`
+  (1.1): `min(1.1, scene p50)` so open-plan scenes still emit items. Route also applies
+  a real-turn
   band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` (2–12), counting
   contiguous rotations once (`count_direction_changes`) — raw rotation tokens
   overcount. Straight single-room scenes therefore report `unsupported` with
@@ -187,9 +186,8 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   8-neighbor step of `max(grid_size, agent_move_m)` (exports are
   `snap_to_grid=False`; half `grid_size` is too tight at 0.15 m); landmarks
   snap to visited nodes within `ROUTE_LANDMARK_SNAP_M` (2.5 m).
-- `survey_based_route_planning` requires: no path on traversed_edges; same-
-  timestep through-door evidence (open + agent near door + goal visible;
-  doors only); agent ≥ `SURVEY_MIN_AGENT_SOURCE_DIST_M` (1.0 m, ObjectNav/GOAT
+- `survey_based_route_planning` requires: no path on traversed_edges; a path
+  on `viewed_edges` (the same subgraph scoring uses); agent ≥ `SURVEY_MIN_AGENT_SOURCE_DIST_M` (1.0 m, ObjectNav/GOAT
   success zone) from source at the source sighting frame; geodesic 1–30 m
   plus `SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.05; HSSD nearly-straight) on
   the **full** nav_graph; `viewed_edges` radius proxy around the trajectory

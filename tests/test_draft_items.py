@@ -162,9 +162,7 @@ def _two_room_episode() -> dict:
     """Two rooms joined by one open door; the agent only ever walks room A.
 
     Room B is sighted through the doorway, so every A-B pair is never-walked but
-    viewed — the survey_based_route_planning setup. The collected episodes on
-    hand have no through-door evidence at all, so this is the only scene that
-    exercises the construct end to end.
+    viewed — the survey_based_route_planning setup.
     """
     g = 0.25
 
@@ -1058,19 +1056,12 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
 
 def test_route_rejects_straight_and_turnless_pairs(straight_corridor_episode):
     """Straight-line pairs are rejected by name, so small scenes stay honest."""
-    from cm_benchmark.generation.planner import (
-        ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
-        ROUTE_MIN_TURN_COUNT,
-        plan_route_knowledge,
-    )
+    from cm_benchmark.generation.planner import plan_route_knowledge
 
     facts = plan_route_knowledge(straight_corridor_episode, max_items=2)
     assert all(f.status == 'unsupported' for f in facts)
     reason = facts[0].reason or ''
-    assert (
-        f'geodesic_euclidean_ratio_lt_{ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO:g}' in reason
-        or f'turns_lt_{ROUTE_MIN_TURN_COUNT}' in reason
-    )
+    assert 'turns_lt_' in reason or 'geodesic_euclidean_ratio_lt_' in reason
 
 
 def test_route_emits_hardest_pairs_first(u_corridor_episode):
@@ -1163,6 +1154,24 @@ def test_survey_reference_scores_valid_success(two_room_episode):
         assert score['novel_edges'], 'survey must leave the traversed edge set'
 
 
+def test_survey_does_not_require_through_door_evidence(two_room_episode):
+    """Viewed-edge path existence is the visual-grounding gate, not a door instant."""
+    from cm_benchmark.generation.planner import plan_survey_based_route_planning
+
+    episode = dict(two_room_episode)
+    episode['passage_state'] = []
+    facts = [
+        f
+        for f in plan_survey_based_route_planning(episode, max_items=99)
+        if f.status == 'ok'
+    ]
+    assert facts, 'survey must emit without passage_state / through-door coupling'
+    for fact in facts:
+        joined = ' '.join(fact.answer_source or [])
+        assert 'through-opening' not in joined
+        assert 'passage_state' not in joined
+
+
 def test_scene_geodesic_floor_is_per_scene_and_adds_to_absolute_band():
     """Scene-relative floor: a percentile of this scene's own pair distribution."""
     import networkx as nx
@@ -1204,6 +1213,39 @@ def test_scene_geodesic_floor_is_per_scene_and_adds_to_absolute_band():
     assert calibrate_scene_geodesic_floor_m(g, []) is None
 
 
+def test_scene_ratio_floor_is_capped_and_falls_back_on_open_plan():
+    """Working ratio is min(1.1, scene p50): open-plan scenes get an achievable bar."""
+    import networkx as nx
+    from cm_benchmark.generation.planner import (
+        ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP,
+        calibrate_scene_ratio_floor,
+    )
+
+    assert ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP == 1.1
+
+    straight = nx.Graph()
+    for i in range(5):
+        straight.add_node(f'n{i}', pos=(2.0 * i, 1.0, 0.0))
+    for i in range(4):
+        straight.add_edge(f'n{i}', f'n{i + 1}', weight=2.0)
+    nodes = [f'n{i}' for i in range(5)]
+    open_floor = calibrate_scene_ratio_floor(straight, nodes)
+    assert open_floor == 1.0
+    assert open_floor < ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP
+
+    # Opposite corners of a 10 m square: geo=20, eucl≈14.14, ratio≈1.41 → cap.
+    detour = nx.Graph()
+    detour.add_node('a', pos=(0.0, 1.0, 0.0))
+    detour.add_node('b', pos=(10.0, 1.0, 0.0))
+    detour.add_node('c', pos=(10.0, 1.0, 10.0))
+    detour.add_edge('a', 'b', weight=10.0)
+    detour.add_edge('b', 'c', weight=10.0)
+    capped = calibrate_scene_ratio_floor(detour, ['a', 'c'])
+    assert capped == ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP
+
+    assert calibrate_scene_ratio_floor(straight, []) == ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP
+
+
 def test_scene_geodesic_floor_is_stricter_than_the_absolute_floor(u_corridor_episode):
     """On a real scene the scene-relative floor binds where the 1 m band does not."""
     from cm_benchmark.generation.planner import (
@@ -1230,7 +1272,7 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
     from cm_benchmark.generation.planner import (
         MIN_PAIR_GEODESIC_M,
         MAX_PAIR_GEODESIC_M,
-        ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
+        ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP,
         SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
         _class4_pair_reject_reason,
     )
@@ -1239,21 +1281,20 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
     assert MIN_PAIR_GEODESIC_M == 1.0
     assert MAX_PAIR_GEODESIC_M == 30.0
     assert SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.05
-    # Habitat's PointNav generator applies geo/eucl >= 1.1 to every episode.
-    assert ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.1
+    assert ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP == 1.1
 
     g = nx.Graph()
     g.add_node('n0', pos=(0.0, 1.0, 0.0))
     g.add_node('n1', pos=(4.0, 1.0, 0.0))
     g.add_edge('n0', 'n1', weight=4.0)
-    # Straight corridor, geo=4 m, ratio=1.0: length passes, both ratio gates reject.
+    # Straight corridor, geo=4 m, ratio=1.0: length passes, both ratio caps reject.
     assert (
         _class4_pair_reject_reason(
             g, {'x': 0.0, 'z': 0.0}, {'x': 4.0, 'z': 0.0}, 'n0', 'n1', min_ratio=None
         )
         is None
     )
-    for ratio in (SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO, ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO):
+    for ratio in (SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO, ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP):
         assert (
             _class4_pair_reject_reason(
                 g,
@@ -1685,9 +1726,8 @@ def test_survey_based_route_planning_unsupported_without_novel_path(folder_episo
             or 'novel' in reason
             or 'landmark' in reason
             or 'untraversed' in reason
-            or 'through_opening' in reason
-            or 'through-opening' in reason
-            or 'opening' in reason
+            or 'viewed' in reason
+            or 'traversed' in reason
         )
         return
     fact = facts[0]

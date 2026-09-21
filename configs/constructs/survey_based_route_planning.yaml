@@ -3,8 +3,8 @@ survey_based_route_planning:
   class: 4
   frame_of_reference: allocentric
   definition: >
-    Plan a never-walked source→goal using layout knowledge. Evidence is a
-    through-door glimpse, not a walked route.
+    Plan a never-walked source→goal using layout knowledge from what was
+    seen, not a walked route.
   what_moves: none required
   answer_type: >
     ordered sequence of collected navigation actions
@@ -14,22 +14,21 @@ survey_based_route_planning:
   required_temporal_fields:
     - agent_trajectory
     - nav_graph
-    - passage_state
   question_template:
     - Using your knowledge of the environment's layout, list the navigation actions that
       take you from the {source} to the {goal}.
     - Based on what you've seen of this space, list the navigation actions, in order, that
       go from the {source} to the {goal}.
   ground_truth_method: >
-    Source and goal are named landmarks with no path on traversed_edges.
-    The link is evidenced by an open door (agent near the door, goal
-    visible in that same frame). The path is the shortest walk on
-    viewed_edges. Same scoring simulator as route_knowledge. Keep only
-    non-trivial pairs; emit the hardest surviving ones.
+    Source and goal are named landmarks with no path on traversed_edges
+    and a path on viewed_edges (what was actually seen). The path is the
+    shortest walk on viewed_edges. Same scoring simulator as
+    route_knowledge. Keep only non-trivial pairs; emit the hardest
+    surviving ones.
   distractor_pattern: []
   discriminators:
     - queried path was never walked (absent from traversed_edges)
-    - through-door evidence on one timestep (open door, agent near it, goal visible)
+    - a path exists on viewed_edges (answerable from what was seen)
     - agent is not standing at the source when it is first sighted
     - the planned walk is non-trivial
     - free action sequence; [CODE] scores viewed_edges validity + SPL
