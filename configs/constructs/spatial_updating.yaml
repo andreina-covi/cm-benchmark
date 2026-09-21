@@ -1,40 +1,26 @@
-# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
-# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+# Excerpt of configs/taxonomy.yaml. Edit taxonomy first, then re-sync.
 spatial_updating:
   class: 3
   frame_of_reference: egocentric
-  definition: Update own position/heading after REAL movement; report a static object's bearing.
+  definition: Update own position/heading after real movement; report a static object's bearing.
   what_moves: observer (real, executed actions)
   answer_type: egocentric direction at the post-move pose
   required_temporal_fields:
-  - agent_trajectory
-  - agent_actions
-  - object_state_track
-  question_template: Considering the last {k} navigation steps, where is the {object_type}
-    relative to you now?
-  ground_truth_method: 'Net pose change between encode_step and query_step is verified from
-    real agent_trajectory positions/headings, never from action count alone — a logged action
-    can be a no-op (blocked move, an in-place rotation reversed by a later step) and produce
-    no real pose delta. Reject the item if position delta AND heading delta between agent_pose@encode_step
-    and agent_pose@query_step both fall under a minimum tolerance. If two candidate items
-    on the same object share the same encode_step and produce an identical computed answer
-    at two different query_steps, that signals no real bearing change occurred — drop the
-    later one rather than emitting both (this is the exact pattern the original house_007514
-    review flagged on the HousePlant pair). Object position confirmed UNCHANGED via object_state,
-    not assumed. Bearing recomputed independently from agent_pose@query_step + object_position,
-    never trusted from a cached value.
-
-    '
+    - agent_trajectory
+    - agent_actions
+    - object_state_track
+  question_template: >
+    Considering the last {k} navigation steps, where is the {object_type} relative to you now?
+  ground_truth_method: >
+    Confirm a real pose change (position or heading) between encode and
+    query — not action count alone. Object stays put (object_state_track).
+    Answer is the object's bearing at the new pose.
   distractor_pattern:
-  - pre_move_bearing
-  - opposite_turn_bearing
-  - over_rotation_bearing
+    - pre_move_bearing
+    - opposite_turn_bearing
+    - over_rotation_bearing
   discriminators:
-  - object position UNCHANGED (only the agent moves) — confirmed via object_state
-  - net pose change (position delta OR heading delta) between encode_step and query_step exceeds
-    the calibrated minimum tolerance — action count alone is not sufficient evidence of movement
-  - queried object NOT visible at the final pose
-  - answer computed from agent_pose@final + object_position, recomputed independently rather
-    than trusted from any cached field
-  - reject duplicate items on the same object/encode_step pair whose computed answers are
-    identical across two query_steps
+    - object position unchanged (only the agent moves)
+    - net pose change between encode and query — action count is not enough
+    - queried object not visible at the final pose
+    - answer recomputed from the final pose + object position

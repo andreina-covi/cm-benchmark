@@ -1,57 +1,29 @@
-# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
-# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+# Excerpt of configs/taxonomy.yaml. Edit taxonomy first, then re-sync.
 route_knowledge:
   class: 4
   frame_of_reference: egocentric
-  definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
+  definition: Retrace an experienced path as an ordered action sequence.
   what_moves: observer (along a previously traversed route)
-  answer_type: 'ordered sequence of collected navigation actions (move_ahead, rotate_left,
-    rotate_right, move_back). Not MCQ. [CODE] score = metric-simulate the parsed actions
-    (agent_move_m / agent_rotation_deg), snap each pose, and return success / validity /
-    efficiency separately.
-
-    '
+  answer_type: >
+    ordered sequence of collected navigation actions
+    (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
+    [CODE] scores success / validity / SPL on the walked graph.
   required_temporal_fields:
-  - agent_trajectory
-  - nav_graph
-  question_template: List, in order, the navigation actions you took to travel from the
+    - agent_trajectory
+    - nav_graph
+  question_template: >
+    List, in order, the navigation actions you took to travel from the
     {source} to the {goal}.
-  ground_truth_method: 'Source/goal are landmarks chosen via select_landmark_candidates()
-    (salience-filtered through the visibility classifier, top-N weighted sample per region;
-    unique_category=False — never nearest-distance, never uniform-random). Duplicate
-    categories stay if _referring_display_name uniquely names them (GOAT-Bench 2024 instance
-    language; shared_rules referring-expression exception). Snap each landmark to the
-    nearest visited nav_graph node (naming stays on the landmark; pathfinding uses the
-    node). Reject pairs whose full-nav_graph geodesic is outside [MIN_PAIR_GEODESIC_M,
-    MAX_PAIR_GEODESIC_M] (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200 2024) or whose
-    geodesic/Euclidean ratio is below ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO (1.1; Habitat
-    PointNav — near 1.0 means a straight shot needing no strategic navigation). Build
-    traversed_edges once per episode from
-    consecutive snapped agent poses (undirected set). Reference path = shortest_path()
-    on the nav_graph subgraph restricted to traversed_edges. Reject if no path exists or
-    hop count is below ROUTE_MIN_HOP_COUNT (2; one real edge — not R2R''s 4–6). Stored
-    answer is follow_path_actions() on that path (analysis reference only): a greedy
-    follower with a continuous pose, since one move_ahead per lattice hop emits a
-    rotation at every staircase step of an axis-aligned grid. Real turns (contiguous
-    rotations count once) must fall in [ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]
-    (2–12) — a turnless walk is answerable from a language prior. The reference is
-    replayed through the scorer and dropped unless it is a valid success. Emitted pairs
-    are the hardest surviving ones (turns, then geodesic), not the first in walk order.
-    Evaluation
-    metric-simulates the model''s parsed actions: snap each pose, filter traversed_edges to
-    exported graph edges, then score success (final snap within goal tolerance), validity
-    (every crossed edge is in that filtered set; illegal edges are logged), SPL
-    efficiency given success (S * ℓ / max(p, ℓ)), and route_efficiency (same SPL given
-    success and validity). Headline construct scores are route_success and
-    route_efficiency.
-
-    '
+  ground_truth_method: >
+    Source and goal are named landmarks on the walked trajectory.
+    The path is the shortest walk on traversed_edges. Stored answer is a
+    reference action sequence for analysis; scoring is metric simulation.
+    Keep only non-trivial walks (length, detour, and real turns); emit
+    the hardest surviving pairs. A scene with no such walk is unsupported.
   distractor_pattern: []
   discriminators:
-  - the queried route WAS previously traversed by the agent (path exists on traversed_edges)
-  - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
-  - path length >= ROUTE_MIN_HOP_COUNT (2) and full-graph geodesic in [1, 30] m
-  - geodesic/Euclidean ratio >= 1.1 and real turn count in [2, 12]
-  - answer is a free action sequence in the collected vocabulary, not MCQ
-  - '[CODE] scorer: success, validity, SPL, route_efficiency (SPL | valid-success); illegal edges logged'
-  - INVALID if the queried source-goal route was not previously traversed by the agent
+    - the queried route was previously traversed (path on traversed_edges)
+    - source and goal are named landmarks, not graph nodes
+    - the walk is non-trivial (not a short straight shot)
+    - free action sequence; [CODE] scores success / validity / SPL
+    - INVALID if that source–goal walk was not previously traversed

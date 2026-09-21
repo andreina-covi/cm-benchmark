@@ -1,13 +1,7 @@
-# ============================================================
-# taxonomy.yaml  —  configs/taxonomy.yaml
-# Single source of truth for the capability axis of the benchmark.
-# Every per-construct file under configs/constructs/ for classes 2–4
-# (invisible_displacement, spatial_updating, perspective_taking,
-# route_knowledge, survey_based_route_planning) is a synced excerpt of the
-# matching block below. Prefer editing THIS file, then re-export excerpts.
-# Class-1 and spatial_working_memory still use longer generator-style YAMLs.
-# Do not redefine construct semantics elsewhere.
-# ============================================================
+# taxonomy.yaml — construct definitions for the capability axis.
+# This file states *what each construct tests*, not how the generator
+# implements it. Implementation: src/cm_benchmark/generation/planner.py
+# and docs/generation.md.
 
 version: 0.1
 description: >
@@ -148,21 +142,12 @@ class_2:
           The {object_type} was moved to where the {other_object_type} used to be.
           Where is the {object_type} relative to you now?
       ground_truth_method: >
-        Exporter (e.g. SPOC) logs the hidden move plus trial-teleport distractor poses
-        (then restores). This repo computes egocentric labels from agent_pose@query_step
-        and world poses (chosen / from / candidate positions). Floor destinations are
-        checked per-instance, not rejected wholesale: if to_receptacle == Floor,
-        search for a nearest_landmark within FLOOR_ANCHOR_RADIUS (default 1.2m,
-        calibrate per scene) of the object's true final position; reject only
-        that specific candidate if none is found. {new_location} resolves to
-        either the receptacle name (non-Floor) or "the floor near the
-        {landmark}" (Floor case) — never a bare "Floor" cue. Swap items use a
-        distinguishable partner object seen before the swap instead — never
-        both cue types in one question. Do not emit receptacle-name-only or
-        bare-Floor questions (no destination cue).
+        Hidden move from displacement_events. Answer is the object's
+        egocentric bearing at the query pose. Floor destinations need a
+        nearby named landmark ("the floor near the {landmark}"), never a
+        bare Floor. Swap items name a previously seen partner object instead
+        of a receptacle.
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
-      # original_location = A-not-B (from_pos). nearby/salient = trial teleports.
-      # Reject if any two options share the same ego label.
       discriminators:
         - queried object was distinguishable, then hidden, before it moved
         - displacement_event.hidden_during == true
@@ -198,43 +183,22 @@ class_3:
       question_template: >-
         Considering the last {k} navigation steps, where is the {object_type} relative to you now?
       ground_truth_method: >
-        Net pose change between encode_step and query_step is verified from
-        real agent_trajectory positions/headings, never from action count
-        alone — a logged action can be a no-op (blocked move, an in-place
-        rotation reversed by a later step) and produce no real pose delta.
-        Reject the item if position delta AND heading delta between
-        agent_pose@encode_step and agent_pose@query_step both fall under a
-        minimum tolerance. If two candidate items on the same object share the
-        same encode_step and produce an identical computed answer at two
-        different query_steps, that signals no real bearing change occurred —
-        drop the later one rather than emitting both (this is the exact
-        pattern the original house_007514 review flagged on the HousePlant
-        pair). Object position confirmed UNCHANGED via object_state, not
-        assumed. Bearing recomputed independently from agent_pose@query_step +
-        object_position, never trusted from a cached value.
+        Confirm a real pose change (position or heading) between encode and
+        query — not action count alone. Object stays put (object_state_track).
+        Answer is the object's bearing at the new pose.
       distractor_pattern: [pre_move_bearing, opposite_turn_bearing, over_rotation_bearing]
       discriminators:
-        - object position UNCHANGED (only the agent moves) — confirmed via object_state
-        - net pose change (position delta OR heading delta) between encode_step
-          and query_step exceeds the calibrated minimum tolerance — action
-          count alone is not sufficient evidence of movement
-        - queried object NOT visible at the final pose
-        - answer computed from agent_pose@final + object_position, recomputed
-          independently rather than trusted from any cached field
-        - reject duplicate items on the same object/encode_step pair whose
-          computed answers are identical across two query_steps
+        - object position unchanged (only the agent moves)
+        - net pose change between encode and query — action count is not enough
+        - queried object not visible at the final pose
+        - answer recomputed from the final pose + object position
 
     perspective_taking:
       class: 3
       frame_of_reference: allocentric         # an IMAGINED viewpoint's frame
       definition: >
-        Compute a relation from an imagined viewpoint: standing at landmark A,
-        facing landmark B (heading = direction A->B), report where a third
-        landmark C is. This is the Object Perspective/Spatial Orientation Test
-        paradigm (Kozhevnikov & Hegarty, 2001) — heading is defined RELATIONALLY
-        by two positions, not by any object's intrinsic front, which removes the
-        prior blocker (reference_entity_facing_heading unavailable in AI2-THOR)
-        with zero new metadata needed.
+        Standing at landmark A, facing B, report where landmark C is.
+        Heading is A→B (two positions), not an object's intrinsic front.
       what_moves: observer (imagined; viewpoint adopted, not executed)
       # Difficulty: angle between agent heading and imagined A-facing-B heading (0-180 deg).
       difficulty_axis: [perspective_shift_magnitude]
@@ -244,15 +208,10 @@ class_3:
       question_template: >-
         Imagine standing at the {A}, facing the {B}. From that position, where is the {C}?
       ground_truth_method: >
-        A, B, C are three distinct landmarks, each distinguishable in >=1 shown
-        frame (same visibility-grounding standard as every other construct).
-        Imagined heading = normalize(pos(B) - pos(A)). Answer = C's position
-        transformed into the egocentric frame defined by (pos(A), imagined
-        heading) — a standard 2D rotation, computed from real positions only.
+        Three distinguishable landmarks A, B, C. Imagined heading is A→B.
+        Answer is where C sits in that frame (left / right / behind).
+        No object-intrinsic facing is required.
       distractor_pattern: [camera_frame_answer, mirrored_left_right, wrong_facing_assumption]
-      # camera_frame_answer = C relative to agent's ACTUAL pose (most common shortcut).
-      # mirrored_left_right = correct axis, flipped sign (Kozhevnikov & Hegarty, 2001).
-      # wrong_facing_assumption = heading toward the wrong reference object.
       discriminators:
         - A, B, C are three distinct landmarks, each distinguishable in >=1 shown frame
         - agent does NOT actually move to viewpoint A (no real action — imagined only)
@@ -272,82 +231,43 @@ class_4:
 
     route_knowledge:
       class: 4
-      frame_of_reference: egocentric          # procedural, sequential route representation
-      definition: Retrace / recall an EXPERIENCED path as an ordered sequence.
+      frame_of_reference: egocentric
+      definition: Retrace an experienced path as an ordered action sequence.
       what_moves: observer (along a previously traversed route)
       answer_type: >
         ordered sequence of collected navigation actions
-        (move_ahead, rotate_left, rotate_right, move_back).
-        Not MCQ. [CODE] score = metric-simulate the parsed actions
-        (agent_move_m / agent_rotation_deg), snap each pose, and return
-        success / validity / efficiency separately.
-      # No agent_actions: the reference is rebuilt from the graph path plus the
-      # trajectory yaw, and class-4 items carry no agent_actions (same as survey).
+        (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
+        [CODE] scores success / validity / SPL on the walked graph.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
         List, in order, the navigation actions you took to travel from the
         {source} to the {goal}.
       ground_truth_method: >
-        Source/goal are landmarks chosen via select_landmark_candidates()
-        (salience-filtered through the visibility classifier, top-N weighted
-        sample per region; unique_category=False — never nearest-distance,
-        never uniform-random). Duplicate categories stay if
-        _referring_display_name uniquely names them (GOAT-Bench 2024 instance
-        language; shared_rules referring-expression exception). Snap each
-        landmark to the nearest visited nav_graph node (naming stays on the
-        landmark; pathfinding uses the node). Reject pairs whose full-nav_graph
-        geodesic is outside [MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M] (1–30 m;
-        HM3D-OVON / GOAT-Bench / HSSD-200 2024) or whose geodesic/Euclidean
-        ratio is below ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO (1.1; Habitat PointNav
-        — near 1.0 means a straight shot needing no strategic navigation).
-        Build traversed_edges once per episode from
-        consecutive snapped agent poses (undirected set). Reference path =
-        shortest_path() on the nav_graph subgraph restricted to traversed_edges.
-        Reject if no path exists or hop count is below ROUTE_MIN_HOP_COUNT (2;
-        one real edge — not R2R's 4–6). Stored answer is follow_path_actions()
-        on that path (analysis reference only): a greedy follower with a
-        continuous pose, since one move_ahead per lattice hop emits a rotation
-        at every staircase step of an axis-aligned grid. Real turns (contiguous
-        rotations count once) must fall in [ROUTE_MIN_TURN_COUNT,
-        ROUTE_MAX_TURN_COUNT] (2–12) — a turnless walk is answerable from a
-        language prior. The reference is replayed through the scorer and dropped
-        unless it is a valid success. Emitted pairs are the hardest surviving
-        ones (turns, then geodesic), not the first in walk order.
-        Evaluation metric-simulates the
-        model's parsed actions: snap each pose, filter traversed_edges to
-        exported graph edges, then score success (final snap within goal
-        tolerance), validity (every crossed edge is in that filtered set;
-        illegal edges are logged), SPL efficiency given success
-        (S * ℓ / max(p, ℓ)), and route_efficiency (same SPL given
-        success and validity). Headline construct scores are
-        route_success and route_efficiency.
+        Source and goal are named landmarks on the walked trajectory.
+        The path is the shortest walk on traversed_edges. Stored answer is a
+        reference action sequence for analysis; scoring is metric simulation.
+        Keep only non-trivial walks (length, detour, and real turns); emit
+        the hardest surviving pairs. A scene with no such walk is unsupported.
       distractor_pattern: []
       discriminators:
-        - the queried route WAS previously traversed by the agent (path exists on traversed_edges)
-        - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
-        - path length >= ROUTE_MIN_HOP_COUNT (2) and full-graph geodesic in [1, 30] m
-        - geodesic/Euclidean ratio >= 1.1 and real turn count in [2, 12]
-        - answer is a free action sequence in the collected vocabulary, not MCQ
-        - '[CODE] scorer: success, validity, SPL, route_efficiency (SPL | valid-success); illegal edges logged'
-        - INVALID if the queried source-goal route was not previously traversed by the agent
+        - the queried route was previously traversed (path on traversed_edges)
+        - source and goal are named landmarks, not graph nodes
+        - the walk is non-trivial (not a short straight shot)
+        - free action sequence; [CODE] scores success / validity / SPL
+        - INVALID if that source–goal walk was not previously traversed
 
     survey_based_route_planning:
       class: 4
-      frame_of_reference: allocentric          # configurational, map-like representation
+      frame_of_reference: allocentric
       definition: >
-        Plan a NEVER-walked source→goal as an ordered navigation-action
-        sequence using survey (layout) knowledge. Evidence of the link is a
-        same-timestep through-door glimpse (Montello vista space), not a walked
-        route. Distinct from route_knowledge, which recalls an experienced walk
-        and is scored on the traversed subgraph only.
+        Plan a never-walked source→goal using layout knowledge. Evidence is a
+        through-door glimpse, not a walked route.
       what_moves: none required
       answer_type: >
         ordered sequence of collected navigation actions
-        (move_ahead, rotate_left, rotate_right, move_back).
-        Not MCQ. [CODE] score = metric-simulate the parsed actions
-        (same simulator as route_knowledge). Success = goal tolerance;
-        validity = path ⊆ viewed_edges and at least one edge ∉ traversed_edges;
-        efficiency = SPL on the viewed_edges subgraph.
+        (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
+        [CODE] scores success / validity / SPL on viewed_edges
+        (must use at least one unwalked edge).
       required_temporal_fields: [agent_trajectory, nav_graph, passage_state]
       question_template:
         - >-
@@ -357,42 +277,18 @@ class_4:
           Based on what you've seen of this space, list the navigation
           actions, in order, that go from the {source} to the {goal}.
       ground_truth_method: >
-        Source/goal selected via select_landmark_candidates(unique_category=False)
-        and snapped with snap_landmark_to_graph(). Duplicate categories stay if
-        uniquely nameable via _referring_display_name. Never-traversed check:
-        shortest_path() on the traversed_edges subgraph must NOT exist.
-        Reference path = shortest_path() on the viewed_edges subgraph — not the
-        full nav_graph, since validity is scored on viewed_edges — and the
-        stored answer is follow_path_actions() on it (analysis reference only),
-        replayed through the scorer and dropped unless it is a valid success.
-        Perceptual
-        evidence: same timestep with door is_open, agent within door radius,
-        and goal-side landmark visible (doors only; windows out of scope).
-        Reject if agent is within SURVEY_MIN_AGENT_SOURCE_DIST_M (1.0 m,
-        ObjectNav/GOAT success zone) of the source at the source sighting
-        frame. Reject pairs whose full-nav_graph geodesic is outside 1–30 m
-        (HM3D-OVON / GOAT-Bench / HSSD-200) or whose geo/eucl ratio is below
-        SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO (1.05; HSSD nearly-straight).
-        Shown-frame captions: "source sighted" / "goal sighted". viewed_edges
-        is a radius proxy (not depth/raycasting): a node is viewed if it lies
-        within a scene-calibrated radius of any agent_trajectory pose; an edge
-        is viewed if both endpoints are. Evaluation uses the route metric
-        simulator; validity requires the walk stay on viewed_edges and leave
-        traversed_edges at least once. Efficiency is SPL against the
-        viewed_edges shortest path.
+        Source and goal are named landmarks with no path on traversed_edges.
+        The link is evidenced by an open door (agent near the door, goal
+        visible in that same frame). The path is the shortest walk on
+        viewed_edges. Same scoring simulator as route_knowledge. Keep only
+        non-trivial pairs; emit the hardest surviving ones.
       distractor_pattern: []
       discriminators:
-        - queried path is absent from the traversed_edges subgraph (never walked)
-        - >
-          the connection between {source} and {goal} is evidenced through a
-          specific open door on one timestep: agent near that door AND the
-          goal-side landmark visible in that same frame (doors only; no windows)
-        - >
-          agent pose at the source sighting frame is at least
-          SURVEY_MIN_AGENT_SOURCE_DIST_M (1.0 m) from the source landmark
-          (prevents collapse into egocentric_encoding)
-        - full-graph geodesic in [1, 30] m; geo/eucl >= 1.05 (HSSD nearly-straight)
-        - answer is a free action sequence; [CODE] scorer uses viewed_edges validity + SPL
+        - queried path was never walked (absent from traversed_edges)
+        - through-door evidence on one timestep (open door, agent near it, goal visible)
+        - agent is not standing at the source when it is first sighted
+        - the planned walk is non-trivial
+        - free action sequence; [CODE] scores viewed_edges validity + SPL
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
 # (Core fields are always present; these are the construct-dependent ones.)

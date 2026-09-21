@@ -169,7 +169,14 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   scene. Path = shortest_path on traversed_edges; min hops =
   `ROUTE_MIN_HOP_COUNT` (2, not a fixed R2R 4–6); class-4 pair length is
   full-nav_graph geodesic in `[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]`
-  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200). Route also applies
+  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200) **and** at or above
+  `calibrate_scene_geodesic_floor_m` — the `SCENE_PAIR_GEODESIC_PERCENTILE`
+  (0.5) point of that scene's own landmark-pair geodesic spread, computed once
+  per episode with the same nearest-rank convention as
+  `calibrate_view_radius_m`. Both halves apply, not either/or: the 1–30 m band
+  is absolute and calibrated on large real-scanned homes, so in a small
+  ProcTHOR house every pair can sit just above the 1 m floor and the band stops
+  discriminating. Reject reason is `geodesic_below_scene_median`. Route also applies
   `ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.1; Habitat PointNav) and a real-turn
   band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` (2–12), counting
   contiguous rotations once (`count_direction_changes`) — raw rotation tokens
@@ -189,7 +196,10 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   (scene-calibrated); frame captions "source sighted" / "goal sighted". The
   reference path is `shortest_path` on the **viewed** subgraph, not the full
   graph — validity is scored on `viewed_edges`, so a full-graph path would be
-  stored as an answer the scorer marks invalid.
+  stored as an answer the scorer marks invalid. Survey ranks and emits pairs
+  hardest-first on the same `(turn_count, geodesic_m, hop_count)` key as route;
+  returning the first `max_items` hits walks `ids` in salience order, which is
+  uncorrelated with difficulty.
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.
