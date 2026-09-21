@@ -29,12 +29,20 @@ _TRAJECTORY_HOOKS = frozenset(
         'survey_based_route_planning',
     }
 )
-# Actions inside the item's encoding -> query window only. route_knowledge is
-# excluded: its answer *is* the action sequence, so the raw list would leak it.
+# Actions inside the item's encoding -> query window only. Class-4 is
+# excluded: the model must produce the action sequence; attaching the
+# collected list would leak the answer.
 _ACTIONS_HOOKS = frozenset(
     {
         'spatial_working_memory',
         'spatial_updating',
+    }
+)
+# Free-form collected-format actions; scored by graph reach, not MCQ.
+_FREEFORM_ACTION_CONSTRUCTS = frozenset(
+    {
+        'route_knowledge',
+        'survey_based_route_planning',
     }
 )
 # Taxonomy shared_rules exception: verbose may name other static scene objects
@@ -233,24 +241,16 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
         parts.append(
-            f'Retrace the walked route from {src} to {goal} based on the path '
-            'you have followed so far. Choose the matching turn sequence.'
+            f'Retrace the walked route from the {src} to the {goal}.'
         )
     elif fact.construct == 'survey_based_route_planning':
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
-        mode = extra.get('template_mode') or 'direction_distance'
-        if mode == 'conditional_detour':
-            cond = extra.get('condition') or 'a passage is closed'
-            parts.append(
-                f'Use the layout to decide the first heading from {src} toward {goal} '
-                f'under the recorded condition ({cond}). This is not a turn sequence.'
-            )
-        else:
-            parts.append(
-                f'Use the layout to judge direction and distance of {goal} relative '
-                f'to {src}. The connecting path was never walked.'
-            )
+        parts.append(
+            f'Use the layout to plan a walk from the {src} to the {goal}. '
+            'The connecting path was never walked; evidence comes from a '
+            'doorway glimpse.'
+        )
     elif fact.construct == 'perspective_taking':
         parts.append(
             f"Adopt an imagined viewpoint at {extra.get('A', 'landmark A')}, "
@@ -461,7 +461,11 @@ def _window_actions(episode: dict, fact: PlannedFact) -> list:
 
 
 def _slide_context(fact: PlannedFact) -> dict:
-    """Compact construct-specific fields for slides / review (not scored)."""
+    """Compact construct-specific fields for slides, review, and class-4 scoring.
+
+    Source/goal/path text is for display. ``traversed_edges`` / ``viewed_edges``
+    are the [CODE] scorer inputs (not MCQ labels).
+    """
     extra = fact.extra or {}
     keys = (
         'A',
@@ -472,6 +476,7 @@ def _slide_context(fact: PlannedFact) -> dict:
         'object_type',
         'object_category',
         'template_mode',
+        'template_index',
         'new_location',
         'other_object_type',
         'disambiguator',
@@ -482,6 +487,17 @@ def _slide_context(fact: PlannedFact) -> dict:
         'distance_label',
         'hop_count',
         'min_hop_count',
+        'answer_format',
+        'scoring',
+        'graph_scope',
+        'action_sequence',
+        'start_heading_deg',
+        'source_node',
+        'goal_node',
+        'path_nodes',
+        'traversed_edges',
+        'viewed_edges',
+        'view_radius_m',
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
     return ctx
@@ -510,11 +526,18 @@ def infer_image_roles(fact: PlannedFact) -> list[str]:
     if c in ('route_knowledge', 'survey_based_route_planning'):
         src = extra.get('source') or 'source'
         goal = extra.get('goal') or 'goal'
-        if n == 1:
-            return [f'source/goal · {src} → {goal}']
-        roles = [f'source · {src}']
-        if n >= 2:
-            roles.append(f'goal · {goal}')
+        if c == 'survey_based_route_planning':
+            if n == 1:
+                return [f'source/goal sighted · {src} → {goal}']
+            roles = [f'source sighted · {src}']
+            if n >= 2:
+                roles.append(f'goal sighted · {goal}')
+        else:
+            if n == 1:
+                return [f'source/goal · {src} → {goal}']
+            roles = [f'source · {src}']
+            if n >= 2:
+                roles.append(f'goal · {goal}')
         while len(roles) < n:
             roles.append(f'view {len(roles)}')
         return roles
@@ -550,21 +573,16 @@ def slide_readout(construct: str, context: Optional[dict] = None) -> str:
     if construct == 'route_knowledge':
         return (
             f"Landmark views of source ({ctx.get('source')}) and goal "
-            f"({ctx.get('goal')}). The answer is the walked turn sequence, "
-            'not something readable from these two stills alone.'
+            f"({ctx.get('goal')}). Retrace the walked route. Scoring is "
+            "metric simulation on traversed edges (success / validity / SPL), "
+            "not exact-match to the stored action string."
         )
     if construct == 'survey_based_route_planning':
-        mode = ctx.get('template_mode') or 'direction_distance'
-        if mode == 'conditional_detour':
-            return (
-                f"Layout views of {ctx.get('source')} → {ctx.get('goal')}. "
-                f"Answer uses the recorded closure ({ctx.get('condition')}); "
-                'not a turn sequence.'
-            )
         return (
-            f"Layout views of source ({ctx.get('source')}) and goal "
-            f"({ctx.get('goal')}). Judge allocentric direction/distance on an "
-            'untraversed link — not egocentric from the camera.'
+            f"Source sighted ({ctx.get('source')}) and goal sighted "
+            f"({ctx.get('goal')}). Plan a never-walked link from layout "
+            "(through-door evidence). Scoring uses viewed_edges with a "
+            "required untraversed hop — same simulator as route knowledge."
         )
     if construct == 'spatial_working_memory':
         if ctx.get('template_mode') == 'recall_count':
@@ -592,6 +610,13 @@ def slide_readout(construct: str, context: Optional[dict] = None) -> str:
     if construct == 'allocentric_encoding':
         return 'Single view: object–object relation in a trusted object-centered frame.'
     return 'Raw images shown to the model (same as evaluation input).'
+
+
+def class4_slide_panel(*args, **kwargs):
+    """Re-export for tests / callers that already import templates."""
+    from cm_benchmark.generation.slide_copy import class4_slide_panel as _panel
+
+    return _panel(*args, **kwargs)
 
 
 def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) -> None:
@@ -636,9 +661,12 @@ def fact_to_items(
             )
         ]
 
-    options, rationale, answer_key = _shuffle_options(
-        fact.answer_label, fact.options_pool or [], fact.distractor_seeds or []
-    )
+    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS:
+        options, rationale, answer_key = {}, {}, fact.answer_label
+    else:
+        options, rationale, answer_key = _shuffle_options(
+            fact.answer_label, fact.options_pool or [], fact.distractor_seeds or []
+        )
 
     items: list[CandidateItem] = []
     ids = []

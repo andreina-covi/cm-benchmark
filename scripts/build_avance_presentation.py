@@ -7,6 +7,7 @@ Uses raw episode images (what a VLM would see), not annotated GT frames.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 from pathlib import Path
@@ -20,6 +21,16 @@ from PIL import Image
 
 # --- paths ---
 REPO = Path(__file__).resolve().parents[1]
+# Load by file path so cm_benchmark.generation.__init__ (numpy/planner) is not imported.
+# The pptx venv does not install the generation stack.
+_slide_copy_path = REPO / "src" / "cm_benchmark" / "generation" / "slide_copy.py"
+_slide_copy_spec = importlib.util.spec_from_file_location(
+    "cm_benchmark_slide_copy", _slide_copy_path
+)
+_slide_copy = importlib.util.module_from_spec(_slide_copy_spec)
+assert _slide_copy_spec.loader is not None
+_slide_copy_spec.loader.exec_module(_slide_copy)
+class4_slide_panel = _slide_copy.class4_slide_panel
 TEMPLATE = Path("/home/andreina/Documents/Programs/Benchmark - avance.pptx")
 OUTPUT = Path("/home/andreina/Documents/Programs/Benchmark - avance examples.pptx")
 DEFAULT_DRAFT_JSONS = [
@@ -69,13 +80,16 @@ CONSTRUCT_DEFS = {
     ),
     "route_knowledge": (
         "Route knowledge",
-        "Choose the matching turn sequence for a walked source→goal route.",
-        "Frames are labeled source/goal landmark views only. The MC answer is the walked turn sequence from the nav graph — not readable from the stills alone.",
+        "Retrace a walked source→goal as collected-format actions.",
+        "Two stills: source landmark and goal landmark. The model writes actions. "
+        "Score = metric simulation on traversed edges (success / validity / SPL), "
+        "not exact-match to the stored sequence.",
     ),
     "survey_based_route_planning": (
         "Survey-based route planning",
-        "Judge layout direction/distance (or first-hop under a recorded passage closure).",
-        "Frames are source/goal layout views. Answer is allocentric (or conditional first hop) on an untraversed link — not a turn sequence.",
+        "Plan a never-walked source→goal from layout (through-door evidence).",
+        "Two stills: source sighted and goal sighted. Score uses viewed-edge "
+        "validity (must leave the walked graph) and SPL on the viewed subgraph.",
     ),
 }
 
@@ -87,6 +101,9 @@ _NAV_SEQUENCE_CONSTRUCTS = frozenset(
         "spatial_updating",
         "invisible_displacement",
     }
+)
+_CLASS4_CONSTRUCTS = frozenset(
+    {"route_knowledge", "survey_based_route_planning"}
 )
 
 
@@ -414,11 +431,14 @@ def _item_context(item: dict) -> dict:
     elif construct in ("route_knowledge", "survey_based_route_planning"):
         import re
 
-        m = re.search(
-            r"from (?:the )?(?P<source>.+?) to (?:the )?(?P<goal>.+?)[\?\.,]",
-            q,
-            re.I,
+        matches = list(
+            re.finditer(
+                r"from (?:the )?(?P<source>[^.,]+?) to (?:the )?(?P<goal>[^.,?]+)",
+                q,
+                re.I,
+            )
         )
+        m = matches[-1] if matches else None
         if m:
             out = {
                 "source": m.group("source").strip(),
@@ -459,11 +479,18 @@ def _frame_labels(item: dict) -> list[str]:
     if construct in ("route_knowledge", "survey_based_route_planning"):
         src = ctx.get("source") or "?"
         goal = ctx.get("goal") or "?"
-        if n == 1:
-            return [f"source/goal · {src} → {goal}"]
-        out = [f"source · {src}"]
-        if n >= 2:
-            out.append(f"goal · {goal}")
+        if construct == "survey_based_route_planning":
+            if n == 1:
+                return [f"source/goal sighted · {src} → {goal}"]
+            out = [f"source sighted · {src}"]
+            if n >= 2:
+                out.append(f"goal sighted · {goal}")
+        else:
+            if n == 1:
+                return [f"source/goal · {src} → {goal}"]
+            out = [f"source · {src}"]
+            if n >= 2:
+                out.append(f"goal · {goal}")
         while len(out) < n:
             out.append(step_tag(len(out)))
         return out
@@ -491,19 +518,15 @@ def _slide_readout(item: dict) -> str:
         )
     if construct == "route_knowledge":
         return (
-            f"Landmark stills of source ({ctx.get('source', '?')}) and goal "
-            f"({ctx.get('goal', '?')}). MC answer = walked turn sequence from GT "
-            "(not something these two frames alone depict)."
+            f"Source ({ctx.get('source', '?')}) and goal ({ctx.get('goal', '?')}). "
+            "Retrace the walked route. Scoring is on traversed edges "
+            "(success / validity / SPL), not exact string match."
         )
     if construct == "survey_based_route_planning":
-        if ctx.get("template_mode") == "conditional_detour":
-            return (
-                f"Layout views {ctx.get('source', '?')} → {ctx.get('goal', '?')} "
-                f"under “{ctx.get('condition', 'closure')}”. Not a turn sequence."
-            )
         return (
-            f"Layout views of {ctx.get('source', 'source')} and {ctx.get('goal', 'goal')}. "
-            "Allocentric direction/distance on an untraversed link."
+            f"Source sighted ({ctx.get('source', 'source')}) and goal sighted "
+            f"({ctx.get('goal', 'goal')}). Plan a never-walked link from layout. "
+            "Validity requires viewed edges plus at least one unwalked hop."
         )
     if construct == "spatial_working_memory":
         if "How many" in (item.get("question") or ""):
@@ -673,32 +696,74 @@ def add_example_slide(
     # shorten verbose for slide readability
     if len(q) > 420:
         q = q[:400].rsplit(" ", 1)[0] + "…"
-    add_textbox(slide, rx, Inches(0.95), rw, Inches(1.7), text=q, size=11, color=DARK)
+    q_h = Inches(1.25) if construct in _CLASS4_CONSTRUCTS else Inches(1.7)
+    add_textbox(slide, rx, Inches(0.95), rw, q_h, text=q, size=11, color=DARK)
 
-    opts = item.get("options") or {}
-    ans = item.get("answer")
-    opt_lines = []
-    for key in sorted(opts.keys()):
-        label = f"{key}.  {opts[key]}"
-        if key == ans:
-            opt_lines.append((label, {"size": 12, "bold": True, "color": TEAL, "space_after": 6}))
-        else:
-            opt_lines.append((label, {"size": 12, "bold": False, "color": DARK, "space_after": 6}))
-    add_textbox(slide, rx, Inches(2.7), rw, Inches(0.25), text="Options", size=11, bold=True, color=TEAL)
-    add_textbox(slide, rx, Inches(2.95), rw, Inches(1.6), lines=opt_lines)
+    if construct in _CLASS4_CONSTRUCTS:
+        panel = class4_slide_panel(
+            construct, _item_context(item), answer=item.get("answer")
+        )
+        add_textbox(
+            slide,
+            rx,
+            Inches(2.25),
+            rw,
+            Inches(0.25),
+            text="Source, goal, and reference path",
+            size=11,
+            bold=True,
+            color=TEAL,
+        )
+        add_textbox(
+            slide,
+            rx,
+            Inches(2.5),
+            rw,
+            Inches(2.0),
+            lines=[
+                (panel["task"], {"size": 12, "bold": True, "color": DARK, "space_after": 4}),
+                (panel["graph"], {"size": 10, "color": GRAY, "space_after": 6}),
+                (panel["path"], {"size": 11, "color": DARK, "space_after": 4}),
+                (panel["actions"], {"size": 11, "color": DARK, "space_after": 6}),
+                (panel["scoring"], {"size": 10, "color": GRAY, "space_after": 0}),
+            ],
+        )
+        add_textbox(
+            slide,
+            rx,
+            Inches(4.55),
+            rw,
+            Inches(0.5),
+            text="Stored sequence is analysis-only — any valid walk that meets success/validity counts.",
+            size=11,
+            bold=True,
+            color=TEAL,
+        )
+    else:
+        opts = item.get("options") or {}
+        ans = item.get("answer")
+        opt_lines = []
+        for key in sorted(opts.keys()):
+            label = f"{key}.  {opts[key]}"
+            if key == ans:
+                opt_lines.append((label, {"size": 12, "bold": True, "color": TEAL, "space_after": 6}))
+            else:
+                opt_lines.append((label, {"size": 12, "bold": False, "color": DARK, "space_after": 6}))
+        add_textbox(slide, rx, Inches(2.7), rw, Inches(0.25), text="Options", size=11, bold=True, color=TEAL)
+        add_textbox(slide, rx, Inches(2.95), rw, Inches(1.6), lines=opt_lines)
 
-    ans_text = opts.get(ans, "")
-    add_textbox(
-        slide,
-        rx,
-        Inches(4.55),
-        rw,
-        Inches(0.4),
-        text=f"Answer: {ans} — {ans_text}",
-        size=13,
-        bold=True,
-        color=TEAL,
-    )
+        ans_text = opts.get(ans, "")
+        add_textbox(
+            slide,
+            rx,
+            Inches(4.55),
+            rw,
+            Inches(0.4),
+            text=f"Answer: {ans} — {ans_text}",
+            size=13,
+            bold=True,
+            color=TEAL,
+        )
 
     for_ = item.get("frame_of_reference", "")
     style = item.get("question_style", "")

@@ -65,8 +65,8 @@ class CandidateItem:
     agent_trajectory: Optional[list[dict]] = None
     agent_actions: Optional[list] = None
     displacement_event: Optional[dict] = None
-    # Slide / review helpers (not scored): parallel captions for image_paths and
-    # compact construct-specific fields (A/B/C, source/goal, template_mode, …).
+    # Slide / review captions, plus class-4 scorer fields (traversed/viewed
+    # edges, source/goal nodes) carried in ``context``.
     image_roles: Optional[list[str]] = None
     context: Optional[dict[str, Any]] = None
     blind_llm_correct: Optional[bool] = None
