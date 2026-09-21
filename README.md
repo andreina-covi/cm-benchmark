@@ -536,8 +536,8 @@ An exported `nav_graph` is required but not sufficient — see Evidence.
 
 | Construct | What the draft asks | Evidence |
 |-----------|---------------------|----------|
-| `route_knowledge` | Free action sequence for a **walked** source→goal; [CODE] logs success, validity, SPL, and `route_efficiency` (SPL on valid-success) | Path exists on `traversed_edges`; landmarks snapped to **visited** nodes (2.5 m); hop floor 2 (not R2R 4–6); **no** geo/eucl ratio |
-| `survey_based_route_planning` | Free action sequence for a **never-walked** source→goal; [CODE] uses viewed_edges validity + SPL | No path on `traversed_edges`; same-timestep through-door (`passage_state`: open door, agent ≤ 1.5 m, goal visible); agent ≥ 1.0 m from source on the **source** frame; geo/eucl ≥ 1.05 (HSSD nearly-straight); `viewed_edges` radius proxy around the trajectory (scoring, not pair pick) |
+| `route_knowledge` | Free action sequence for a **walked** source→goal; [CODE] logs success, validity, SPL, and `route_efficiency` (SPL on valid-success) | Path exists on `traversed_edges`; landmarks snapped to **visited** nodes (2.5 m); hop floor 2 (not R2R 4–6); geo/eucl ≥ 1.1 (Habitat PointNav); 2–12 real turns |
+| `survey_based_route_planning` | Free action sequence for a **never-walked** source→goal; [CODE] uses viewed_edges validity + SPL | No path on `traversed_edges`; same-timestep through-door (`passage_state`: open door, agent ≤ 1.5 m, goal visible); agent ≥ 1.0 m from source on the **source** frame; geo/eucl ≥ 1.05 (HSSD nearly-straight); `viewed_edges` radius proxy around the trajectory, used for both the reference path and scoring |
 
 ### Construct coverage (v0, strict)
 
@@ -550,7 +550,7 @@ If a discriminator cannot be proven from episode GT, the draft is `status: unsup
 | `invisible_displacement` | full: direct (`recall_direction` — receptacle or Floor+anchor within `FLOOR_ANCHOR_RADIUS`) and swap; ego bearing; `relation_shift_magnitude` difficulty |
 | `spatial_updating` | full when **net pose** changes (position or heading), object static via `object_state_track`, not visible at final; duplicate encode/answer pairs dropped |
 | `allocentric_encoding` | `unsupported` until trusted object facing / `edges_object_frame` |
-| `route_knowledge` | full (free actions on traversed_edges; success/validity/SPL + route_efficiency; geodesic 1–30 m; hop floor 2; referring names) |
+| `route_knowledge` | full (free actions on traversed_edges; success/validity/SPL + route_efficiency; geodesic 1–30 m; geo/eucl ≥ 1.1; 2–12 real turns; hop floor 2; referring names). Straight single-room scenes are correctly `unsupported` |
 | `survey_based_route_planning` | full (never-traversed + through-door; geodesic 1–30 m; geo/eucl ≥ 1.05; agent–source 1.0 m on source frame; viewed_edges SPL) |
 | `perspective_taking` | full: A/B/C landmarks, signed A→B vs A→C angle (`imagined_perspective_label`; left/right/behind + boundary margin); no intrinsic-front metadata |
 
@@ -571,7 +571,9 @@ Verification fields stay `null`.
 | `agent_trajectory` | One pose per frame in `image_paths`, in image order (`null` if unavailable) |
 | `agent_actions` | Only actions in `(encoding_step, query_step]` — the delay / motion the item tests |
 
-Class-4 items (`route_knowledge`, `survey_based_route_planning`) carry **no** `agent_actions` and **no** MCQ `options`: the model must write the action sequence. The stored `answer` is a `path_to_nav_actions` reference for analysis (not exclusive gold). Both constructs metric-simulate parsed actions: route scores on `traversed_edges`; survey on `viewed_edges` (path ⊆ viewed and at least one edge ∉ traversed). If no pair survives the gates, the draft is `unsupported` and `reason` lists per-pair skip counts. The full episode trajectory stays in episode GT, referenced via `answer_source`.
+Class-4 items (`route_knowledge`, `survey_based_route_planning`) carry **no** `agent_actions` and **no** MCQ `options`: the model must write the action sequence. The stored `answer` is a `follow_path_actions` reference for analysis (not exclusive gold) — a greedy follower with a continuous pose, because emitting one `move_ahead` per lattice hop staircases on the axis-aligned export grid and inflates the turn count. Every reference is replayed through the scorer and dropped unless it is a valid success. Both constructs metric-simulate parsed actions: route scores on `traversed_edges`; survey on `viewed_edges` (path ⊆ viewed and at least one edge ∉ traversed).
+
+`route_knowledge` additionally requires a geodesic/Euclidean ratio ≥ 1.1 (Habitat PointNav) and 2–12 real turns (contiguous rotations count once), then emits the hardest surviving pairs rather than the first in walk order. Straight single-room scenes legitimately produce nothing: if no pair survives the gates, the draft is `unsupported` and `reason` lists per-pair skip counts. The full episode trajectory stays in episode GT, referenced via `answer_source`.
 
 ### Build example slides
 
@@ -579,8 +581,13 @@ The presentation builder selects strict (`status: ok`) concise examples
 automatically for all eight constructs. A construct without sufficient GT gets
 an explicit blocker slide instead of a fabricated example. Temporal items with
 more than two images receive ordered sequence slides (six frames per slide)
-before their Q&A slide. Class-4 examples show source, goal, a compact shortest
-path, and one valid action sequence — not an empty MCQ options box.
+before their Q&A slide. Class-4 review slides put a 1–3 letter marker on
+the 2D bbox center of source and goal (same still the bbox was measured
+on; no legend panel). Nothing else is painted on the photo — the stored
+walk is an arrow-glyph row in the side panel. Graph node ids are not shown.
+Among valid class-4 drafts, the builder prefers longer stored walks (more
+hops, then more actions) so slides are not dominated by nearby neighbor pairs.
+Evaluation still uses the unmodified frames.
 
 ```bash
 .venv-pptx/bin/python scripts/build_avance_presentation.py \
@@ -630,9 +637,11 @@ pytest tests/ -q
 | `test_navigation_generation.py` | Tiny CSVs + folder episode (displacement / survey) |
 | `test_episode_store.py` | SQLite save / load / query |
 | `test_episode_paths.py` | Episode root vs `annotations/` discovery |
-| `test_draft_items.py` | First-draft Q&A (styles, multi-frame, class-4 geodesic 1–30 m / survey 1.05) |
+| `test_draft_items.py` | First-draft Q&A (styles, multi-frame, class-4 geodesic 1–30 m / route 1.1 + 2–12 turns / survey 1.05) |
+| `test_configs.py` | Config Registry: taxonomy + construct YAML parse and match planner gate constants |
+| `test_slide_copy.py` | Class-4 review overlays (SOURCE/GOAL markers, side-panel action glyphs) |
 | `test_eval_protocol.py` | Class-4 system instruction + [CODE] success / validity / SPL |
-| `test_nav_graph.py` | Trajectory snap, traversed/viewed edges, metric simulator |
+| `test_nav_graph.py` | Trajectory snap, traversed/viewed edges, metric simulator, path smoothing + turn counting |
 | `test_annotate_frames.py` | Numbered points + legend |
 | `test_visibility_filters.py` | Q&A FOV keep/drop metrics |
 

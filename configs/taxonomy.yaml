@@ -45,10 +45,12 @@ shared_rules:
   - all spatial facts come from frames + CSV metadata, never from text
   - every item has a non-null answer_source tracing to metadata field(s)
   - frame_of_reference must be unambiguous (stated or fixed by construct)
-  - options are real scene locations/directions; exactly one correct
+  - >-
+    options are real scene locations/directions; exactly one correct
     (class-4 is free action-sequence: empty options; [CODE] metric simulation
     with success / validity / SPL — not MCQ match)
-  - distractors are diagnostic: each wrong option = a specific failure mode
+  - >-
+    distractors are diagnostic: each wrong option = a specific failure mode
     (class-4 has no MCQ distractors)
   - item enters frozen set only if vision_necessary == true
     (both blind-LLM and caption->LLM baselines FAIL it)
@@ -129,10 +131,10 @@ class_2:
         (destination landmark or partner object's prior place); without that cue
         the item is unanswerable from the frames alone.
       what_moves: object (while hidden)
-      difficulty_axis: [delay_steps, load_n_objects, verbosity]  # verbosity:
-        concise | verbose — verbose names other static scene objects (no
-        relations) per the shared_rules exception; report separately from
-        delay/load, don't pool with them
+      # verbosity: concise | verbose — verbose names other static scene objects
+      # (no relations) per the shared_rules exception; report separately from
+      # delay/load, don't pool with them.
+      difficulty_axis: [delay_steps, load_n_objects, verbosity]
       answer_type:
         - recall_direction: egocentric direction at query pose; question names the destination cue
         - swap: egocentric direction; question names a previously seen partner object as the spatial anchor
@@ -279,7 +281,9 @@ class_4:
         Not MCQ. [CODE] score = metric-simulate the parsed actions
         (agent_move_m / agent_rotation_deg), snap each pose, and return
         success / validity / efficiency separately.
-      required_temporal_fields: [agent_trajectory, agent_actions, nav_graph]
+      # No agent_actions: the reference is rebuilt from the graph path plus the
+      # trajectory yaw, and class-4 items carry no agent_actions (same as survey).
+      required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
         List, in order, the navigation actions you took to travel from the
         {source} to the {goal}.
@@ -293,13 +297,23 @@ class_4:
         landmark to the nearest visited nav_graph node (naming stays on the
         landmark; pathfinding uses the node). Reject pairs whose full-nav_graph
         geodesic is outside [MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M] (1–30 m;
-        HM3D-OVON / GOAT-Bench / HSSD-200 2024). Route does not use a
-        geodesic/Euclidean ratio. Build traversed_edges once per episode from
+        HM3D-OVON / GOAT-Bench / HSSD-200 2024) or whose geodesic/Euclidean
+        ratio is below ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO (1.1; Habitat PointNav
+        — near 1.0 means a straight shot needing no strategic navigation).
+        Build traversed_edges once per episode from
         consecutive snapped agent poses (undirected set). Reference path =
         shortest_path() on the nav_graph subgraph restricted to traversed_edges.
         Reject if no path exists or hop count is below ROUTE_MIN_HOP_COUNT (2;
-        one real edge — not R2R's 4–6). Stored answer is path_to_nav_actions()
-        on that path (analysis reference only). Evaluation metric-simulates the
+        one real edge — not R2R's 4–6). Stored answer is follow_path_actions()
+        on that path (analysis reference only): a greedy follower with a
+        continuous pose, since one move_ahead per lattice hop emits a rotation
+        at every staircase step of an axis-aligned grid. Real turns (contiguous
+        rotations count once) must fall in [ROUTE_MIN_TURN_COUNT,
+        ROUTE_MAX_TURN_COUNT] (2–12) — a turnless walk is answerable from a
+        language prior. The reference is replayed through the scorer and dropped
+        unless it is a valid success. Emitted pairs are the hardest surviving
+        ones (turns, then geodesic), not the first in walk order.
+        Evaluation metric-simulates the
         model's parsed actions: snap each pose, filter traversed_edges to
         exported graph edges, then score success (final snap within goal
         tolerance), validity (every crossed edge is in that filtered set;
@@ -312,6 +326,7 @@ class_4:
         - the queried route WAS previously traversed by the agent (path exists on traversed_edges)
         - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
         - path length >= ROUTE_MIN_HOP_COUNT (2) and full-graph geodesic in [1, 30] m
+        - geodesic/Euclidean ratio >= 1.1 and real turn count in [2, 12]
         - answer is a free action sequence in the collected vocabulary, not MCQ
         - '[CODE] scorer: success, validity, SPL, route_efficiency (SPL | valid-success); illegal edges logged'
         - INVALID if the queried source-goal route was not previously traversed by the agent
@@ -346,8 +361,11 @@ class_4:
         and snapped with snap_landmark_to_graph(). Duplicate categories stay if
         uniquely nameable via _referring_display_name. Never-traversed check:
         shortest_path() on the traversed_edges subgraph must NOT exist.
-        Reference path = shortest_path() on the full nav_graph; stored answer
-        is path_to_nav_actions() (analysis reference only). Perceptual
+        Reference path = shortest_path() on the viewed_edges subgraph — not the
+        full nav_graph, since validity is scored on viewed_edges — and the
+        stored answer is follow_path_actions() on it (analysis reference only),
+        replayed through the scorer and dropped unless it is a valid success.
+        Perceptual
         evidence: same timestep with door is_open, agent within door radius,
         and goal-side landmark visible (doors only; windows out of scope).
         Reject if agent is within SURVEY_MIN_AGENT_SOURCE_DIST_M (1.0 m,
@@ -390,7 +408,7 @@ schema_hooks:
     required_for:
       [spatial_working_memory, spatial_updating, route_knowledge, survey_based_route_planning]
   agent_actions:
-    required_for: [spatial_working_memory, spatial_updating, route_knowledge]
+    required_for: [spatial_working_memory, spatial_updating]
   nav_graph:
     required_for: [route_knowledge, survey_based_route_planning]
   passage_state:

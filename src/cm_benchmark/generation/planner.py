@@ -655,16 +655,24 @@ SURVEY_DOOR_AGENT_RADIUS_M = 1.5
 MIN_PAIR_GEODESIC_M = 1.0
 MAX_PAIR_GEODESIC_M = 30.0
 # HSSD-200 CVPR 2024 supplement: geo/eucl < 1.05 is "nearly straight-line".
-# Survey-only. Route omits it — a walked path is the construct.
 SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.05
+# Habitat's PointNav episode generator rejects geo/eucl < 1.1 on every episode:
+# "If the ratio is nearly 1 ... the episode is easy; if larger than 1 the
+# episode is difficult because strategic navigation is required." Route needs
+# this as much as survey — without it the answer degenerates to move_ahead × N.
+ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO = 1.1
 
 # Route-knowledge: snap landmarks onto the walked path with a slightly larger
 # radius than the default 1.5 m so room-scale furniture near the trajectory
 # still becomes an endpoint. Action-sequence length caps stay explicit (not R2R).
 ROUTE_LANDMARK_SNAP_M = 2.5
 ROUTE_MIN_HOP_COUNT = 2  # at least one real edge; length gate is geodesic metres
-ROUTE_MAX_SUBPATH_NODES = 32
-ROUTE_MAX_TURN_ARROWS = 16
+ROUTE_MAX_SUBPATH_NODES = 512  # lattice hops, not decisions; turns are the real cap
+# Real direction changes (contiguous rotations count once), not rotation tokens.
+# Habitat pairs its distance band with episode_min_steps=11; a turn floor is the
+# analogue for an action-sequence answer — a straight walk is guessable blind.
+ROUTE_MIN_TURN_COUNT = 2
+ROUTE_MAX_TURN_COUNT = 12
 
 
 def _agent_near_landmark(
@@ -747,6 +755,65 @@ def _visible_oid_matching(step: dict, landmark_id: str) -> Optional[str]:
     for oid in step.get('visible_objects') or {}:
         if _landmark_matches(oid, landmark_id):
             return oid
+    return None
+
+
+def _object_mark_at(
+    episode: dict, step_idx: int, obj_id: Optional[str]
+) -> Optional[dict]:
+    """Slide overlay cue from episode GT at ``step_idx``.
+
+    Overlay draws the 2D ``bbox`` center ``(cmin, rmin, cmax, rmax)`` only
+    (camera pixels, origin top-left). ``local_point`` is stored for traceability
+    but is the projected Unity pivot, not the marker position.
+    """
+    if not obj_id:
+        return None
+    step = step_by_index(episode, step_idx)
+    if not step:
+        return None
+    vis = step.get('visible_objects') or {}
+    odata = vis.get(obj_id)
+    if odata is None:
+        matches = [oid for oid in vis if _landmark_matches(oid, obj_id)]
+        if len(matches) == 1:
+            odata = vis.get(matches[0])
+    if not isinstance(odata, dict):
+        return None
+    mark: dict = {}
+    bbox = odata.get('bbox')
+    if bbox and len(bbox) >= 4:
+        mark['bbox'] = [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+    lp = odata.get('local_point')
+    if lp and len(lp) >= 2 and lp[0] is not None and lp[1] is not None:
+        mark['local_point'] = [float(lp[0]), float(lp[1])]
+    size = camera_size_wh(episode)
+    if size:
+        mark['frame_wh'] = [int(size[0]), int(size[1])]
+    img = step.get('image_path')
+    if img:
+        mark['image_path'] = img
+    return mark or None
+
+
+def _xyz3(pos) -> Optional[tuple[float, float, float]]:
+    d = xyz_as_dict(pos)
+    if d is None:
+        return None
+    return (float(d['x']), float(d.get('y') or 0.0), float(d['z']))
+
+
+def _rot3(rot) -> Optional[tuple[float, float, float]]:
+    if rot is None:
+        return None
+    if isinstance(rot, dict):
+        return (
+            float(rot.get('x') or 0.0),
+            float(rot.get('y') or 0.0),
+            float(rot.get('z') or 0.0),
+        )
+    if isinstance(rot, (list, tuple)) and len(rot) >= 3:
+        return (float(rot[0]), float(rot[1]), float(rot[2]))
     return None
 
 
@@ -1563,26 +1630,114 @@ def _rotation_deg(episode: dict) -> float:
     return 45.0
 
 
-def _reference_nav_actions(graph, path_nodes: Sequence[str], rotation_deg: float):
-    """Reference collected-format actions for a node path (not exclusive gold)."""
+def _agent_yaw_at_step(episode: dict, step_idx: int) -> Optional[float]:
+    """Agent yaw (AI2-THOR, +Z = 0) at ``step_idx``, else None."""
+    _pos, rot = agent_pose_at_step(episode, int(step_idx))
+    r = _rot3(rot)
+    if r is None:
+        return None
+    return float(r[1]) % 360.0
+
+
+def _reference_nav_actions(
+    graph,
+    path_nodes: Sequence[str],
+    rotation_deg: float,
+    *,
+    start_heading_deg: Optional[float] = None,
+    verify_edges=None,
+):
+    """Reference collected-format actions for a node path (not exclusive gold).
+
+    Uses the greedy follower, not one ``move_ahead`` per lattice hop: the
+    exported grid is axis-aligned while the agent walks on 15°-offset headings,
+    so a per-hop conversion emits a rotation at every staircase step.
+
+    ``start_heading_deg`` should be the agent's real yaw at the source step.
+    Rotations are quantized, so the reachable headings are
+    ``start + 45k``; seeding from a lattice hop bearing instead puts that set
+    15° off the corridors the agent actually walked and the follower oscillates.
+
+    The sequence is replayed through the shared scorer simulator and rejected
+    unless it lands on the goal and — when ``verify_edges`` is given — crosses
+    only those edges. A stored reference must score as a valid success [CODE].
+    """
     from cm_benchmark.generation.nav_graph import (
+        count_direction_changes,
+        follow_path_actions,
         format_nav_actions,
+        node_within_goal_tolerance,
         path_start_heading_deg,
         path_to_nav_actions,
+        simulate_nav_action_sequence,
+        trajectory_snap_tolerance,
     )
 
-    heading = path_start_heading_deg(graph, path_nodes)
+    heading = start_heading_deg
+    if heading is None:
+        heading = path_start_heading_deg(graph, path_nodes)
     if heading is None:
         return None
-    actions = path_to_nav_actions(
-        path_nodes, graph, start_heading_deg=heading, rotation_deg=rotation_deg
-    )
-    if not actions:
+
+    grid = float(graph.graph.get('grid_size') or 0.25)
+    move = float(graph.graph.get('agent_move_m') or grid)
+    # Smoothest first. A wide tolerance cuts staircase corners and can leave the
+    # walked edge set, so fall back to tighter ones and finally to the exact
+    # per-hop conversion, which stays on the chain by construction.
+    ladder = [max(grid, move) * 1.5, max(grid, move), grid, grid / 2.0]
+
+    def _verify(actions):
+        if not actions:
+            return None
+        sim = simulate_nav_action_sequence(
+            graph,
+            path_nodes[0],
+            actions,
+            start_heading_deg=heading,
+            rotation_deg=rotation_deg,
+        )
+        if not sim.get('ok'):
+            return None
+        if not node_within_goal_tolerance(
+            graph, sim.get('end_node'), path_nodes[-1], trajectory_snap_tolerance(graph)
+        ):
+            return None
+        if verify_edges is not None:
+            legal = {tuple(sorted(e)) for e in verify_edges}
+            crossed = sim.get('snapped') or []
+            for a, b in zip(crossed, crossed[1:]):
+                if a != b and tuple(sorted((a, b))) not in legal:
+                    return None
+        return actions
+
+    chosen = None
+    for tol in ladder:
+        followed = follow_path_actions(
+            graph,
+            path_nodes,
+            start_heading_deg=heading,
+            rotation_deg=rotation_deg,
+            simplify_tolerance_m=tol,
+        )
+        if followed and _verify(followed['actions']):
+            chosen = followed['actions']
+            break
+    if chosen is None:
+        chosen = _verify(
+            path_to_nav_actions(
+                path_nodes,
+                graph,
+                start_heading_deg=heading,
+                rotation_deg=rotation_deg,
+            )
+        )
+    if not chosen:
         return None
     return {
-        'actions': actions,
-        'answer_label': format_nav_actions(actions),
+        'actions': chosen,
+        'answer_label': format_nav_actions(chosen),
         'start_heading_deg': heading,
+        'turn_count': count_direction_changes(chosen),
     }
 
 
@@ -1727,8 +1882,10 @@ def _class4_pair_reject_reason(
     """None if the pair passes the 2024 object-goal geodesic band.
 
     Hard gate: full-graph geodesic in ``[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]``
-    (HM3D-OVON / GOAT-Bench / HSSD-200). Optional ``min_ratio`` is survey-only
-    (HSSD geo/eucl 1.05). Route callers pass ``min_ratio=None``.
+    (HM3D-OVON / GOAT-Bench / HSSD-200). ``min_ratio`` is the geodesic/Euclidean
+    detour gate both class-4 constructs apply: survey at
+    ``SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO`` (HSSD 1.05), route at
+    ``ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO`` (Habitat PointNav 1.1).
     """
     geo = _full_graph_geodesic_m(graph, n0, n1)
     if geo is None:
@@ -1747,7 +1904,7 @@ def _class4_pair_reject_reason(
     if eucl < 1e-9:
         return 'euclidean_zero'
     if (geo / eucl) < float(min_ratio):
-        return 'ratio_lt_1.05'
+        return f'geodesic_euclidean_ratio_lt_{float(min_ratio):g}'
     return None
 
 
@@ -1923,7 +2080,10 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             oid,
         ),
     )
-    out: list[PlannedFact] = []
+    # Walk order enumerates pairs; the emitted subset is ranked by difficulty
+    # below. Taking the first passing pairs in walk order yields the walk's
+    # nearest neighbours, which are the easiest pairs in the scene.
+    candidates: list[tuple[tuple, PlannedFact]] = []
     for i, src_id in enumerate(ordered_ids):
         for goal_id in ordered_ids[i + 1 :]:
             if src_id == goal_id:
@@ -1938,7 +2098,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 meta[goal_id]['position'],
                 n0,
                 n1,
-                min_ratio=None,
+                min_ratio=ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
             )
             if pair_reason:
                 rejects[pair_reason] += 1
@@ -1982,9 +2142,25 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     rejects['no_real_move'] += 1
                     continue
 
-            ref = _reference_nav_actions(walked, path, rot)
-            if ref is None or ref['answer_label'].count('→') > ROUTE_MAX_TURN_ARROWS:
+            ref = _reference_nav_actions(
+                walked,
+                path,
+                rot,
+                start_heading_deg=_agent_yaw_at_step(
+                    episode, int(meta[src_id]['first_seen_step'])
+                ),
+                verify_edges=edges,
+            )
+            if ref is None:
                 rejects['actions_unusable'] += 1
+                continue
+            turn_count = int(ref['turn_count'])
+            if turn_count < ROUTE_MIN_TURN_COUNT:
+                # A straight walk is answerable from a language prior alone.
+                rejects[f'turns_lt_{ROUTE_MIN_TURN_COUNT}'] += 1
+                continue
+            if turn_count > ROUTE_MAX_TURN_COUNT:
+                rejects[f'turns_gt_{ROUTE_MAX_TURN_COUNT}'] += 1
                 continue
 
             t0 = int(meta[src_id]['first_seen_step'])
@@ -2003,7 +2179,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     ),
                 ]
             )
-            out.append(
+            geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
+            fact = (
                 PlannedFact(
                     construct='route_knowledge',
                     status='ok',
@@ -2012,7 +2189,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     answer_label=ref['answer_label'],
                     answer_source=[
                         f'nav_graph.traversed_edges.shortest_path[{n0}→{n1}]',
-                        'path_to_nav_actions(traversed_subgraph)',
+                        'follow_path_actions(traversed_subgraph)',
                     ],
                     image_paths=images,
                     extra={
@@ -2022,11 +2199,23 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'B': goal,
                         'source_landmark_id': src_id,
                         'goal_landmark_id': goal_id,
+                        'source_mark': _object_mark_at(
+                            episode,
+                            int(meta[src_id]['first_seen_step']),
+                            src_id,
+                        ),
+                        'goal_mark': _object_mark_at(
+                            episode,
+                            int(meta[goal_id]['first_seen_step']),
+                            goal_id,
+                        ),
                         'source_node': n0,
                         'goal_node': n1,
                         'path_nodes': path,
                         'min_hop_count': min_hops,
                         'hop_count': hops,
+                        'turn_count': turn_count,
+                        'geodesic_m': round(geodesic_m, 3),
                         'action_sequence': ref['actions'],
                         'start_heading_deg': ref['start_heading_deg'],
                         'traversed_edges': traversed_edge_list,
@@ -2042,10 +2231,10 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     },
                 )
             )
-            if len(out) >= max_items:
-                return out
+            # Harder first: more real turns, then longer geodesic.
+            candidates.append(((turn_count, geodesic_m, hops), fact))
 
-    if not out:
+    if not candidates:
         return [
             PlannedFact(
                 construct='route_knowledge',
@@ -2056,7 +2245,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 extra={'pair_reject_counts': dict(rejects)},
             )
         ]
-    return out
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [fact for _rank, fact in candidates[:max_items]]
 
 
 def _passage_is_door(passage_id: Optional[str], passage_meta: Optional[dict]) -> bool:
@@ -2172,12 +2362,17 @@ def _connection_through_opening(
 
 
 def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Plan a never-walked source→goal as collected-format actions on the full graph."""
+    """Plan a never-walked source→goal as collected-format actions on viewed_edges.
+
+    Pair gates use full-nav_graph geodesic, but the reference path and its
+    actions live on the viewed subgraph, because that is what validity scores.
+    """
     from cm_benchmark.generation.nav_graph import (
         calibrate_view_radius_m,
         path_exists,
         sanitize_world_layout,
         shortest_path,
+        subgraph_from_traversed_edges,
         viewed_edges_from_trajectory,
     )
     import networkx as nx
@@ -2221,6 +2416,10 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         view_radius,
         traversed_edges=edges,
     )
+    # Validity is scored on viewed_edges, so the reference must be planned there
+    # too: a full-graph shortest path can leave the viewed corridor and would be
+    # stored as an answer that the [CODE] scorer marks invalid.
+    viewed_sub = subgraph_from_traversed_edges(graph, viewed_edges)
     viewed_edge_list = _serialize_traversed_edges(viewed_edges)
     traversed_edge_list = _serialize_traversed_edges(edges)
     out: list[PlannedFact] = []
@@ -2251,9 +2450,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 rejects[pair_reason] += 1
                 continue
             try:
-                path = shortest_path(graph, n0, n1)
+                path = shortest_path(viewed_sub, n0, n1)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
-                rejects['no_full_graph_path'] += 1
+                rejects['no_viewed_path'] += 1
                 continue
             if len(path) < 2:
                 rejects['empty_path'] += 1
@@ -2270,12 +2469,18 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             if source == goal:
                 rejects['source_name_eq_goal'] += 1
                 continue
-            ref = _reference_nav_actions(graph, path, rot)
+            t0 = int(meta[src_id]['first_seen_step'])
+            t1 = int(meta[goal_id]['first_seen_step'])
+            ref = _reference_nav_actions(
+                viewed_sub,
+                path,
+                rot,
+                start_heading_deg=_agent_yaw_at_step(episode, t0),
+                verify_edges=viewed_edges,
+            )
             if ref is None:
                 rejects['actions_unusable'] += 1
                 continue
-            t0 = int(meta[src_id]['first_seen_step'])
-            t1 = int(meta[goal_id]['first_seen_step'])
             if _agent_near_landmark(episode, meta[src_id]['position'], [t0]):
                 rejects['agent_near_source'] += 1
                 continue
@@ -2299,8 +2504,8 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     encoding_step=min(t0, t1),
                     answer_label=ref['answer_label'],
                     answer_source=[
-                        f'nav_graph.full.shortest_path[{n0}→{n1}]',
-                        'path_to_nav_actions(full_graph)',
+                        f'nav_graph.viewed_edges.shortest_path[{n0}→{n1}]',
+                        'follow_path_actions(viewed_subgraph)',
                         f'nav_graph.traversed_edges.no_path[{n0}→{n1}]',
                         'passage_state through-opening (same timestep)',
                         f'nav_graph.viewed_edges.radius={view_radius:.3f}',
@@ -2316,10 +2521,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                         ),
                         'source_landmark_id': src_id,
                         'goal_landmark_id': goal_id,
+                        'source_mark': _object_mark_at(episode, t0, src_id),
+                        'goal_mark': _object_mark_at(episode, t1, goal_id),
                         'source_node': n0,
                         'goal_node': n1,
                         'path_nodes': path,
                         'hop_count': len(path) - 1,
+                        'turn_count': ref['turn_count'],
                         'action_sequence': ref['actions'],
                         'start_heading_deg': ref['start_heading_deg'],
                         'traversed_edges': traversed_edge_list,

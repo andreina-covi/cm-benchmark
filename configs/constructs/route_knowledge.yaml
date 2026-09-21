@@ -13,7 +13,6 @@ route_knowledge:
     '
   required_temporal_fields:
   - agent_trajectory
-  - agent_actions
   - nav_graph
   question_template: List, in order, the navigation actions you took to travel from the
     {source} to the {goal}.
@@ -24,12 +23,21 @@ route_knowledge:
     language; shared_rules referring-expression exception). Snap each landmark to the
     nearest visited nav_graph node (naming stays on the landmark; pathfinding uses the
     node). Reject pairs whose full-nav_graph geodesic is outside [MIN_PAIR_GEODESIC_M,
-    MAX_PAIR_GEODESIC_M] (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200 2024). Route does
-    not use a geodesic/Euclidean ratio. Build traversed_edges once per episode from
+    MAX_PAIR_GEODESIC_M] (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200 2024) or whose
+    geodesic/Euclidean ratio is below ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO (1.1; Habitat
+    PointNav — near 1.0 means a straight shot needing no strategic navigation). Build
+    traversed_edges once per episode from
     consecutive snapped agent poses (undirected set). Reference path = shortest_path()
     on the nav_graph subgraph restricted to traversed_edges. Reject if no path exists or
     hop count is below ROUTE_MIN_HOP_COUNT (2; one real edge — not R2R''s 4–6). Stored
-    answer is path_to_nav_actions() on that path (analysis reference only). Evaluation
+    answer is follow_path_actions() on that path (analysis reference only): a greedy
+    follower with a continuous pose, since one move_ahead per lattice hop emits a
+    rotation at every staircase step of an axis-aligned grid. Real turns (contiguous
+    rotations count once) must fall in [ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]
+    (2–12) — a turnless walk is answerable from a language prior. The reference is
+    replayed through the scorer and dropped unless it is a valid success. Emitted pairs
+    are the hardest surviving ones (turns, then geodesic), not the first in walk order.
+    Evaluation
     metric-simulates the model''s parsed actions: snap each pose, filter traversed_edges to
     exported graph edges, then score success (final snap within goal tolerance), validity
     (every crossed edge is in that filtered set; illegal edges are logged), SPL
@@ -43,6 +51,7 @@ route_knowledge:
   - the queried route WAS previously traversed by the agent (path exists on traversed_edges)
   - source and goal are landmarks (region-anchored), never raw graph nodes or arbitrary objects
   - path length >= ROUTE_MIN_HOP_COUNT (2) and full-graph geodesic in [1, 30] m
+  - geodesic/Euclidean ratio >= 1.1 and real turn count in [2, 12]
   - answer is a free action sequence in the collected vocabulary, not MCQ
   - '[CODE] scorer: success, validity, SPL, route_efficiency (SPL | valid-success); illegal edges logged'
   - INVALID if the queried source-goal route was not previously traversed by the agent

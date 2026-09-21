@@ -66,7 +66,7 @@ class CandidateItem:
     agent_actions: Optional[list] = None
     displacement_event: Optional[dict] = None
     # Slide / review captions, plus class-4 scorer fields (traversed/viewed
-    # edges, source/goal nodes) carried in ``context``.
+    # edges, source/goal nodes, pixel marks for review overlays) in ``context``.
     image_roles: Optional[list[str]] = None
     context: Optional[dict[str, Any]] = None
     blind_llm_correct: Optional[bool] = None

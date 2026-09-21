@@ -29,8 +29,11 @@ survey_based_route_planning:
   ground_truth_method: 'Source/goal selected via select_landmark_candidates(unique_category=False)
     and snapped with snap_landmark_to_graph(). Duplicate categories stay if uniquely
     nameable via _referring_display_name. Never-traversed check: shortest_path() on the
-    traversed_edges subgraph must NOT exist. Reference path = shortest_path() on the full
-    nav_graph; stored answer is path_to_nav_actions() (analysis reference only). Perceptual
+    traversed_edges subgraph must NOT exist. Reference path = shortest_path() on the
+    viewed_edges subgraph — not the full nav_graph, since validity is scored on
+    viewed_edges — and the stored answer is follow_path_actions() on it (analysis
+    reference only), replayed through the scorer and dropped unless it is a valid
+    success. Perceptual
     evidence: same timestep with door is_open, agent within door radius, and goal-side
     landmark visible (doors only; windows out of scope). Reject if agent is within
     SURVEY_MIN_AGENT_SOURCE_DIST_M (1.0 m, ObjectNav/GOAT success zone) of the source at

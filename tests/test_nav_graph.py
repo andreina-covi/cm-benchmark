@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import networkx as nx
@@ -235,6 +236,59 @@ def test_spl_ratio_is_success_gated_and_capped():
     assert _spl_ratio(2.0, 4.0, success=False) == 0.0
     assert _spl_ratio(None, 4.0, success=True) == 0.0
     assert _spl_ratio(0.0, 0.0, success=True) == 1.0
+
+
+def test_count_direction_changes_counts_turns_not_rotation_tokens():
+    """A 135° turn is three rotate tokens but one decision the model must make."""
+    from cm_benchmark.generation.nav_graph import count_direction_changes
+
+    assert count_direction_changes([]) == 0
+    assert count_direction_changes(['move_ahead'] * 5) == 0
+    assert count_direction_changes(['rotate_right'] * 3) == 1
+    assert (
+        count_direction_changes(
+            ['move_ahead', 'rotate_right', 'rotate_right', 'move_ahead', 'rotate_left']
+        )
+        == 2
+    )
+
+
+def test_simplify_polyline_collapses_a_lattice_staircase():
+    """A staircase around a straight line is one segment, not one per hop."""
+    from cm_benchmark.generation.nav_graph import simplify_polyline_xz
+
+    staircase = []
+    for k in range(9):
+        staircase.append((k * 0.15, 0.0, k * 0.075))
+        staircase.append((k * 0.15, 0.0, k * 0.075 + 0.075))
+    assert len(simplify_polyline_xz(staircase, 0.2)) == 2
+    # A real 90° corner survives: tolerance must not erase genuine turns.
+    corner = [(0.0, 0.0, 0.0), (0.0, 0.0, 2.0), (2.0, 0.0, 2.0)]
+    assert len(simplify_polyline_xz(corner, 0.2)) == 3
+
+
+def test_follow_path_actions_emits_runs_not_per_hop_rotations():
+    """Greedy follower on a staircase yields one straight run of move_ahead."""
+    import networkx as nx
+    from cm_benchmark.generation.nav_graph import follow_path_actions
+
+    g = nx.Graph()
+    g.graph.update({'grid_size': 0.15, 'agent_move_m': 0.15, 'agent_rotation_deg': 45.0})
+    path = []
+    for k in range(13):
+        nid = f's{k}'
+        # 45° diagonal: on an 8-connected lattice this is a clean straight run.
+        g.add_node(nid, pos=(k * 0.15, 0.0, k * 0.15))
+        path.append(nid)
+    for a, b in zip(path, path[1:]):
+        g.add_edge(a, b, weight=0.15 * math.sqrt(2))
+
+    followed = follow_path_actions(g, path, start_heading_deg=45.0)
+    assert followed is not None
+    assert followed['turn_count'] == 0
+    assert set(followed['actions']) == {'move_ahead'}
+    end_x, end_z = followed['end_xz']
+    assert math.hypot(end_x - 12 * 0.15, end_z - 12 * 0.15) < 0.2
 
 
 def test_path_to_nav_actions_roundtrip_reaches_goal(tiny_graph):

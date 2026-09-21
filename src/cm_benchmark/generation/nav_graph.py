@@ -822,6 +822,164 @@ def path_to_nav_actions(
     return out
 
 
+def count_direction_changes(actions: Sequence[str]) -> int:
+    """Real turns in an action sequence: contiguous rotations count once.
+
+    ``rotate_right, rotate_right, rotate_right`` is one 135° turn, not three.
+    Used for class-4 difficulty gates, where raw rotation tokens overcount.
+    """
+    turns = 0
+    prev_was_rotation = False
+    for act in actions or []:
+        is_rotation = act in (NAV_ACTION_ROTATE_LEFT, NAV_ACTION_ROTATE_RIGHT)
+        if is_rotation and not prev_was_rotation:
+            turns += 1
+        prev_was_rotation = is_rotation
+    return turns
+
+
+def _perp_distance_xz(p, a, b) -> float:
+    """Distance from ``p`` to segment ``a``–``b`` in the xz plane."""
+    ax, az, bx, bz, px, pz = a[0], a[2], b[0], b[2], p[0], p[2]
+    dx, dz = bx - ax, bz - az
+    den = dx * dx + dz * dz
+    if den < 1e-12:
+        return math.hypot(px - ax, pz - az)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (pz - az) * dz) / den))
+    return math.hypot(px - (ax + t * dx), pz - (az + t * dz))
+
+
+def simplify_polyline_xz(points: Sequence[Any], tolerance_m: float) -> list:
+    """Ramer–Douglas–Peucker simplification in the xz plane.
+
+    Collapses lattice staircases into the straight corridor they approximate.
+    An axis-aligned grid cannot represent a walk at, say, yaw 285°, so
+    ``shortest_path`` zig-zags; the underlying route is one straight run.
+
+    Iterative: a near-straight path recurses once per point, and class-4 paths
+    run to hundreds of nodes.
+    """
+    pts = [p for p in points if p is not None]
+    if len(pts) < 3:
+        return list(pts)
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        worst_i, worst_d = lo, -1.0
+        for i in range(lo + 1, hi):
+            d = _perp_distance_xz(pts[i], pts[lo], pts[hi])
+            if d > worst_d:
+                worst_i, worst_d = i, d
+        if worst_d > tolerance_m:
+            keep[worst_i] = True
+            stack.append((lo, worst_i))
+            stack.append((worst_i, hi))
+    return [p for p, k in zip(pts, keep) if k]
+
+
+def follow_path_actions(
+    graph: nx.Graph,
+    path_nodes: Sequence[str],
+    *,
+    start_heading_deg: Optional[float] = None,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    simplify_tolerance_m: Optional[float] = None,
+    max_actions: int = 512,
+) -> Optional[dict]:
+    """Greedy follower turning a node path into collected-format actions.
+
+    Mirrors Habitat's ``GreedyGeodesicFollower``: the pose is continuous and
+    only the heading is quantized to ``rotation_deg``, so a straight corridor
+    becomes ``rotate × k`` then ``move_ahead × n``. Deriving one ``move_ahead``
+    per lattice hop instead (``path_to_nav_actions``) emits a rotation at every
+    staircase step and inflates the turn count by an order of magnitude.
+
+    Returns ``{actions, start_heading_deg, turn_count, end_xz}`` or None.
+    """
+    nodes = [n for n in (path_nodes or []) if n in graph]
+    if len(nodes) < 2:
+        return None
+    pts = [graph.nodes[n].get('pos') for n in nodes]
+    if any(p is None for p in pts):
+        return None
+    rot = float(
+        rotation_deg
+        if rotation_deg is not None
+        else graph.graph.get('agent_rotation_deg') or 45.0
+    ) or 45.0
+    step = float(
+        move_m
+        if move_m is not None
+        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or 0.25
+    )
+    if step <= 1e-9:
+        return None
+    tol = (
+        float(simplify_tolerance_m)
+        if simplify_tolerance_m is not None
+        else max(step, float(graph.graph.get('grid_size') or 0.25)) * _SQRT2
+    )
+    waypoints = simplify_polyline_xz(pts, tol)
+    if len(waypoints) < 2:
+        return None
+
+    x, z = float(pts[0][0]), float(pts[0][2])
+    heading = start_heading_deg
+    if heading is None:
+        heading = _heading_xz_deg(pts[0], waypoints[1])
+    if heading is None:
+        return None
+    heading = float(heading) % 360.0
+
+    actions: list[str] = []
+    arrive = step * 0.75
+    for wp in waypoints[1:]:
+        wx, wz = float(wp[0]), float(wp[2])
+        stalled = 0
+        while len(actions) < max_actions:
+            dist = math.hypot(wx - x, wz - z)
+            if dist <= arrive:
+                break
+            desired = math.degrees(math.atan2(wx - x, wz - z)) % 360.0
+            delta = _signed_delta_deg(heading, desired)
+            if abs(delta) > rot / 2.0:
+                if delta > 0:
+                    actions.append(NAV_ACTION_ROTATE_RIGHT)
+                    heading = (heading + rot) % 360.0
+                else:
+                    actions.append(NAV_ACTION_ROTATE_LEFT)
+                    heading = (heading - rot) % 360.0
+                continue
+            dx, dz = _heading_step_xz(heading, step)
+            nx_, nz_ = x + dx, z + dz
+            # Heading is quantized, so a move can overshoot; stop before it does.
+            if math.hypot(wx - nx_, wz - nz_) >= dist:
+                stalled += 1
+                if stalled >= 2:
+                    break
+                continue
+            x, z = nx_, nz_
+            actions.append(NAV_ACTION_MOVE_AHEAD)
+            stalled = 0
+        if len(actions) >= max_actions:
+            return None
+    if not actions:
+        return None
+    return {
+        'actions': actions,
+        'start_heading_deg': float(start_heading_deg)
+        if start_heading_deg is not None
+        else _heading_xz_deg(pts[0], waypoints[1]),
+        'turn_count': count_direction_changes(actions),
+        'end_xz': (x, z),
+    }
+
+
 def neighbor_in_heading(
     graph: nx.Graph,
     node_id: str,
@@ -992,6 +1150,13 @@ def _crossed_undirected(snapped: Sequence[str]) -> list[tuple[str, str]]:
             continue
         out.append((a, b) if a <= b else (b, a))
     return out
+
+
+def node_within_goal_tolerance(
+    graph: nx.Graph, end_node, goal_node, goal_tol: float
+) -> bool:
+    """Public alias of the scorer's goal test, for generation-side verification."""
+    return _goal_reached(graph, end_node, goal_node, goal_tol)
 
 
 def _goal_reached(graph: nx.Graph, end_node, goal_node, goal_tol: float) -> bool:
@@ -1343,10 +1508,14 @@ def format_turn_sequence(turns: Sequence[dict], *, compress_straight: bool = Tru
 def perturb_turn_sequence(
     turns: Sequence[dict], mode: str
 ) -> Optional[list[dict]]:
-    """Mechanical distractors for route_knowledge MC options.
+    """Mechanical turn-sequence perturbations.
 
     Taxonomy names: reversed_sequence, swapped_two_turns,
     plausible_but_unwalked_route. Older aliases are accepted.
+
+    Not used by the class-4 pipeline: route_knowledge is a free action sequence,
+    not MCQ, and its ``distractor_pattern`` is empty. Kept for turn-level
+    analysis only.
     """
     if not turns:
         return None
