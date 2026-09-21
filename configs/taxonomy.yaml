@@ -61,19 +61,19 @@ class_1:
     egocentric_encoding:
       class: 1
       frame_of_reference: egocentric
-      definition: Relation of a visible object to the VIEWER's current pose.
+      definition: Relation of a visible object to the viewer's current pose.
       what_moves: none
       answer_type: viewer-anchored direction (left/right/ahead/behind/above/below)
-      required_temporal_fields: []          # static
+      required_temporal_fields: []
       question_template: "From your current view, where is the {object} relative to you?"
+      ground_truth_method: >
+        Bearing of a visible object from the current agent pose.
+        "Behind you" cannot be the ground-truth answer (FOV); only a distractor.
       distractor_pattern: [opposite_direction, orthogonal_direction, plausible_wrong_axis]
       discriminators:
-        - queried object is VISIBLE in the shown view
+        - queried object is visible in the shown view
         - no delay and no agent movement
-        - answer computed from current agent pose + object position
-        # FOV constraint: "behind you" cannot be a ground-truth answer (object
-        # would be outside the camera); it appears only as a distractor. A zero
-        # GT count for behind is expected, not a labeling bug.
+        - answer from current pose + object position
 
     allocentric_encoding:
       class: 1
@@ -83,11 +83,14 @@ class_1:
       answer_type: object-to-object relation (A left-of/on/inside B)
       required_temporal_fields: []
       question_template: "Relative to the {reference_object}, where is the {object}?"
+      ground_truth_method: >
+        Object-to-object relation in the reference object's frame.
+        Unsupported until trusted object facing exists.
       distractor_pattern: [opposite_relation, wrong_reference_object, viewer_frame_answer]
       discriminators:
-        - all referenced objects VISIBLE in the shown view
-        - answer is object-anchored, NOT viewer-anchored
-        - reference object's frame (intrinsic front) is defined
+        - all referenced objects visible in the shown view
+        - answer is object-anchored, not viewer-anchored
+        - reference object's intrinsic front is defined
 
 # ============================================================
 # CLASS 2 — SPATIAL MEMORY  (queried info NOT in current view; held
@@ -102,28 +105,28 @@ class_2:
       class: 2
       frame_of_reference: [egocentric, allocentric]
       difficulty_axis: [delay_steps, load_n_objects]
-      definition: Recall a previously seen location/relation/count under load and delay.
-      what_moves: none            # object is STATIC; difficulty from load + step-depth
+      definition: Recall a previously seen location, relation, or count under load and delay.
+      what_moves: none
       answer_type: recalled relation, location, or count of past-seen items
-      required_temporal_fields: [agent_trajectory, agent_actions]  # to define "N steps ago"
+      required_temporal_fields: [agent_trajectory, agent_actions]
       question_template: >-
         Considering what you saw {k} steps ago: where was the {object} relative to you then?
         / How many {objects} have you seen so far?
+      ground_truth_method: >
+        Recalled relation, location, or count from the encoding step.
+        The object is static; the queried info is gone from the final view.
       distractor_pattern: [current_view_answer, adjacent_step_answer, off_by_one_count]
       discriminators:
-        - queried object/relation is NOT in the final view
-        - object positions UNCHANGED across shown frames (nothing relocates)
-        - delay (k = query_step - encoding_step) and load (n items) are both stated or computable per item, not implicit
+        - queried object/relation is not in the final view
+        - object positions unchanged (nothing relocates)
+        - delay k and load n are explicit per item
 
     invisible_displacement:
       class: 2
       frame_of_reference: egocentric  # both modes ask ego bearing at query pose
       definition: >
-        Track an object's location after it is hidden AND relocated out of view
-        (Piaget Stage 6: the move itself is never witnessed, only inferred).
-        The question MUST supply a spatial cue naming where the object went
-        (destination landmark or partner object's prior place); without that cue
-        the item is unanswerable from the frames alone.
+        Track an object after it is hidden and relocated out of view.
+        The question names where it went (landmark or swap partner).
       what_moves: object (while hidden)
       # verbosity: concise | verbose — verbose names other static scene objects
       # (no relations) per the shared_rules exception; report separately from
@@ -149,21 +152,9 @@ class_2:
         of a receptacle.
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
       discriminators:
-        - queried object was distinguishable, then hidden, before it moved
-        - displacement_event.hidden_during == true
-        - queried object NOT in nav FOV on any shown frame from move through query_step t
-        - one draft item per displacement_events object row (a swap logs two rows → two items)
-        - question always names a destination cue (landmark OR partner object)
-        - >
-          direct move (moved_via != swap): destination cue is distinguishable in
-          >=1 shown frame — either the named receptacle (non-Floor) or, for Floor
-          destinations, a landmark within FLOOR_ANCHOR_RADIUS of the true final
-          position (reject only that Floor candidate if no such landmark exists —
-          Floor is no longer excluded as a category); emit recall_direction only
-        - >
-          swap (moved_via == swap): swap_partner_id set; partner object distinguishable
-          in >=1 shown frame at its pre-swap position; emit swap template only (never
-          name a receptacle in the question — object anchor OR receptacle anchor, not both)
+        - queried object was distinguishable, then hidden, then moved
+        - the move itself is never visible
+        - question names a destination cue (landmark or swap partner)
 # ============================================================
 # CLASS 3 — OPERATION ON THE COGNITIVE MAP  (answer requires a pose
 # DIFFERENT from the encoding pose: real move, or imagined viewpoint)
