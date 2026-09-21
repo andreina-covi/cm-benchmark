@@ -93,7 +93,7 @@ CONSTRUCT_DEFS = {
     ),
     "survey_based_route_planning": (
         "Survey-based route planning",
-        "Plan a never-walked source→goal from layout (through-door evidence).",
+        "Plan a never-walked source→goal from layout (viewed, untraversed).",
         "Stills with a letter marker at each landmark's 2D bbox center. "
         "Score uses viewed-edge validity "
         "(must leave the walked graph) and SPL on the viewed subgraph.",

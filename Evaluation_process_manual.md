@@ -49,7 +49,7 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers.
 - `perspective_taking` → confirm three distinguishable landmarks A/B/C; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
 - `route_knowledge` → path exists on traversed_edges; score with `score_route_action_sequence` (success / validity / SPL).
-- `survey_based_route_planning` → no path on traversed_edges; through-door evidence; score with `score_survey_action_sequence` (same simulator; validity requires at least one unwalked viewed edge).
+- `survey_based_route_planning` → no path on traversed_edges; a path on viewed_edges; score with `score_survey_action_sequence` (same simulator; validity requires at least one unwalked viewed edge).
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
@@ -117,7 +117,7 @@ Every rejection (Layer A or B) should carry a **reason code** that maps to one o
 - a specific `discriminators` line (construct-faithfulness bug),
 - a `shared_rules` line (leakage / ambiguity bug),
 - a `distractor_pattern` entry (weak distractor bug),
-- a metadata/data gap (e.g., missing `nav_graph` for class-4, or no same-timestep through-door evidence for `survey_based_route_planning`).
+- a metadata/data gap (e.g., missing `nav_graph` for class-4, or no viewed-edge path for `survey_based_route_planning`).
 
 Aggregate reason codes per construct per generator version. This turns human review from a one-off gate into the mechanism that tells you *which template to fix next*, which is more useful to you right now (early, iterating on `templates.py`/`constructs.py`) than a single pass/fail number.
 

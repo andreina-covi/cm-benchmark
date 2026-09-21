@@ -129,7 +129,7 @@ def class4_slide_panel(
         return {
             'task': f'Plan (never walked): {src}  →  {goal}',
             'graph': (
-                'Evidence: through-door glimpse · scored on viewed edges '
+                'Evidence: viewed but never walked · scored on viewed edges '
                 f'({hop_bit} on the stored viewed-edge path)'
             ),
             'path': f'Stored walk: {walk}',
