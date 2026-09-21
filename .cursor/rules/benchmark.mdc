@@ -151,12 +151,30 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   trajectory (scene-calibrated spacing, not raycasting) and a superset of
   `traversed_edges`. Validity = path ⊆ viewed_edges and at least one edge is
   not traversed. Efficiency is SPL on the viewed_edges subgraph. Stored
-  `answer` is a `path_to_nav_actions` reference for analysis only.
-- `route_knowledge` pairs follow **walk order** on the snapped trajectory (not
-  salience order); path = shortest_path on traversed_edges; min hops =
+  `answer` is a `follow_path_actions` reference for analysis only.
+- Class-4 references come from `follow_path_actions` (greedy follower,
+  continuous pose, heading quantized to `agent_rotation_deg`), **not** one
+  `move_ahead` per lattice hop. Exported grids are axis-aligned while the agent
+  walks 15°-offset headings, so a per-hop conversion staircases and inflates the
+  turn count ~10×. Seed the follower with the agent's real yaw at the source
+  step: reachable headings are `start + 45k`, and a lattice bearing puts that
+  set off the walked corridors so the follower oscillates. Every reference is
+  replayed through the scorer (`simulate_nav_action_sequence` + goal tolerance +
+  edge membership) and dropped unless it is a valid success; smoothing that
+  leaves the walked edge set falls back down a tolerance ladder to the exact
+  per-hop path.
+- `route_knowledge` enumerates pairs in **walk order** on the snapped trajectory
+  but **emits the hardest** ones (real turns, then geodesic) — the first passing
+  pairs in walk order are the walk's nearest neighbours, i.e. the easiest in the
+  scene. Path = shortest_path on traversed_edges; min hops =
   `ROUTE_MIN_HOP_COUNT` (2, not a fixed R2R 4–6); class-4 pair length is
   full-nav_graph geodesic in `[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]`
-  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200). Route omits a geo/eucl ratio.
+  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200). Route also applies
+  `ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.1; Habitat PointNav) and a real-turn
+  band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` (2–12), counting
+  contiguous rotations once (`count_direction_changes`) — raw rotation tokens
+  overcount. Straight single-room scenes therefore report `unsupported` with
+  per-reason skip counts; that is the correct outcome, not a bug to tune away.
   Duplicate categories are allowed when `_referring_display_name` uniquely
   names them (`unique_category=False`). Trajectory poses snap within one
   8-neighbor step of `max(grid_size, agent_move_m)` (exports are
@@ -168,7 +186,10 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   success zone) from source at the source sighting frame; geodesic 1–30 m
   plus `SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.05; HSSD nearly-straight) on
   the **full** nav_graph; `viewed_edges` radius proxy around the trajectory
-  (scene-calibrated); frame captions "source sighted" / "goal sighted".
+  (scene-calibrated); frame captions "source sighted" / "goal sighted". The
+  reference path is `shortest_path` on the **viewed** subgraph, not the full
+  graph — validity is scored on `viewed_edges`, so a full-graph path would be
+  stored as an answer the scorer marks invalid.
 - Floor destinations in invisible_displacement need a distinguishable anchor
   within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
   rejected per-candidate.

@@ -38,6 +38,135 @@ def folder_episode(tmp_path):
     return gen.collect_episode_data(extra_data={'scene': 'ignore'})
 
 
+def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> dict:
+    """Synthetic episode whose navigable space is a corridor along ``cells``.
+
+    The agent walks the cells in order; a Fridge sits at the first cell and a
+    Toilet at the last, both distinguishable at the near end of the walk.
+    """
+
+    def ego(target):
+        return {
+            'source': 'agent',
+            'target': target,
+            'distance_metric': 1.0,
+            'distance_label': 'near',
+            'visible': True,
+            'angle_relation': ['', '', 'front'],
+            'inferred': False,
+        }
+
+    def detection(category, position):
+        return {
+            'category': category,
+            'position': position,
+            'bbox': [100, 60, 220, 190],
+            'bbox_area': 15600.0,
+            'min_side': 120.0,
+            'visible_pixels': 12000.0,
+            'occupancy_ratio': 0.6,
+            'obj_distance': 1.0,
+            'local_point': [160, 125],
+        }
+
+    cells = [(round(x, 3), round(z, 3)) for x, z in cells]
+    open_cells = set()
+    for x, z in cells:
+        for dx in (-grid, 0.0, grid):
+            for dz in (-grid, 0.0, grid):
+                open_cells.add((round(x + dx, 3), round(z + dz, 3)))
+    nodes = [
+        {'node_id': f'n{i}', 'x': x, 'y': 1.0, 'z': z}
+        for i, (x, z) in enumerate(sorted(open_cells))
+    ]
+    nav_graph = {
+        'snapshots': {
+            'episode_start': {
+                'params': {
+                    'grid_size': grid,
+                    'agent_move_m': grid,
+                    'agent_rotation_deg': 45.0,
+                    'edge_connectivity': '8',
+                },
+                'nodes': nodes,
+                'edges': [],
+            }
+        }
+    }
+    trajectory, steps = [], []
+    yaw = 0.0
+    for i, (x, z) in enumerate(cells):
+        if i > 0:
+            px, pz = cells[i - 1]
+            yaw = 0.0 if z > pz else (180.0 if z < pz else 90.0)
+        pose = {'position': [x, 1.0, z], 'rotation': [0.0, yaw, 0.0]}
+        trajectory.append({'step': i, 'image_path': f'/img_{i}.png', **pose})
+        visible, ego_edges = {}, []
+        if i <= 1:
+            first = cells[0]
+            visible['Fridge|1'] = detection('Fridge', [first[0], 1.0, first[1]])
+            ego_edges.append(ego('Fridge|1'))
+        if i >= len(cells) - 2:
+            last = cells[-1]
+            visible['Toilet|1'] = detection('Toilet', [last[0], 1.0, last[1]])
+            ego_edges.append(ego('Toilet|1'))
+        steps.append(
+            {
+                'step': i,
+                'image_path': f'/img_{i}.png',
+                'action': 'move_ahead',
+                'degrees': 45,
+                'agent': pose,
+                'visible_objects': visible,
+                'non_visible_objects': {},
+                'edges_egocentric': ego_edges,
+                'edges_allocentric': [],
+                'edges_object_frame': [],
+                'edges_inferred': [],
+            }
+        )
+    return {
+        'episode_id': scene_id,
+        'scene_id': scene_id,
+        'environment': 'ai2thor',
+        'episode_meta': {
+            'camera': {'width': 396, 'height': 224, 'fov_vertical_deg': 59},
+            'agent': {'rotation_deg': 45, 'movement_constant': grid},
+        },
+        'nav_graph': nav_graph,
+        'agent_trajectory': trajectory,
+        'steps': steps,
+        'agent_actions': [
+            {'step': i, 'action': 'move_ahead', 'degrees': 45} for i in range(len(cells))
+        ],
+    }
+
+
+@pytest.fixture
+def u_corridor_episode():
+    """U-shaped corridor (+Z 12 cells, +X 6, -Z 12): two real corners, big detour.
+
+    The collected episodes on hand are single straight rooms, which legitimately
+    produce no route item; this scene exercises the path that does.
+    """
+    g = 0.25
+    cells = (
+        [(0.0, k * g) for k in range(13)]
+        + [(k * g, 12 * g) for k in range(1, 7)]
+        + [(6 * g, (12 - k) * g) for k in range(1, 13)]
+    )
+    return _corridor_episode(cells, grid=g, scene_id='u_corridor')
+
+
+@pytest.fixture
+def straight_corridor_episode():
+    """Single straight run: no detour and no turns, so route must stay unsupported."""
+    g = 0.25
+    return _corridor_episode(
+        [(0.0, k * g) for k in range(25)], grid=g, scene_id='straight_corridor'
+    )
+
+
 @pytest.fixture
 def delayed_episode(tiny_episode):
     """Tiny episode extended so SWM/SU exercise multi-step delay with translation."""
@@ -717,11 +846,79 @@ def test_route_min_hop_count_is_two_not_r2r():
     assert ROUTE_MIN_HOP_COUNT == 2
 
 
+def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode):
+    """A cornered scene yields a route whose stored reference is a valid success.
+
+    The corridor is three straight runs, so the reference must read as long
+    ``move_ahead`` runs with two 90° corners — not one rotation per lattice hop.
+    """
+    from cm_benchmark.generation.planner import (
+        ROUTE_MIN_TURN_COUNT,
+        _load_nav_graph_or_none,
+        _rotation_deg,
+        plan_route_knowledge,
+    )
+    from cm_benchmark.generation.nav_graph import score_route_action_sequence
+
+    facts = [f for f in plan_route_knowledge(u_corridor_episode, max_items=2)
+             if f.status == 'ok']
+    assert facts, 'a U-shaped corridor must support route_knowledge'
+    fact = facts[0]
+    extra = fact.extra
+    assert extra['turn_count'] >= ROUTE_MIN_TURN_COUNT
+    # Three straight legs, two corners of two 45° increments each.
+    assert extra['turn_count'] == 2
+    actions = extra['action_sequence']
+    assert actions.count('move_ahead') >= 24
+    assert actions.count('rotate_right') + actions.count('rotate_left') == 4
+
+    graph = _load_nav_graph_or_none(u_corridor_episode)
+    score = score_route_action_sequence(
+        graph,
+        extra['source_node'],
+        extra['goal_node'],
+        actions,
+        [tuple(e) for e in extra['traversed_edges']],
+        start_heading_deg=extra['start_heading_deg'],
+        rotation_deg=_rotation_deg(u_corridor_episode),
+    )
+    assert score['outcome'] == 'valid_success'
+    assert score['illegal_edges'] == []
+
+
+def test_route_rejects_straight_and_turnless_pairs(straight_corridor_episode):
+    """Straight-line pairs are rejected by name, so small scenes stay honest."""
+    from cm_benchmark.generation.planner import (
+        ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
+        ROUTE_MIN_TURN_COUNT,
+        plan_route_knowledge,
+    )
+
+    facts = plan_route_knowledge(straight_corridor_episode, max_items=2)
+    assert all(f.status == 'unsupported' for f in facts)
+    reason = facts[0].reason or ''
+    assert (
+        f'geodesic_euclidean_ratio_lt_{ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO:g}' in reason
+        or f'turns_lt_{ROUTE_MIN_TURN_COUNT}' in reason
+    )
+
+
+def test_route_emits_hardest_pairs_first(u_corridor_episode):
+    """Emitted pairs are ranked by difficulty, not by first-in-walk-order."""
+    from cm_benchmark.generation.planner import plan_route_knowledge
+
+    facts = [f for f in plan_route_knowledge(u_corridor_episode, max_items=5)
+             if f.status == 'ok']
+    ranks = [(f.extra['turn_count'], f.extra['geodesic_m']) for f in facts]
+    assert ranks == sorted(ranks, reverse=True)
+
+
 def test_class4_pair_gate_is_geodesic_metres_not_percentile():
-    """Class-4 pair length is 1–30 m geodesic (OVON/GOAT/HSSD); ratio is survey-only."""
+    """Class-4 pair length is 1–30 m geodesic (OVON/GOAT/HSSD) plus a ratio gate."""
     from cm_benchmark.generation.planner import (
         MIN_PAIR_GEODESIC_M,
         MAX_PAIR_GEODESIC_M,
+        ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO,
         SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
         _class4_pair_reject_reason,
     )
@@ -730,29 +927,32 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
     assert MIN_PAIR_GEODESIC_M == 1.0
     assert MAX_PAIR_GEODESIC_M == 30.0
     assert SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.05
+    # Habitat's PointNav generator applies geo/eucl >= 1.1 to every episode.
+    assert ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.1
 
     g = nx.Graph()
     g.add_node('n0', pos=(0.0, 1.0, 0.0))
     g.add_node('n1', pos=(4.0, 1.0, 0.0))
     g.add_edge('n0', 'n1', weight=4.0)
-    # Straight corridor, geo=4 m, ratio=1.0: route keeps it; survey rejects 1.05.
+    # Straight corridor, geo=4 m, ratio=1.0: length passes, both ratio gates reject.
     assert (
         _class4_pair_reject_reason(
             g, {'x': 0.0, 'z': 0.0}, {'x': 4.0, 'z': 0.0}, 'n0', 'n1', min_ratio=None
         )
         is None
     )
-    assert (
-        _class4_pair_reject_reason(
-            g,
-            {'x': 0.0, 'z': 0.0},
-            {'x': 4.0, 'z': 0.0},
-            'n0',
-            'n1',
-            min_ratio=SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO,
+    for ratio in (SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO, ROUTE_MIN_GEODESIC_EUCLIDEAN_RATIO):
+        assert (
+            _class4_pair_reject_reason(
+                g,
+                {'x': 0.0, 'z': 0.0},
+                {'x': 4.0, 'z': 0.0},
+                'n0',
+                'n1',
+                min_ratio=ratio,
+            )
+            == f'geodesic_euclidean_ratio_lt_{ratio:g}'
         )
-        == 'ratio_lt_1.05'
-    )
     g.add_node('n_close', pos=(0.4, 1.0, 0.0))
     g.add_edge('n0', 'n_close', weight=0.4)
     assert (
@@ -1344,10 +1544,10 @@ def test_class4_slide_panel_shows_source_goal_path_and_scoring():
     )
     assert 'Chair' in route['task'] and 'Table' in route['task']
     assert 'Retrace' in route['task']
-    assert 'n0' in route['path'] and 'n3' in route['path']
-    assert 'move_ahead' in route['actions']
+    assert 'n0' not in route['path'] and 'n3' not in route['path']
+    assert '↑' in route['path'] and '←' in route['path']
+    assert 'bbox center' in route['actions']
     assert 'validity' in route['scoring']
-    assert 'exclusive gold' in route['actions']
 
     survey = class4_slide_panel(
         'survey_based_route_planning',
@@ -1358,6 +1558,7 @@ def test_class4_slide_panel_shows_source_goal_path_and_scoring():
     assert 'Door' in survey['task'] and 'Window' in survey['task']
     assert 'viewed' in survey['graph']
     assert 'unwalked' in survey['scoring']
+    assert '↑' in survey['path'] and '→' in survey['path']
 
 
 def test_core_question_includes_disambiguator_only_when_set():

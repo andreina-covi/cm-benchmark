@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Build Benchmark avance examples.pptx from the taxonomy template + draft items.
 
-Uses raw episode images (what a VLM would see), not annotated GT frames.
+MCQ constructs use raw episode images (what a VLM would see). Class-4 review
+slides overlay only SOURCE/GOAL letter markers on those stills; the walk itself
+is a text arrow-glyph row in the side panel. Evaluation still consumes the
+unmodified frames.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import argparse
 import importlib.util
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
 from pptx import Presentation
@@ -31,6 +35,8 @@ _slide_copy = importlib.util.module_from_spec(_slide_copy_spec)
 assert _slide_copy_spec.loader is not None
 _slide_copy_spec.loader.exec_module(_slide_copy)
 class4_slide_panel = _slide_copy.class4_slide_panel
+overlay_class4_frames = _slide_copy.overlay_class4_frames
+class4_pair_length = _slide_copy.class4_pair_length
 TEMPLATE = Path("/home/andreina/Documents/Programs/Benchmark - avance.pptx")
 OUTPUT = Path("/home/andreina/Documents/Programs/Benchmark - avance examples.pptx")
 DEFAULT_DRAFT_JSONS = [
@@ -81,15 +87,16 @@ CONSTRUCT_DEFS = {
     "route_knowledge": (
         "Route knowledge",
         "Retrace a walked source→goal as collected-format actions.",
-        "Two stills: source landmark and goal landmark. The model writes actions. "
-        "Score = metric simulation on traversed edges (success / validity / SPL), "
-        "not exact-match to the stored sequence.",
+        "Stills with a letter marker at each landmark's 2D bbox center. "
+        "The model writes actions; score = metric simulation on traversed edges "
+        "(success / validity / SPL), not exact-match to the stored sequence.",
     ),
     "survey_based_route_planning": (
         "Survey-based route planning",
         "Plan a never-walked source→goal from layout (through-door evidence).",
-        "Two stills: source sighted and goal sighted. Score uses viewed-edge "
-        "validity (must leave the walked graph) and SPL on the viewed subgraph.",
+        "Stills with a letter marker at each landmark's 2D bbox center. "
+        "Score uses viewed-edge validity "
+        "(must leave the walked graph) and SPL on the viewed subgraph.",
     ),
 }
 
@@ -194,7 +201,12 @@ def load_items(paths: list[Path]) -> list[dict]:
 
 
 def select_examples(items: list[dict], construct: str, limit: int) -> list[dict]:
-    """Choose distinct, valid concise examples in input-file order."""
+    """Choose distinct, valid concise examples.
+
+    MCQ constructs keep input-file order. Class-4 prefers longer stored
+    source→goal walks (more hops, then more actions) so slides are not
+    dominated by 1 m neighbor pairs.
+    """
     candidates = [
         item
         for item in items
@@ -204,6 +216,8 @@ def select_examples(items: list[dict], construct: str, limit: int) -> list[dict]
         and item.get("question_style") == "concise"
         and all(Path(path).is_file() for path in (item.get("image_paths") or []))
     ]
+    if construct in _CLASS4_CONSTRUCTS:
+        candidates = sorted(candidates, key=class4_pair_length, reverse=True)
     selected = []
     seen_pairs = set()
     for item in candidates:
@@ -518,15 +532,17 @@ def _slide_readout(item: dict) -> str:
         )
     if construct == "route_knowledge":
         return (
-            f"Source ({ctx.get('source', '?')}) and goal ({ctx.get('goal', '?')}). "
-            "Retrace the walked route. Scoring is on traversed edges "
-            "(success / validity / SPL), not exact string match."
+            f"SOURCE ({ctx.get('source', '?')}) and GOAL ({ctx.get('goal', '?')}) "
+            "carry a letter marker on the still where each was sighted. The stored "
+            "walk is the panel glyph row (↑ ahead, ↓ back, ← left, → right). Scoring "
+            "is on traversed edges (success / validity / SPL), not exact string match."
         )
     if construct == "survey_based_route_planning":
         return (
-            f"Source sighted ({ctx.get('source', 'source')}) and goal sighted "
-            f"({ctx.get('goal', 'goal')}). Plan a never-walked link from layout. "
-            "Validity requires viewed edges plus at least one unwalked hop."
+            f"SOURCE ({ctx.get('source', 'source')}) and GOAL "
+            f"({ctx.get('goal', 'goal')}) carry a letter marker. The panel glyph row "
+            "shows one valid never-walked plan. Validity requires viewed edges "
+            "plus at least one unwalked hop."
         )
     if construct == "spatial_working_memory":
         if "How many" in (item.get("question") or ""):
@@ -668,15 +684,33 @@ def add_example_slide(
         display_roles = roles[:3]
         recap = None
 
-    _fit_images(
-        slide,
-        display_paths,
-        Inches(0.25),
-        Inches(0.62),
-        Inches(5.0),
-        Inches(3.55),
-        labels=display_roles,
-    )
+    overlay_tmp = None
+    slide_paths = display_paths
+    if construct in _CLASS4_CONSTRUCTS:
+        ctx = _item_context(item)
+        overlay_tmp = tempfile.TemporaryDirectory(prefix="cm_class4_slides_")
+        slide_paths = overlay_class4_frames(
+            display_paths,
+            roles=display_roles,
+            source_name=str(ctx.get("source") or "source"),
+            goal_name=str(ctx.get("goal") or "goal"),
+            source_mark=ctx.get("source_mark") if isinstance(ctx.get("source_mark"), dict) else None,
+            goal_mark=ctx.get("goal_mark") if isinstance(ctx.get("goal_mark"), dict) else None,
+            out_dir=Path(overlay_tmp.name),
+        )
+    try:
+        _fit_images(
+            slide,
+            slide_paths,
+            Inches(0.25),
+            Inches(0.62),
+            Inches(5.0),
+            Inches(3.55),
+            labels=display_roles,
+        )
+    finally:
+        if overlay_tmp is not None:
+            overlay_tmp.cleanup()
     add_textbox(
         slide,
         Inches(0.3),
@@ -709,7 +743,7 @@ def add_example_slide(
             Inches(2.25),
             rw,
             Inches(0.25),
-            text="Source, goal, and reference path",
+            text="Source, goal, and action walk",
             size=11,
             bold=True,
             color=TEAL,

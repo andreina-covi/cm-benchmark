@@ -492,6 +492,10 @@ def _slide_context(fact: PlannedFact) -> dict:
         'graph_scope',
         'action_sequence',
         'start_heading_deg',
+        'source_landmark_id',
+        'goal_landmark_id',
+        'source_mark',
+        'goal_mark',
         'source_node',
         'goal_node',
         'path_nodes',
@@ -572,16 +576,16 @@ def slide_readout(construct: str, context: Optional[dict] = None) -> str:
         )
     if construct == 'route_knowledge':
         return (
-            f"Landmark views of source ({ctx.get('source')}) and goal "
-            f"({ctx.get('goal')}). Retrace the walked route. Scoring is "
-            "metric simulation on traversed edges (success / validity / SPL), "
-            "not exact-match to the stored action string."
+            f"SOURCE ({ctx.get('source')}) and GOAL ({ctx.get('goal')}) "
+            "carry a letter marker on the still where each was sighted. Scoring is "
+            "metric simulation on traversed edges "
+            "(success / validity / SPL), not exact-match to the stored action string."
         )
     if construct == 'survey_based_route_planning':
         return (
-            f"Source sighted ({ctx.get('source')}) and goal sighted "
-            f"({ctx.get('goal')}). Plan a never-walked link from layout "
-            "(through-door evidence). Scoring uses viewed_edges with a "
+            f"SOURCE ({ctx.get('source')}) and GOAL ({ctx.get('goal')}) "
+            "carry a letter marker. The stored walk is one valid never-walked "
+            "plan (through-door evidence). Scoring uses viewed_edges with a "
             "required untraversed hop — same simulator as route knowledge."
         )
     if construct == 'spatial_working_memory':
