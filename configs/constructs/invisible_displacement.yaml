@@ -1,60 +1,39 @@
-# Auto-synced excerpt from configs/taxonomy.yaml (single source of truth).
-# Do not diverge field semantics here; edit taxonomy.yaml then re-sync.
+# Excerpt of configs/taxonomy.yaml. Edit taxonomy first, then re-sync.
 invisible_displacement:
   class: 2
   frame_of_reference: egocentric
-  definition: 'Track an object''s location after it is hidden AND relocated out of view (Piaget
-    Stage 6: the move itself is never witnessed, only inferred). The question MUST supply
-    a spatial cue naming where the object went (destination landmark or partner object''s
-    prior place); without that cue the item is unanswerable from the frames alone.
-
-    '
+  definition: >
+    Track an object after it is hidden and relocated out of view.
+    The question names where it went (landmark or swap partner).
   what_moves: object (while hidden)
   difficulty_axis:
-  - delay_steps
-  - load_n_objects
-  - verbosity
-  # verbosity: concise | verbose — verbose names other static scene objects
-  # (no relations) per taxonomy shared_rules exception; report separately
-  # from delay/load, don't pool with them
+    - delay_steps
+    - load_n_objects
+    - verbosity
   answer_type:
-  - recall_direction: egocentric direction at query pose; question names the destination cue
-  - swap: egocentric direction; question names a previously seen partner object as the spatial
-      anchor
+    - recall_direction: egocentric direction; question names the destination
+    - swap: egocentric direction; question names a previously seen partner
   required_temporal_fields:
-  - object_state_track
-  - displacement_event
-  - displacement_candidates
+    - object_state_track
+    - displacement_event
+    - displacement_candidates
   question_template:
-    recall_direction: While out of view, the {object_type} was moved onto {new_location}.
+    recall_direction: >
+      While out of view, the {object_type} was moved onto {new_location}.
       Where is it relative to you now?
-    swap: The {object_type} was moved to where the {other_object_type} used to be. Where is
-      the {object_type} relative to you now?
+    swap: >
+      The {object_type} was moved to where the {other_object_type} used to be.
+      Where is the {object_type} relative to you now?
   ground_truth_method: >
     Hidden move from displacement_events. Answer is the object's
     egocentric bearing at the query pose. Floor destinations need a
-    nearby named landmark ("the floor near the {landmark}"), never a
-    bare Floor. Swap items name a previously seen partner object instead
-    of a receptacle.
+    nearby named landmark, never a bare Floor. Swap items name a
+    previously seen partner instead of a receptacle.
   distractor_pattern:
-  - original_location
-  - nearby_receptacle
-  - salient_decoy_location
+    - original_location
+    - nearby_receptacle
+    - salient_decoy_location
   discriminators:
-  - queried object was distinguishable, then hidden, before it moved
-  - displacement_event.hidden_during == true
-  - queried object NOT in nav FOV on any shown frame from move through query_step t
-  - one draft item per displacement_events object row (a swap logs two rows → two items)
-  - question always names a destination cue (landmark OR partner object)
-  - 'direct move (moved_via != swap): destination cue is distinguishable in >=1 shown frame
-    — either the named receptacle (non-Floor) or, for Floor destinations, a landmark within
-    FLOOR_ANCHOR_RADIUS of the true final position (reject only that Floor candidate if no
-    such landmark exists — Floor is no longer excluded as a category); emit recall_direction
-    only
-
-    '
-  - 'swap (moved_via == swap): swap_partner_id set; partner object distinguishable in >=1
-    shown frame at its pre-swap position; emit swap template only (never name a receptacle
-    in the question — object anchor OR receptacle anchor, not both)
-
-    '
+    - queried object was distinguishable, then hidden, then moved
+    - the move itself is never visible
+    - question names a destination cue (landmark or swap partner)
