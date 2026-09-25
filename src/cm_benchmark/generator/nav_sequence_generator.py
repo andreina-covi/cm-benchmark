@@ -305,22 +305,29 @@ class NavSequenceGenerator(ABC):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build navigation episode GT from a collection folder (DB + optional JSON)"
+        description=(
+            "Build navigation episode GT from one episode folder or a root of them "
+            "(DB + optional JSON)"
+        )
     )
     parser.add_argument(
         "--csv_path_folder",
         type=str,
         required=True,
         help=(
-            "SPOC episode root (<timestamp>/) or its annotations/ folder "
-            "(navigation-*.csv, objects-*.csv, optional displacement/survey files)"
+            "One SPOC episode (<timestamp>/ or its annotations/) or a root whose "
+            "children are those episode folders. scene_id is read from filenames "
+            "such as navigation-house_007514.csv."
         ),
     )
     parser.add_argument(
         "--scene_id",
         type=str,
         default=None,
-        help="Scene tag (e.g. house_001030). Auto-detected from episode_meta / filenames if omitted",
+        help=(
+            "Scene tag for a single episode (e.g. house_001030). "
+            "Ignored for a multi-episode root; each scene is read from its filenames."
+        ),
     )
     parser.add_argument(
         "--file_navigation",
@@ -356,14 +363,26 @@ def parse_args():
         "--output_path",
         type=str,
         default="src/cm_benchmark/storage/ai2thor/nav_data",
-        help="Directory for optional JSON export",
+        help=(
+            "Root directory for optional JSON export. Each scene is written to "
+            "<output_path>/<scene_id>/nav_<scene_id>.json "
+            "(for example nav_house_007514.json)."
+        ),
     )
-    parser.add_argument("--output_filename", type=str, default="nav_data.json")
+    parser.add_argument(
+        "--output_filename",
+        type=str,
+        default=None,
+        help="Override the JSON filename. Default is nav_<scene_id>.json",
+    )
     parser.add_argument(
         "--db_path",
         type=str,
-        default="src/cm_benchmark/storage/ai2thor/episodes.db",
-        help="SQLite DB path (system of record)",
+        default="src/cm_benchmark/storage/ai2thor/episodes",
+        help=(
+            "Root directory for SQLite. Each scene is written to "
+            "<db_path>/<scene_id>/episodes.db."
+        ),
     )
     parser.add_argument(
         "--episode_id",
@@ -380,12 +399,15 @@ def parse_args():
     parser.add_argument(
         "--export_json",
         action="store_true",
-        help="Also write a JSON artifact for inspection / LLM drafting",
+        help="Also write a JSON artifact for inspection",
     )
     parser.add_argument(
         "--visibility_model_path",
         type=str,
         default=None,
-        help="Path to visibility_filter.joblib bundle (predict_proba + low/high bands)",
+        help=(
+            "Path to visibility_filter.joblib. Applied to every episode under "
+            "--csv_path_folder."
+        ),
     )
     return parser.parse_args()

@@ -1,6 +1,6 @@
 """SQLite store for episode ground-truth navigation data.
 
-JSON remains an optional export for inspection / LLM drafting.
+JSON remains an optional export for inspection.
 The DB is the scalable system of record for querying by step/object/edge.
 """
 

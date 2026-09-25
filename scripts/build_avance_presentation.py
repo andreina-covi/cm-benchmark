@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Benchmark avance examples.pptx from the taxonomy template + draft items.
+"""Build Benchmark avance examples.pptx from the taxonomy template + generated items.
 
 MCQ constructs use raw episode images (what a VLM would see). Class-4 review
 slides overlay only SOURCE/GOAL letter markers on those stills; the walk itself
@@ -25,24 +25,28 @@ from PIL import Image
 
 # --- paths ---
 REPO = Path(__file__).resolve().parents[1]
+
+
 # Load by file path so cm_benchmark.generation.__init__ (numpy/planner) is not imported.
 # The pptx venv does not install the generation stack.
-_slide_copy_path = REPO / "src" / "cm_benchmark" / "generation" / "slide_copy.py"
-_slide_copy_spec = importlib.util.spec_from_file_location(
-    "cm_benchmark_slide_copy", _slide_copy_path
-)
-_slide_copy = importlib.util.module_from_spec(_slide_copy_spec)
-assert _slide_copy_spec.loader is not None
-_slide_copy_spec.loader.exec_module(_slide_copy)
+def _load_generation_module(name: str, filename: str):
+    path = REPO / "src" / "cm_benchmark" / "generation" / filename
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_slide_copy = _load_generation_module("cm_benchmark_slide_copy", "slide_copy.py")
 class4_slide_panel = _slide_copy.class4_slide_panel
 overlay_class4_frames = _slide_copy.overlay_class4_frames
 class4_pair_length = _slide_copy.class4_pair_length
+_episode_io = _load_generation_module("cm_benchmark_episode_io", "episode_io.py")
+list_item_jsons = _episode_io.list_item_jsons
 TEMPLATE = Path("/home/andreina/Documents/Programs/Benchmark - avance.pptx")
 OUTPUT = Path("/home/andreina/Documents/Programs/Benchmark - avance examples.pptx")
-DEFAULT_DRAFT_JSONS = [
-    REPO / "src/cm_benchmark/storage/ai2thor/items/draft_house_007514.json",
-    REPO / "src/cm_benchmark/storage/ai2thor/items/draft_house_001030.json",
-]
+DEFAULT_ITEMS_ROOT = REPO / "src/cm_benchmark/storage/ai2thor/items"
 
 # --- palette (from template theme) ---
 NAVY = RGBColor(0x00, 0x2F, 0x4A)
@@ -184,19 +188,33 @@ def blank_layout(prs: Presentation):
     return prs.slide_layouts[10]  # BLANK
 
 
+def collect_item_jsons(paths: list[Path]) -> list[Path]:
+    """Resolve generate_items output roots, scene folders, or JSON files."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        for json_path in list_item_jsons(path):
+            if json_path in seen:
+                continue
+            seen.add(json_path)
+            found.append(json_path)
+    if not found:
+        joined = ", ".join(str(path) for path in paths)
+        raise FileNotFoundError(f"No item JSON found: {joined}")
+    return found
+
+
 def load_items(paths: list[Path]) -> list[dict]:
     items = []
-    for path in paths:
-        if not path.exists():
-            continue
+    for path in collect_item_jsons(paths):
         data = json.loads(path.read_text())
         for item in data.get("items", []):
             enriched = dict(item)
-            enriched["_draft_source"] = path.stem
+            enriched["_item_source"] = path.stem
             items.append(enriched)
     if not items:
         joined = ", ".join(str(path) for path in paths)
-        raise FileNotFoundError(f"No draft item JSON found: {joined}")
+        raise FileNotFoundError(f"No items in JSON files under: {joined}")
     return items
 
 
@@ -241,14 +259,14 @@ def unsupported_reason(items: list[dict], construct: str) -> str:
     ]
     if valid_without_images:
         return (
-            "raw image files referenced by the draft are unavailable; regenerate "
-            "the draft from a current episode export"
+            "raw image files referenced by the item are unavailable; regenerate "
+            "the items from a current episode export"
         )
     for item in items:
         if item.get("construct") == construct and item.get("status") == "unsupported":
             rationale = item.get("distractor_rationale") or {}
             return str(rationale.get("reason") or "insufficient metadata")
-    return "No strict, GT-provable example is available in the supplied drafts."
+    return "No strict, GT-provable example is available in the supplied items."
 
 
 def refresh_progress_slide(slide) -> None:
@@ -269,7 +287,7 @@ def refresh_progress_slide(slide) -> None:
     bullets = [
         "Taxonomy locked: 4 classes × 8 constructs (+ FoR axis)",
         "SPOC episode → Episode GT (poses, visibility, edges, displacement, layout)",
-        "First-draft MC items: CODE-locked answers + answer_source from metadata",
+        "Generated items: CODE-locked answers + answer_source from metadata",
         "Frame annotator for GT review (not model input)",
         "Still upcoming: GT Validator · vision-necessity · FREEZE · Model Evaluation",
     ]
@@ -281,7 +299,7 @@ def refresh_progress_slide(slide) -> None:
         Inches(5.05),
         Inches(9),
         Inches(0.35),
-        text="Not a frozen eval set — draft candidates only.",
+        text="Not a frozen eval set — generated items only.",
         size=12,
         bold=True,
         color=TERRACOTTA,
@@ -357,7 +375,7 @@ def add_construct_header(
             ("How to read the example", {"size": 14, "bold": True, "color": TEAL}),
             (how_to_read, {"size": 15, "color": DARK, "space_after": 12}),
             (
-                f"{n_examples} strict GT-backed example(s) selected automatically from the supplied drafts."
+                f"{n_examples} strict GT-backed example(s) selected automatically from the supplied items."
                 if n_examples
                 else "No strict GT-backed example is available; the next slide explains the blocker.",
                 {"size": 13, "color": GRAY},
@@ -428,7 +446,7 @@ def _item_context(item: dict) -> dict:
     ctx = item.get("context")
     if isinstance(ctx, dict) and ctx:
         return dict(ctx)
-    # Legacy drafts: recover A/B/C or source/goal from the question text.
+    # Older items: recover A/B/C or source/goal from the question text.
     q = item.get("question") or ""
     out: dict = {}
     construct = item.get("construct") or ""
@@ -856,7 +874,7 @@ def add_unsupported_slide(
                 {"size": 15, "bold": True, "color": TERRACOTTA, "space_after": 14},
             ),
             (
-                "No example is shown because an unprovable draft would violate the benchmark's GT-only invariant.",
+                "No example is shown because an unprovable item would violate the benchmark's GT-only invariant.",
                 {"size": 15, "color": DARK, "space_after": 10},
             ),
             (
@@ -905,11 +923,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--template", type=Path, default=TEMPLATE)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument(
-        "--draft-json",
+        "--items-json",
         type=Path,
         action="append",
-        dest="draft_jsons",
-        help="Draft JSON input; repeat to combine episodes (defaults to known local drafts)",
+        dest="item_jsons",
+        help=(
+            "generate_items --output_path root (items/<scene>/items_<scene>.json), "
+            "one scene folder, or one items JSON. Repeat to combine roots "
+            f"(default: {DEFAULT_ITEMS_ROOT})"
+        ),
     )
     parser.add_argument("--examples-per-construct", type=int, default=2)
     return parser.parse_args()
@@ -917,7 +939,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    draft_jsons = args.draft_jsons or DEFAULT_DRAFT_JSONS
+    item_jsons = args.item_jsons or [DEFAULT_ITEMS_ROOT]
     if not args.template.exists():
         raise SystemExit(f"Template missing: {args.template}")
     if args.examples_per_construct < 1:
@@ -926,14 +948,14 @@ def main() -> None:
     shutil.copy2(args.template, args.output)
 
     prs = Presentation(str(args.output))
-    items = load_items(draft_jsons)
+    items = load_items(item_jsons)
 
     # Slide 8 (index 7): refresh progress
     refresh_progress_slide(prs.slides[7])
 
     add_divider(
         prs,
-        "First-draft items — what the model sees",
+        "Generated items — what the model sees",
         "Strict GT-backed MC candidates · raw ordered frames · not a frozen set",
     )
 

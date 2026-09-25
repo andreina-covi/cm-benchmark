@@ -1,6 +1,6 @@
 # Running generation
 
-Operational notes for episode GT, draft items, visibility, and class-4
+Operational notes for episode GT, item generation, visibility, and class-4
 scoring. Construct *meaning* lives in [`configs/taxonomy.yaml`](../configs/taxonomy.yaml).
 Numeric gates and algorithms live in `src/cm_benchmark/generation/planner.py`
 and `nav_graph.py`.
@@ -22,18 +22,26 @@ SPOC collection folder:
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
-  --csv_path_folder /path/to/collection_run \
-  --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
+  --csv_path_folder /path/to/generated/navigation \
+  --db_path         src/cm_benchmark/storage/ai2thor/episodes \
   --export_json \
-  --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
-  --output_filename nav_data_house_XXXXXX.json
+  --output_path     src/cm_benchmark/storage/ai2thor/nav_data
 ```
 
-`--csv_path_folder` may be the episode root or `annotations/`.
-`scene_id` / `episode_id` come from `episode_meta-*.json` when present.
+`--csv_path_folder` may be one episode (`<timestamp>/` or `annotations/`) or a
+root whose children are those episode folders. `scene_id` is read from
+filenames such as `navigation-house_007514.csv` (and from `episode_meta` when
+that file is present). One `visibility_model_path` applies to every episode.
+
+`--db_path` and `--output_path` are roots. One subfolder per scene:
+
+```text
+episodes/house_007514/episodes.db
+nav_data/house_007514/nav_house_007514.json
+```
 
 SQLite (`EpisodeStore`) is the system of record. JSON is optional, for
-inspection and drafting.
+inspection.
 
 Sparse tracks (`object_state_track`, `region_trajectory`, `passage_state`)
 store the first observation plus later change points. At step `t`, take the
@@ -72,17 +80,24 @@ Then pass `visibility_model_path=...` into `Ai2ThorNavGenerator`.
 
 ---
 
-## Draft items
+## Generate items
+
+The input is the nav generator's `--output_path`. One visibility model applies
+to every scene. `--output_path` is a root, one subfolder per scene:
 
 ```bash
-python -m cm_benchmark.generation.draft_items \
-  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_XXXXXX.json \
-  --output       src/cm_benchmark/storage/ai2thor/items/draft_house_XXXXXX.json \
+python -m cm_benchmark.generation.generate_items \
+  --episode_json src/cm_benchmark/storage/ai2thor/nav_data \
+  --output_path  src/cm_benchmark/storage/ai2thor/items \
   --max_per_construct 2
 ```
 
-Or `--db_path` + `--episode_id`. Optional `--constructs`, `--swm_min_delay`,
-`--su_min_delay`.
+```text
+items/house_007514/items_house_007514.json
+```
+
+Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`. A single scene
+database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
 - Temporal wording is `{k} steps ago` / `now` — not a bundled “time order” cue.
@@ -107,9 +122,12 @@ hardest surviving pairs. Route also requires real turns. Constants: `planner.py`
 ```bash
 python scripts/build_avance_presentation.py \
   --template /path/to/template.pptx \
-  --draft-json src/cm_benchmark/storage/ai2thor/items/draft_house_XXXXXX.json \
+  --items-json src/cm_benchmark/storage/ai2thor/items \
   --output /path/to/examples.pptx
 ```
+
+`--items-json` is `generate_items --output_path`: a root of scene folders, one
+scene folder, or one `items_<scene>.json`. Repeat the flag to combine roots.
 
 Class-4 stills get a letter marker on source and goal. Evaluation uses the
 unmodified frames.
@@ -118,6 +136,6 @@ Annotate frames for spatial review:
 
 ```bash
 python -m cm_benchmark.utils.annotate_frames \
-  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_XXXXXX.json \
+  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/house_XXXXXX/nav_house_XXXXXX.json \
   --output_dir   src/cm_benchmark/storage/ai2thor/annotated/house_XXXXXX
 ```

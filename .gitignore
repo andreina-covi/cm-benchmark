@@ -57,12 +57,17 @@ src/cm_benchmark/storage/ai2thor/items/
 src/cm_benchmark/storage/ai2thor/output/
 
 # --- Local analysis plot outputs ---
-/analysis/
+# Ignore analysis artifacts, but keep the trained visibility model.
+/analysis/*
+!/analysis/dt_tune/
+/analysis/dt_tune/*
+!/analysis/dt_tune/visibility_filter.joblib
 
 # --- Regenerable labeling / calibration artifacts (root) ---
 /labeling_tool.html
 /calibration_manifest.csv
 *.joblib
+!/analysis/dt_tune/visibility_filter.joblib
 
 # --- Presentation build helper (optional local venv) ---
 .venv-pptx/

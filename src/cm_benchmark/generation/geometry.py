@@ -1,4 +1,4 @@
-"""Deterministic ego-direction helpers for draft generation (no invented facts)."""
+"""Deterministic ego-direction helpers for item generation (no invented facts)."""
 
 from __future__ import annotations
 

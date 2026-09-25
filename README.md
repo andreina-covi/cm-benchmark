@@ -54,8 +54,8 @@ frozen items require `vision_necessary == true`.
 
 ## Status
 
-Working loop today: **exported SPOC / AI2-THOR folders → episode GT → draft
-questions**. Still ahead: ground-truth validator, vision-necessity, FREEZE, and
+Working loop today: **exported SPOC / AI2-THOR folders → episode GT → generated
+items**. Still ahead: ground-truth validator, vision-necessity, FREEZE, and
 the model-evaluation pipeline. `allocentric_encoding` stays unsupported until
 trusted object facing exists.
 
@@ -70,7 +70,7 @@ Field brief: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collect
 configs/          taxonomy + per-construct excerpts
 src/cm_benchmark/
   generator/      episode GT from exported CSVs
-  generation/     first-draft questions
+  generation/     question items from episode GT
   evaluation/     scoring protocol
   storage/        SQLite + JSON artifacts
 scripts/          one-off helpers (slides, etc.)
@@ -82,11 +82,18 @@ tests/
 
 ## Setup
 
-Python 3.12.
+Python 3.12. Install the libraries in [`requirements.txt`](requirements.txt):
 
 ```bash
-pip install pandas numpy seaborn scikit-learn matplotlib pytest pyyaml
-pip install -e .    # optional; tests add src via pythonpath
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Commands below need the package on `PYTHONPATH` (pytest already adds `src` via `pyproject.toml`):
+
+```bash
+export PYTHONPATH=src
 ```
 
 ---
@@ -97,25 +104,40 @@ Episode GT (SQLite is the system of record; JSON is optional):
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
-  --csv_path_folder /path/to/collection_run \
-  --db_path         src/cm_benchmark/storage/ai2thor/episodes.db \
+  --csv_path_folder /path/to/generated/navigation \
+  --db_path         src/cm_benchmark/storage/ai2thor/episodes \
   --export_json \
-  --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
-  --output_filename nav_data_house_XXXXXX.json
+  --output_path     src/cm_benchmark/storage/ai2thor/nav_data
 ```
 
-`--csv_path_folder` may be the episode root or its `annotations/` subfolder.
+`--csv_path_folder` may be one episode (`<timestamp>/` or its `annotations/`
+subfolder) or a root whose children are those episode folders. `scene_id` is
+read from filenames such as `navigation-house_007514.csv`. One
+`--visibility_model_path` applies to every episode under that root.
 
-Draft questions:
+`--db_path` and `--output_path` are roots. Each scene is written to its own
+subfolder:
+
+```text
+episodes/house_007514/episodes.db
+nav_data/house_007514/nav_house_007514.json
+```
+
+Generate items from that nav JSON root. One `--visibility_model_path` applies
+to every scene. `--output_path` is a root, one subfolder per scene:
 
 ```bash
-python -m cm_benchmark.generation.draft_items \
-  --episode_json src/cm_benchmark/storage/ai2thor/nav_data/nav_data_house_XXXXXX.json \
-  --output       src/cm_benchmark/storage/ai2thor/items/draft_house_XXXXXX.json \
+python -m cm_benchmark.generation.generate_items \
+  --episode_json src/cm_benchmark/storage/ai2thor/nav_data \
+  --output_path  src/cm_benchmark/storage/ai2thor/items \
   --max_per_construct 2
 ```
 
-If a construct cannot be proven from that scene's GT, the draft is
+```text
+items/house_007514/items_house_007514.json
+```
+
+If a construct cannot be proven from that scene's GT, the item is
 `unsupported` — that is expected, not a bug to tune away.
 
 ```bash
@@ -130,7 +152,7 @@ More commands (visibility labeling, slides, frame annotation, CLI flags):
 ## Roadmap
 
 - [x] Episode GT from AI2-THOR / SPOC exports
-- [x] First-draft items (templates, concise / verbose)
+- [x] Generated items (templates, concise / verbose)
 - [x] Q&A visibility filter (optional DecisionTree)
 - [ ] Object facing → allocentric encoding
 - [ ] LLM paraphrase, GT validator, vision-necessity

@@ -1,4 +1,4 @@
-"""Candidate benchmark item schema for first-draft Q&A generation."""
+"""Candidate benchmark item schema for Q&A generation."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def default_frame_of_reference(construct: str) -> str:
 
 @dataclass
 class CandidateItem:
-    """Draft item aligned with the benchmark item schema (verification fields null)."""
+    """Item aligned with the benchmark item schema (verification fields null)."""
 
     item_id: str
     construct: str

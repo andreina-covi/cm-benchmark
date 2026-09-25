@@ -1,4 +1,4 @@
-"""Orchestrate first-draft item generation from episode GT."""
+"""Orchestrate item generation from episode GT."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ ALL_CONSTRUCTS = [
 ]
 
 
-def draft_items_for_episode(
+def generate_items_for_episode(
     episode: dict,
     *,
     constructs: Optional[list[str]] = None,

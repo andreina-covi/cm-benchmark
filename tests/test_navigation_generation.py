@@ -162,3 +162,79 @@ def test_folder_episode_exports_to_db(folder_episode, tmp_path):
     assert loaded['displacement_events'][0]['obj_id'] == 'Cup|1'
     assert 'Cup|1' in loaded['object_state_track']
     assert loaded['world_layout'] is not None
+
+
+def _clone_episode(src: Path, dest: Path, scene_id: str) -> None:
+    """Copy a flat fixture into <dest>/annotations with the scene id renamed."""
+    ann = dest / 'annotations'
+    ann.mkdir(parents=True)
+    (dest / 'images').mkdir()
+    for path in src.iterdir():
+        if not path.is_file():
+            continue
+        text = path.read_text().replace('house_tiny', scene_id)
+        ann.joinpath(path.name.replace('house_tiny', scene_id)).write_text(text)
+
+
+def test_main_builds_every_child_episode_with_one_visibility_model(tmp_path):
+    """A root of timestamp folders yields one episode per child, same model."""
+    import joblib
+    import numpy as np
+    from argparse import Namespace
+    from sklearn.tree import DecisionTreeClassifier
+
+    from cm_benchmark.generator.ai2thor_nav_generator import main
+    from cm_benchmark.storage import EpisodeStore
+
+    root = tmp_path / 'navigation'
+    _clone_episode(EPISODE_DIR, root / '09_23_2026_16_31_04_526137', 'house_007514')
+    _clone_episode(EPISODE_DIR, root / '09_23_2026_16_35_09_464480', 'house_001030')
+
+    rng = np.random.default_rng(0)
+    side = np.concatenate([rng.uniform(1, 8, 20), rng.uniform(20, 40, 20)])
+    clf = DecisionTreeClassifier(max_depth=2, random_state=0)
+    clf.fit(np.column_stack([side * side, side]), (side >= 15).astype(int))
+    model_path = tmp_path / 'visibility_filter.joblib'
+    joblib.dump(
+        {
+            'model': clf,
+            'features': ['bbox-area', 'min-side'],
+            'low': 0.3,
+            'high': 0.7,
+            'ambiguous_proba_stats': {'n': 0, 'min': 0.3, 'max': 0.7, 'mean': 0.5},
+        },
+        model_path,
+    )
+
+    out = tmp_path / 'nav_data'
+    db = tmp_path / 'episodes'
+    main(
+        Namespace(
+            csv_path_folder=str(root),
+            scene_id='should_be_ignored',
+            episode_id='should_be_ignored',
+            output_path=str(out),
+            output_filename=None,
+            db_path=str(db),
+            environment='ai2thor',
+            export_json=True,
+            visibility_model_path=str(model_path),
+            file_navigation=None,
+            file_objects=None,
+            file_object_state=None,
+            file_displacement_events=None,
+            file_displacement_candidates=None,
+        )
+    )
+
+    assert sorted(p.relative_to(out).as_posix() for p in out.rglob('*.json')) == [
+        'house_001030/nav_house_001030.json',
+        'house_007514/nav_house_007514.json',
+    ]
+    for scene in ('house_007514', 'house_001030'):
+        payload = json.loads((out / scene / f'nav_{scene}.json').read_text())
+        assert payload['scene'] == scene
+        assert payload['visibility_filter_model']['path'] == str(model_path.resolve())
+        with EpisodeStore(db / scene / 'episodes.db') as store:
+            rows = store.list_episodes()
+        assert [row['scene'] for row in rows] == [scene]

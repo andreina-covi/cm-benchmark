@@ -1,11 +1,11 @@
-"""Construct templates and helpers for first-draft items (mirrors taxonomy YAML)."""
+"""Construct templates and helpers for generated items (mirrors taxonomy YAML)."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 import math
 
-# Horizontal option bank used by egocentric / SWM / updating drafts
+# Horizontal option bank used by egocentric / SWM / updating items
 EGO_DIRECTION_OPTIONS = [
     'ahead of you',
     'to your right',
@@ -422,7 +422,7 @@ MIN_DISAMBIG_MARGIN_RATIO = 1.5  # nearest sibling must be ≥ this × target–
 # Landmarks / recalled query targets need a clearer FOV footprint than the
 # soft Q&A filter when **no** DecisionTree joblib is loaded. These floors are
 # a fallback only — prefer refitting ``visibility_filter.joblib`` from labels
-# instead of bumping these after each bad draft.
+# instead of bumping these after each bad item.
 QUERY_FOV_MIN_BBOX_AREA = 1200.0
 QUERY_FOV_MIN_SIDE = 32.0
 QUERY_FOV_MIN_VISIBLE_PIXELS = 300.0
