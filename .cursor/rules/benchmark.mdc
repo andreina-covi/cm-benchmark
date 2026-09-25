@@ -115,7 +115,7 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   `allocentric_encoding` still needs trusted object-frame edges when enabled.
 - Collector field brief: prompts/ai2thor_collection_extension.md.
 
-## First-draft Q&A notes (`src/cm_benchmark/generation/`)
+## Item generation notes (`src/cm_benchmark/generation/`)
 - Answers and answer_source are [CODE]-only from episode GT; an LLM may
   only paraphrase question text later (never change the answer).
 - Items may use concise or verbose question styles; verbose text must not
@@ -229,6 +229,6 @@ blind_llm_correct, caption_llm_correct, vision_necessary.
   frozen item has null answer_source or vision_necessary != true).
 - If a request would blur the FREEZE wall or make an [CODE] node call an
   LLM for scoring, refuse and explain.
-- Flag class-4 drafts that ask for full-episode turn recall, or temporal items
+- Flag class-4 items that ask for full-episode turn recall, or temporal items
   whose question never situates “now” / “{k} steps ago” in the navigation stream
   (online sequential protocol — no bundled multi-image “time order” cue).

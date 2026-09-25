@@ -4,7 +4,7 @@ SPOC navigation rows export visibility metrics. Q&A FOV filtering can use:
 
 1. A trained DecisionTree bundle (``visibility_filter.joblib``) via
    ``predict_proba`` + probability bands (**preferred** when a model exists —
-   including at draft time). Replace / refit the ``.joblib`` from labels; do
+   including when generating items). Replace / refit the ``.joblib`` from labels; do
    not keep bumping hard-coded floors for each bad object.
 2. Hard thresholds (``question_visibility``) — fallback when no joblib is
    configured, so tiny / barely-visible blobs are still dropped.
@@ -74,7 +74,7 @@ DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
     'max_obj_distance': None,
 }
 
-# In-process episode key (not written to JSON drafts).
+# In-process episode key (not written to item JSON).
 EPISODE_VISIBILITY_MODEL_KEY = '_visibility_model'
 
 VISIBILITY_MODEL_ENV = 'CM_VISIBILITY_FILTER_MODEL'
@@ -134,7 +134,7 @@ def resolve_visibility_model_path(
 def visibility_model_from_episode(
     episode: Optional[Mapping[str, Any]],
 ) -> Optional['VisibilityFilterModel']:
-    """Return the in-process model attached by draft-time filtering, if any."""
+    """Return the in-process model attached during item generation, if any."""
     if not isinstance(episode, Mapping):
         return None
     model = episode.get(EPISODE_VISIBILITY_MODEL_KEY)
@@ -145,13 +145,13 @@ def visibility_model_from_episode(
     return None
 
 
-def load_visibility_filter_for_draft(
+def load_visibility_filter_for_items(
     explicit: Optional[Union[str, Path]] = None,
     *,
     episode: Optional[Mapping[str, Any]] = None,
     search_defaults: bool = True,
 ) -> Optional['VisibilityFilterModel']:
-    """Load a DecisionTree visibility bundle for drafting, or None if absent."""
+    """Load a DecisionTree visibility bundle for item generation, or None if absent."""
     path = resolve_visibility_model_path(
         explicit, episode=episode, search_defaults=search_defaults
     )
@@ -265,7 +265,7 @@ def normalize_question_visibility_thresholds(
     - ``True`` → built-in defaults
     - mapping → merge onto defaults; explicit ``null`` disables that criterion
     - mapping of only nulls (legacy episode export) → restore defaults so
-      drafts still filter without a joblib model
+      items still filter without a joblib model
     """
     if thresholds is False:
         return {k: None for k in QUESTION_VISIBILITY_KEYS}
@@ -378,7 +378,7 @@ def apply_question_visibility_to_episode(
     search_default_model: bool = True,
     inplace: bool = False,
 ) -> dict:
-    """Filter each step's ``visible_objects`` for Q&A drafting.
+    """Filter each step's ``visible_objects`` for question generation.
 
     Preference order for keep/drop:
     1. ``model`` argument
@@ -391,7 +391,7 @@ def apply_question_visibility_to_episode(
     ep = episode if inplace else copy.deepcopy(episode)
     loaded = model
     if loaded is None:
-        loaded = load_visibility_filter_for_draft(
+        loaded = load_visibility_filter_for_items(
             model_path, episode=ep, search_defaults=search_default_model
         )
 

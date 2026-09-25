@@ -7,6 +7,7 @@ import pandas as pd
 
 from cm_benchmark.generator.episode_paths import (
     is_structural_object,
+    list_collection_episodes,
     resolve_episode_paths,
     resolve_image_path,
 )
@@ -726,11 +727,29 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return episode_dict
 
 
-def main(args):
+def scene_db_file(db_root: str, scene_name: str) -> Path:
+    """``<db_root>/<scene_id>/episodes.db``."""
+    return Path(db_root) / scene_name / 'episodes.db'
+
+
+def scene_json_name(scene_name: str, output_filename: str | None = None) -> str:
+    """``nav_<scene_id>.json``, unless ``output_filename`` is set."""
+    if output_filename:
+        return output_filename
+    return f'nav_{scene_name}.json'
+
+
+def scene_output_dir(output_root: str, scene_name: str) -> Path:
+    """``<output_root>/<scene_id>/``."""
+    return Path(output_root) / scene_name
+
+
+def _export_one_episode(args, folder, *, scene_id, episode_id_override):
+    """Build one episode. ``scene_id`` None → infer from navigation-*.csv."""
     overrides = _file_overrides_from_args(args)
     generator = Ai2ThorNavGenerator(
-        csv_path_folder=args.csv_path_folder,
-        scene_id=args.scene_id,
+        csv_path_folder=str(folder),
+        scene_id=scene_id,
         file_overrides=overrides or None,
         output_path=args.output_path,
         output_filename=args.output_filename,
@@ -738,27 +757,74 @@ def main(args):
         visibility_model_path=getattr(args, 'visibility_model_path', None),
     )
     scene_name = generator.scene_id or 'unknown'
-    extra_data = {'scene': scene_name}
-    episode_dict = generator.collect_episode_data(extra_data=extra_data)
+    json_name = scene_json_name(scene_name, getattr(args, 'output_filename', None))
+    generator.output_path = str(scene_output_dir(args.output_path, scene_name))
+    generator.output_filename = json_name
+    db_file = scene_db_file(args.db_path, scene_name)
+    print(f'Building episode GT for {scene_name} from {folder}')
+    episode_dict = generator.collect_episode_data(extra_data={'scene': scene_name})
 
     meta = generator.episode_meta or {}
     episode_id = (
-        args.episode_id
+        episode_id_override
         or meta.get('episode_id')
         or f"{args.environment}_{scene_name}"
     )
     environment = meta.get('environment') or args.environment
     generator.export_to_db(
         episode_dict,
-        db_path=args.db_path,
+        db_path=str(db_file),
         episode_id=episode_id,
         environment=environment,
     )
     if args.export_json:
-        out_name = args.output_filename
-        if out_name == 'nav_data.json':
-            out_name = f'nav_data_{scene_name}.json'
-        generator.export_to_json(episode_dict, out_name)
+        generator.export_to_json(episode_dict, json_name)
+    return scene_name
+
+
+def main(args):
+    """Build every episode under ``csv_path_folder``.
+
+    A single episode folder is unchanged. A root of timestamp folders is
+    walked one child at a time. Each ``scene_id`` comes from that child's
+    filenames (``navigation-house_007514.csv`` → ``house_007514``).
+    ``visibility_model_path`` is the same bundle for every scene.
+    ``db_path`` and ``output_path`` are roots: each scene is written to
+    ``<db_path>/<scene_id>/episodes.db`` and
+    ``<output_path>/<scene_id>/nav_<scene_id>.json``
+    (for example ``nav_house_007514.json``).
+    """
+    episodes = list_collection_episodes(args.csv_path_folder)
+    multi = len(episodes) > 1
+    if multi and args.scene_id:
+        print(
+            f'Ignoring --scene_id {args.scene_id}: each episode folder '
+            'supplies its own scene id from its filenames.'
+        )
+    if multi and args.episode_id:
+        print(
+            f'Ignoring --episode_id {args.episode_id}: each episode keeps '
+            'the id from its episode_meta (or environment_scene).'
+        )
+    failures = []
+    built = []
+    for folder in episodes:
+        try:
+            scene_name = _export_one_episode(
+                args,
+                folder,
+                scene_id=None if multi else args.scene_id,
+                episode_id_override=None if multi else args.episode_id,
+            )
+            built.append(scene_name)
+        except Exception as exc:
+            print(f'Failed {folder}: {exc}')
+            failures.append((folder, exc))
+    print(f'Built {len(built)} episode(s): {", ".join(built) or "(none)"}')
+    if failures:
+        raise SystemExit(
+            f'{len(failures)} episode(s) failed under {args.csv_path_folder}'
+        )
 
 
 if __name__ == '__main__':

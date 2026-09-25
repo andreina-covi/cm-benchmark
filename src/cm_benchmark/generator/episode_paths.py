@@ -140,6 +140,43 @@ def resolve_images_dir(
     return (episode_root / 'images').resolve()
 
 
+def is_episode_folder(folder: str | Path) -> bool:
+    """True when ``folder`` is an episode root or its ``annotations/`` dir."""
+    try:
+        resolve_annotations_dir(folder)
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return False
+    return True
+
+
+def list_collection_episodes(folder: str | Path) -> list[Path]:
+    """Episode roots to build.
+
+    ``folder`` may be one episode (``<timestamp>/`` or its ``annotations/``)
+    or a collection root whose children are those episode folders::
+
+        root_folder/
+          episode_1/{annotations,images}
+          episode_2/{annotations,images}
+    """
+    folder = Path(folder).resolve()
+    if not folder.is_dir():
+        raise NotADirectoryError(folder)
+    if is_episode_folder(folder):
+        return [folder]
+    episodes = sorted(
+        child
+        for child in folder.iterdir()
+        if child.is_dir() and not child.name.startswith('.') and is_episode_folder(child)
+    )
+    if not episodes:
+        raise FileNotFoundError(
+            f'No episode folders under {folder}. Pass one episode '
+            f'(annotations/ next to images/) or a root of such folders.'
+        )
+    return episodes
+
+
 def discover_scene_id(folder: Path) -> str:
     """Prefer episode_meta file; else first matching navigation-* file."""
     metas = sorted(folder.glob('episode_meta-*.json'))

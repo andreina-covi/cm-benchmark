@@ -6,6 +6,7 @@ import pytest
 
 from cm_benchmark.generator.episode_paths import (
     is_structural_object,
+    list_collection_episodes,
     resolve_annotations_dir,
     resolve_episode_paths,
     resolve_image_path,
@@ -79,3 +80,36 @@ def test_resolve_image_path_relative_and_basename(tmp_path: Path):
         '/missing/elsewhere/img_3.png', images_dir=imgs, timestep=99
     ) == str(target.resolve())
     assert resolve_image_path(None, images_dir=imgs, timestep=3) == str(target.resolve())
+
+
+def test_list_collection_episodes_walks_timestamp_children(tmp_path: Path):
+    """A root of <timestamp>/{annotations,images} yields one episode per child."""
+    root = tmp_path / 'navigation'
+    for stamp, scene in (
+        ('09_23_2026_16_31_04_526137', 'house_007514'),
+        ('09_23_2026_16_35_09_464480', 'house_001030'),
+    ):
+        ann = root / stamp / 'annotations'
+        (root / stamp / 'images').mkdir(parents=True)
+        ann.mkdir()
+        (ann / f'navigation-{scene}.csv').write_text('timestep\n0\n')
+        (ann / f'objects-{scene}.csv').write_text('obj-id\n')
+    found = list_collection_episodes(root)
+    assert [p.name for p in found] == [
+        '09_23_2026_16_31_04_526137',
+        '09_23_2026_16_35_09_464480',
+    ]
+    from cm_benchmark.generator.episode_paths import discover_scene_id
+
+    assert discover_scene_id(found[0] / 'annotations') == 'house_007514'
+    assert discover_scene_id(found[1] / 'annotations') == 'house_001030'
+
+
+def test_list_collection_episodes_keeps_a_single_episode_folder(tmp_path: Path):
+    root = tmp_path / '09_23_2026_16_31_04_526137'
+    ann = root / 'annotations'
+    ann.mkdir(parents=True)
+    (root / 'images').mkdir()
+    (ann / 'navigation-house_007514.csv').write_text('timestep\n0\n')
+    assert list_collection_episodes(root) == [root.resolve()]
+    assert list_collection_episodes(ann) == [ann.resolve()]

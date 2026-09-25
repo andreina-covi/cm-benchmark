@@ -40,7 +40,7 @@ from cm_benchmark.generation.geometry import (
 
 @dataclass
 class PlannedFact:
-    """Locked spatial fact for one draft item (before wording)."""
+    """Locked spatial fact for one item (before wording)."""
 
     construct: str
     status: str  # ok | thin | unsupported

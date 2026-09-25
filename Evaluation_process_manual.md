@@ -107,7 +107,7 @@ Track agreement per construct, not just globally — constructs differ hugely in
 - A construct with κ below your threshold (pick one — 0.6 is a common floor for "substantial agreement" in annotation literature, but you should set this deliberately rather than import it blindly) means the construct's items are ambiguous to humans too, and the fix is almost always in `question_template` wording or `distractor_pattern`, not in adding more reviewers.
 
 ### 3.5 Sampling
-At this stage of the project (small draft sets, active template iteration), review **100% of `auto_pass` items** — you don't have volume yet where sampling saves meaningful effort, and full review gives you the richest signal for fixing templates. Once templates stabilize and volume grows, move to a stratified sample (e.g., all items from any construct/scene combo not yet seen, plus a fixed percentage of repeats) and hold out a fully-reviewed set as a periodic audit.
+At this stage of the project (small item sets, active template iteration), review **100% of `auto_pass` items** — you don't have volume yet where sampling saves meaningful effort, and full review gives you the richest signal for fixing templates. Once templates stabilize and volume grows, move to a stratified sample (e.g., all items from any construct/scene combo not yet seen, plus a fixed percentage of repeats) and hold out a fully-reviewed set as a periodic audit.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Tests for first-draft taxonomy Q&A generation."""
+"""Tests for taxonomy Q&A item generation."""
 
 from copy import deepcopy
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 
 from cm_benchmark.generator.ai2thor_nav_generator import Ai2ThorNavGenerator
 from cm_benchmark.generation.constructs import object_type_from_id, select_template
-from cm_benchmark.generation.pipeline import draft_items_for_episode
+from cm_benchmark.generation.pipeline import generate_items_for_episode
 from cm_benchmark.generation.planner import plan_episode
 from cm_benchmark.generation.templates import _core_question, build_verbose_preamble
 
@@ -377,7 +377,7 @@ def delayed_episode(tiny_episode):
 
 
 def test_egocentric_item_has_answer_source(tiny_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         tiny_episode,
         constructs=['egocentric_encoding'],
         max_per_construct=1,
@@ -406,7 +406,7 @@ def test_egocentric_item_has_answer_source(tiny_episode):
 
 
 def test_concise_verbose_pair_share_answer(tiny_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         tiny_episode,
         constructs=['egocentric_encoding'],
         max_per_construct=1,
@@ -437,7 +437,7 @@ def test_invisible_displacement_swap_mode(folder_episode):
     ]
     assert swap, f'expected swap facts, got {[f.reason for f in facts if f.status != "ok"]}'
 
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         folder_episode,
         constructs=['invisible_displacement'],
         max_per_construct=4,
@@ -474,7 +474,7 @@ def test_invisible_displacement_dual_modes(folder_episode):
     assert modes <= {'recall_direction', 'swap'}
     assert 'recall_direction' in modes or 'swap' in modes
 
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         folder_episode,
         constructs=['invisible_displacement'],
         max_per_construct=4,
@@ -595,7 +595,7 @@ def test_perspective_taking_abc_landmarks(folder_episode):
 
 
 def test_perspective_taking_tiny_may_be_ok_or_unsupported(tiny_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         tiny_episode,
         constructs=['perspective_taking'],
         styles=('concise',),
@@ -607,7 +607,7 @@ def test_perspective_taking_tiny_may_be_ok_or_unsupported(tiny_episode):
 
 
 def test_allocentric_encoding_unsupported_without_facing(tiny_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         tiny_episode,
         constructs=['allocentric_encoding'],
         styles=('concise',),
@@ -1424,8 +1424,8 @@ def test_merge_role_images_dedupes_with_combined_labels():
     assert roles[1] == 'C · locate (Fridge)'
 
 
-def test_draft_item_persists_image_roles_and_context(folder_episode):
-    items = draft_items_for_episode(
+def test_item_persists_image_roles_and_context(folder_episode):
+    items = generate_items_for_episode(
         folder_episode,
         constructs=['perspective_taking'],
         max_per_construct=1,
@@ -1624,7 +1624,7 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
 
 
 def test_swm_delay_range_is_configurable(delayed_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         delayed_episode,
         constructs=['spatial_working_memory'],
         max_per_construct=1,
@@ -1642,7 +1642,7 @@ def test_swm_delay_range_is_configurable(delayed_episode):
 
 
 def test_spatial_updating_mentions_now(delayed_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         delayed_episode,
         constructs=['spatial_updating'],
         max_per_construct=1,
@@ -1662,7 +1662,7 @@ def test_spatial_updating_mentions_now(delayed_episode):
 
 
 def test_spatial_updating_delay_range_is_configurable(delayed_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         delayed_episode,
         constructs=['spatial_updating'],
         max_per_construct=1,
@@ -1999,7 +1999,7 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     'construct', ['spatial_working_memory', 'spatial_updating']
 )
 def test_trajectory_hooks_are_scoped_to_item_frames(delayed_episode, construct):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         delayed_episode,
         constructs=[construct],
         max_per_construct=1,
@@ -2031,7 +2031,7 @@ def test_trajectory_hooks_are_scoped_to_item_frames(delayed_episode, construct):
 
 
 def test_route_knowledge_does_not_leak_action_list(folder_episode):
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         folder_episode,
         constructs=['route_knowledge'],
         max_per_construct=1,
@@ -2045,18 +2045,89 @@ def test_route_knowledge_does_not_leak_action_list(folder_episode):
     assert 'move_ahead' in (ok[0].get('answer') or '')
 
 
-def test_write_draft_json(folder_episode, tmp_path):
-    from cm_benchmark.generation.episode_io import write_draft_items
+def test_write_items_json(folder_episode, tmp_path):
+    from cm_benchmark.generation.episode_io import write_items
 
-    items = draft_items_for_episode(
+    items = generate_items_for_episode(
         folder_episode,
         constructs=['egocentric_encoding', 'invisible_displacement', 'perspective_taking'],
         max_per_construct=1,
         styles=('concise',),
     )
-    out = write_draft_items(items, tmp_path / 'draft.json')
+    out = write_items(items, tmp_path / 'items.json')
     assert out.is_file()
     import json
 
     data = json.loads(out.read_text())
     assert data['n_items'] == len(items)
+
+
+def test_generate_items_reads_nav_json_root(folder_episode, tmp_path):
+    """Nav output root in, one items file per scene subfolder out."""
+    import json
+
+    from cm_benchmark.generation.generate_items import main
+
+    nav = tmp_path / 'nav_data'
+    for scene in ('house_007514', 'house_001030'):
+        episode = dict(folder_episode)
+        episode['scene'] = scene
+        meta = dict(episode.get('episode_meta') or {})
+        meta['scene_id'] = scene
+        episode['episode_meta'] = meta
+        dest = nav / scene / f'nav_{scene}.json'
+        dest.parent.mkdir(parents=True)
+        dest.write_text(json.dumps(episode))
+
+    out = tmp_path / 'items'
+    main([
+        '--episode_json', str(nav),
+        '--output_path', str(out),
+        '--constructs', 'egocentric_encoding',
+        '--max_per_construct', '1',
+        '--styles', 'concise',
+    ])
+    written = sorted(p.relative_to(out).as_posix() for p in out.rglob('*.json'))
+    assert written == [
+        'house_001030/items_house_001030.json',
+        'house_007514/items_house_007514.json',
+    ]
+    for scene in ('house_007514', 'house_001030'):
+        payload = json.loads((out / scene / f'items_{scene}.json').read_text())
+        assert payload['n_items'] >= 1
+        assert payload['items'][0]['scene_id'] == scene
+
+
+def _write_fake_items(root: Path, scene: str) -> Path:
+    dest = root / scene / f'items_{scene}.json'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text('{"n_items": 0, "items": []}')
+    return dest.resolve()
+
+
+def test_list_item_jsons_from_generate_items_root(tmp_path):
+    from cm_benchmark.generation.episode_io import list_item_jsons
+
+    root = tmp_path / 'items'
+    first = _write_fake_items(root, 'house_007514')
+    second = _write_fake_items(root, 'house_001030')
+    assert list_item_jsons(root) == [second, first]
+
+
+def test_list_item_jsons_scene_folder_or_file(tmp_path):
+    from cm_benchmark.generation.episode_io import list_item_jsons
+
+    dest = _write_fake_items(tmp_path / 'items', 'house_007514')
+    assert list_item_jsons(dest.parent) == [dest]
+    assert list_item_jsons(dest) == [dest]
+
+
+def test_list_item_jsons_missing(tmp_path):
+    from cm_benchmark.generation.episode_io import list_item_jsons
+
+    empty = tmp_path / 'items'
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match='items_<scene>.json'):
+        list_item_jsons(empty)
+    with pytest.raises(NotADirectoryError):
+        list_item_jsons(tmp_path / 'missing')
