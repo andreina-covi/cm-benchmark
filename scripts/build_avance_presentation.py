@@ -981,6 +981,5 @@ def main() -> None:
     prs.save(str(args.output))
     print(f"Wrote {args.output} ({len(prs.slides)} slides)")
 
-
 if __name__ == "__main__":
     main()
