@@ -66,7 +66,7 @@ def transform_3d_to_2d(obj1_pos, obj1_rot, obj2_pos, c_point, foc_l, hyperparams
     try:
         u_l, v_l = projection_with_local_vector((x_l, y_l, z_l), c_point, foc_l, hyperparams)
     except ValueError as e:
-        print(f'Error in projection: {e}')
+        # print(f'Error in projection: {e}')
         u_l, v_l = None, None
     return (x_l, y_l, z_l), (u_l, v_l), alpha, betha
 
