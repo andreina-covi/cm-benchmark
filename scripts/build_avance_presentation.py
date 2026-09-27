@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Build Benchmark avance examples.pptx from the taxonomy template + generated items.
+"""Build per-construct example slides from generated items.
 
-MCQ constructs use raw episode images (what a VLM would see). Class-4 review
-slides overlay only SOURCE/GOAL letter markers on those stills; the walk itself
-is a text arrow-glyph row in the side panel. Evaluation still consumes the
-unmodified frames.
+An optional --template keeps existing intro slides (avance deck) and appends
+examples. Without it, the script writes a standalone deck. MCQ constructs use
+raw episode images (what a VLM would see). Class-4 review slides overlay only
+SOURCE/GOAL letter markers on those stills; the walk itself is a text
+arrow-glyph row in the side panel. Evaluation still consumes the unmodified
+frames.
 """
 
 from __future__ import annotations
@@ -182,7 +184,15 @@ def clear_slide(slide) -> None:
 
 
 def blank_layout(prs: Presentation):
-    return prs.slide_layouts[10]  # BLANK
+    """Prefer a layout named Blank; fall back to the emptiest layout.
+
+    The avance template keeps Blank at index 10. python-pptx's default
+    presentation uses index 6. Do not hard-code either.
+    """
+    for layout in prs.slide_layouts:
+        if str(getattr(layout, "name", "")).strip().lower() == "blank":
+            return layout
+    return min(prs.slide_layouts, key=lambda layout: len(layout.placeholders))
 
 
 def collect_item_jsons(paths: list[Path]) -> list[Path]:
@@ -301,6 +311,37 @@ def refresh_progress_slide(slide) -> None:
         bold=True,
         color=TERRACOTTA,
     )
+
+
+def add_title_slide(prs: Presentation) -> None:
+    add_divider(
+        prs,
+        "Spatial-cognition QA benchmark",
+        "Generated items — what the model sees · not a frozen eval set",
+    )
+
+
+def add_progress_slide(prs: Presentation) -> None:
+    slide = prs.slides.add_slide(blank_layout(prs))
+    refresh_progress_slide(slide)
+
+
+def apply_template_progress(prs: Presentation) -> None:
+    """Refresh slide 8 of the avance template, or append a progress slide."""
+    if len(prs.slides) > 7:
+        refresh_progress_slide(prs.slides[7])
+        return
+    add_progress_slide(prs)
+
+
+def open_presentation(template: Path | None, output: Path) -> Presentation:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if template is None:
+        return Presentation()
+    if not template.exists():
+        raise SystemExit(f"Template missing: {template}")
+    shutil.copy2(template, output)
+    return Presentation(str(output))
 
 
 def add_divider(prs: Presentation, title: str, subtitle: str) -> None:
@@ -913,41 +954,52 @@ def add_final_slide(prs: Presentation) -> None:
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build understandable, per-construct benchmark example slides."
     )
-    parser.add_argument("--template", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=None,
+        help=(
+            "Optional avance .pptx to copy and extend (keeps intro slides, "
+            "refreshes the progress slide). Omit to build a standalone deck."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Destination .pptx path",
+    )
     parser.add_argument(
         "--items-json",
         type=Path,
         action="append",
         dest="item_jsons",
+        required=True,
         help=(
             "generate_items --output_path root (items/<scene>/items_<scene>.json), "
-            "one scene folder, or one items JSON. Repeat to combine roots "
+            "one scene folder, or one items JSON. Repeat to combine roots."
         ),
     )
     parser.add_argument("--examples-per-construct", type=int, default=2)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
-    item_jsons = args.item_jsons
-    if not args.template.exists():
-        raise SystemExit(f"Template missing: {args.template}")
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     if args.examples_per_construct < 1:
         raise SystemExit("--examples-per-construct must be at least 1")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.template, args.output)
 
-    prs = Presentation(str(args.output))
-    items = load_items(item_jsons)
-
-    # Slide 8 (index 7): refresh progress
-    refresh_progress_slide(prs.slides[7])
+    items = load_items(args.item_jsons)
+    prs = open_presentation(args.template, args.output)
+    if args.template is None:
+        add_title_slide(prs)
+        add_progress_slide(prs)
+    else:
+        apply_template_progress(prs)
 
     add_divider(
         prs,
@@ -976,6 +1028,7 @@ def main() -> None:
     add_final_slide(prs)
     prs.save(str(args.output))
     print(f"Wrote {args.output} ({len(prs.slides)} slides)")
+
 
 if __name__ == "__main__":
     main()
