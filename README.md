@@ -68,6 +68,7 @@ Field brief: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collect
 
 ```
 configs/          taxonomy + per-construct excerpts
+analysis/dt_tune/ shipped visibility_filter.joblib (Q&A FOV DecisionTree)
 src/cm_benchmark/
   generator/      episode GT from exported CSVs
   generation/     question items from episode GT
@@ -98,6 +99,24 @@ export PYTHONPATH=src
 
 ---
 
+## Visibility filter
+
+Q&A should only query objects a person can identify in the frame. The repo
+ships a trained DecisionTree at
+[`analysis/dt_tune/visibility_filter.joblib`](analysis/dt_tune/visibility_filter.joblib).
+It drops tiny or barely-shown FOV detections from questions; the object catalog
+and displacement logs stay unfiltered.
+
+Episode GT and `generate_items` load that path automatically when you run from
+the repo root (or set `CM_VISIBILITY_FILTER_MODEL`). Pass
+`--visibility_model_path` to override. One path applies to every scene under
+the input folder. If no `.joblib` is found, static floors apply
+(`min_bbox_area=100`, `min_side=8`, `min_visible_pixels=40`).
+
+To label scenes and refit the tree, see [`docs/generation.md`](docs/generation.md).
+
+---
+
 ## Common commands
 
 Episode GT (SQLite is the system of record; JSON is optional):
@@ -107,13 +126,16 @@ python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /path/to/generated/navigation \
   --db_path         src/cm_benchmark/storage/ai2thor/episodes \
   --export_json \
-  --output_path     src/cm_benchmark/storage/ai2thor/nav_data
+  --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
+  --visibility_model_path analysis/dt_tune/visibility_filter.joblib
 ```
 
 `--csv_path_folder` may be one episode (`<timestamp>/` or its `annotations/`
 subfolder) or a root whose children are those episode folders. `scene_id` is
 read from filenames such as `navigation-house_007514.csv`. One
-`--visibility_model_path` applies to every episode under that root.
+`--visibility_model_path` applies to every episode under that root. Omit the
+flag to use the shipped `analysis/dt_tune/visibility_filter.joblib` when it
+exists.
 
 `--db_path` and `--output_path` are roots. Each scene is written to its own
 subfolder:
@@ -130,6 +152,7 @@ to every scene. `--output_path` is a root, one subfolder per scene:
 python -m cm_benchmark.generation.generate_items \
   --episode_json src/cm_benchmark/storage/ai2thor/nav_data \
   --output_path  src/cm_benchmark/storage/ai2thor/items \
+  --visibility_model_path analysis/dt_tune/visibility_filter.joblib \
   --max_per_construct 2
 ```
 
