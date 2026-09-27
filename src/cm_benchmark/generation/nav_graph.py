@@ -283,11 +283,11 @@ def snap_trajectory_to_graph(
         pos = entry.get('position') or entry.get('pos')
         nid = snap_position_to_graph(graph, pos, tolerance=tol)
         if nid is None:
-            logger.warning(
-                'trajectory step %s has no graph node within snap tolerance; '
-                'rejecting pose rather than snapping far',
-                step,
-            )
+            # logger.warning(
+            #     'trajectory step %s has no graph node within snap tolerance; '
+            #     'rejecting pose rather than snapping far',
+            #     step,
+            # )
             continue
         if nid == last_node:
             continue
@@ -1572,11 +1572,11 @@ def filter_valid_connectivity(
     for row in connectivity or []:
         a, b = row.get('from_region'), row.get('to_region')
         if a is not None and b is not None and a == b:
-            if log:
-                logger.warning(
-                    'invalid world_layout.connectivity (from_region == to_region): %s',
-                    row.get('passage_id') or row,
-                )
+            # if log:
+            #     logger.warning(
+            #         'invalid world_layout.connectivity (from_region == to_region): %s',
+            #         row.get('passage_id') or row,
+            #     )
             continue
         valid.append(row)
     return valid
