@@ -44,9 +44,6 @@ overlay_class4_frames = _slide_copy.overlay_class4_frames
 class4_pair_length = _slide_copy.class4_pair_length
 _episode_io = _load_generation_module("cm_benchmark_episode_io", "episode_io.py")
 list_item_jsons = _episode_io.list_item_jsons
-TEMPLATE = Path("/home/andreina/Documents/Programs/Benchmark - avance.pptx")
-OUTPUT = Path("/home/andreina/Documents/Programs/Benchmark - avance examples.pptx")
-DEFAULT_ITEMS_ROOT = REPO / "src/cm_benchmark/storage/ai2thor/items"
 
 # --- palette (from template theme) ---
 NAVY = RGBColor(0x00, 0x2F, 0x4A)
@@ -920,8 +917,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build understandable, per-construct benchmark example slides."
     )
-    parser.add_argument("--template", type=Path, default=TEMPLATE)
-    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--template", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--items-json",
         type=Path,
@@ -930,7 +927,6 @@ def parse_args() -> argparse.Namespace:
         help=(
             "generate_items --output_path root (items/<scene>/items_<scene>.json), "
             "one scene folder, or one items JSON. Repeat to combine roots "
-            f"(default: {DEFAULT_ITEMS_ROOT})"
         ),
     )
     parser.add_argument("--examples-per-construct", type=int, default=2)
@@ -939,7 +935,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    item_jsons = args.item_jsons or [DEFAULT_ITEMS_ROOT]
+    item_jsons = args.item_jsons
     if not args.template.exists():
         raise SystemExit(f"Template missing: {args.template}")
     if args.examples_per_construct < 1:
