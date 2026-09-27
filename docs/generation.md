@@ -119,6 +119,16 @@ hardest surviving pairs. Route also requires real turns. Constants: `planner.py`
 
 ## Review slides
 
+Example slides do not need a PowerPoint template. Omit `--template` to write a
+standalone deck. Pass `--template` only to copy an existing avance deck (intro
+slides stay; the progress slide is refreshed) and append examples.
+
+```bash
+python scripts/build_avance_presentation.py \
+  --items-json src/cm_benchmark/storage/ai2thor/items \
+  --output /path/to/examples.pptx
+```
+
 ```bash
 python scripts/build_avance_presentation.py \
   --template /path/to/template.pptx \
