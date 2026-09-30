@@ -27,14 +27,16 @@ ACTION_VOCAB = (
 _ACTION_LIST = ', '.join(ACTION_VOCAB)
 
 SYSTEM_INSTRUCTION = (
-    'You are answering spatial-cognition questions from first-person views.\n'
+    'You are answering spatial-cognition questions from first-person views. '
+    'When multiple images are provided, they are in chronological order, earliest first.\n'
     '\n'
-    'Multiple-choice items: reply with exactly one option letter (A, B, C, or D).\n'
+    'Multiple-choice items: respond with only the option letter (A, B, C, or D) '
+    '— no words, punctuation, or explanation. Always choose one option, even if uncertain.\n'
     '\n'
     'Navigation-action items (route knowledge and survey-based route planning): '
-    'reply with an ordered sequence using only these action names: '
-    f'{_ACTION_LIST}. Separate actions with commas or arrows. '
-    'Do not add explanation.'
+    'respond with an ordered, comma-separated sequence using only these exact '
+    f'action names: {_ACTION_LIST}. Do not use synonyms, other words, or '
+    'explanation. Always give your best attempt, even if uncertain.'
 )
 
 
