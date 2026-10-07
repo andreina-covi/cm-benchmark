@@ -1750,7 +1750,19 @@ def test_object_type_skips_undefined_category():
         object_type_from_id(
             'ObjaScooter|4|5', {'ObjaScooter|4|5': {'category': 'Undefined'}}
         )
-        == 'ObjaScooter'
+        == 'Scooter'
+    )
+    assert (
+        object_type_from_id(
+            'ObjaScooter|4|5', {'ObjaScooter|4|5': {'category': 'ObjaScooter'}}
+        )
+        == 'Scooter'
+    )
+    assert (
+        object_type_from_id(
+            'Objaverse_Lamp|1', {'Objaverse_Lamp|1': {'category': 'Undefined'}}
+        )
+        == 'Lamp'
     )
     assert (
         object_type_from_id('FloorLamp|4|2', {'FloorLamp|4|2': {'category': 'FloorLamp'}})

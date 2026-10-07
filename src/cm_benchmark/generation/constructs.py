@@ -175,19 +175,38 @@ def _category_usable(cat) -> bool:
     return text.lower() not in _BAD_CATEGORIES
 
 
+def _strip_obja_asset_prefix(name: str) -> str:
+    """Drop the SPOC/Objaverse id prefix so questions say Scooter, not ObjaScooter.
+
+    Longer prefix first: ``Objaverse_Chair`` → ``Chair``, ``ObjaScooter`` → ``Scooter``.
+    """
+    text = str(name).strip()
+    if text:
+        lower = text.lower()
+        for prefix in ('objaverse', 'obja'):
+            if lower.startswith(prefix) and len(text) > len(prefix):
+                rest = text[len(prefix) :].lstrip('_-')
+                if rest:
+                    return rest
+    return text
+
+
 def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -> str:
     """Human-readable object name for questions.
 
     Prefer a real ``category`` from GT when present. Simulator placeholders such as
-    ``Undefined`` (common for some Objaverse assets) fall back to the id stem
-    (``ObjaScooter|4|5`` → ``ObjaScooter``).
+    ``Undefined`` (common for Objaverse assets) fall back to the id stem, with the
+    ``Obja`` / ``Objaverse`` asset prefix stripped (``ObjaScooter|4|5`` → ``Scooter``).
     """
     if visible_or_memory and obj_id in visible_or_memory:
         cat = visible_or_memory[obj_id].get('category')
         if _category_usable(cat):
-            return str(cat).strip()
+            cleaned = _strip_obja_asset_prefix(str(cat).strip())
+            if cleaned:
+                return cleaned
     stem = str(obj_id).split('|')[0].strip()
-    return stem if stem else str(obj_id)
+    cleaned = _strip_obja_asset_prefix(stem) if stem else ''
+    return cleaned or stem or str(obj_id)
 
 
 def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:

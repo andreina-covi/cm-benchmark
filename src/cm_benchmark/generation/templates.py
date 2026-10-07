@@ -149,7 +149,7 @@ def _usable_display_name(planned: Optional[str], obj_id: Optional[str]) -> str:
     """Prefer a planned category only when it is not a placeholder like Undefined."""
     if planned is not None and str(planned).strip():
         probe = object_type_from_id('_', {'_': {'category': planned}})
-        if probe == str(planned).strip():
+        if probe and probe != '_':
             return probe
     if obj_id:
         return object_type_from_id(obj_id)
