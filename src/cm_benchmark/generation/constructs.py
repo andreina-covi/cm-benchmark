@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Optional
 import math
 
+from cm_benchmark.generation.config import get_generation_config, legacy_constant
+
 # Horizontal option bank used by egocentric / SWM / updating items
 EGO_DIRECTION_OPTIONS = [
     'ahead of you',
@@ -103,6 +105,7 @@ CONSTRUCT_TEMPLATES = {
 
 
 def _template_bank(construct: str, template_mode: Optional[str] = None) -> list:
+    """Templates for a construct; for mode-keyed banks, ``template_mode`` or the first mode."""
     bank = CONSTRUCT_TEMPLATES.get(construct)
     if bank is None:
         return []
@@ -120,6 +123,7 @@ def _template_text(entry) -> str:
 
 
 def template_count(construct: str, template_mode: Optional[str] = None) -> int:
+    """Number of paraphrase templates available for a construct / mode."""
     return len(_template_bank(construct, template_mode))
 
 
@@ -144,14 +148,6 @@ def select_template(construct: str, template_mode: Optional[str] = None, index: 
     return _template_text(templates[index % len(templates)])
 
 
-def frame_sequence_cue(n_images: int) -> str:
-    """Deprecated: sequential/online protocol does not bundle images with the question.
-
-    Kept as a no-op so callers do not accidentally reintroduce multi-image cues.
-    """
-    return ''
-
-
 _BAD_CATEGORIES = frozenset(
     {
         '',
@@ -167,12 +163,8 @@ _BAD_CATEGORIES = frozenset(
 
 
 def _category_usable(cat) -> bool:
-    if cat is None:
-        return False
-    text = str(cat).strip()
-    if not text:
-        return False
-    return text.lower() not in _BAD_CATEGORIES
+    """False for missing or placeholder categories (``Undefined``, ``nan``, …)."""
+    return cat is not None and str(cat).strip().lower() not in _BAD_CATEGORIES
 
 
 def _strip_obja_asset_prefix(name: str) -> str:
@@ -209,7 +201,7 @@ def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -
     return cleaned or stem or str(obj_id)
 
 
-def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
+def angle_to_ego_label(angle_deg: float, ahead_half_width: Optional[float] = None) -> str:
     """Map bearing degrees to an ego MC label with a tunable ahead wedge.
 
     ``ahead_half_width`` is half the ahead sector in degrees (total ahead =
@@ -226,6 +218,8 @@ def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
     (spatial_updating, invisible-displacement query). Perspective-taking uses
     ``imagined_perspective_label`` / signed-angle bins instead of this wedge.
     """
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
     w = float(ahead_half_width)
     a = float(angle_deg) % 360.0
     if a < w or a >= 360.0 - w:
@@ -235,18 +229,6 @@ def angle_to_ego_label(angle_deg: float, ahead_half_width: float = 45.0) -> str:
     if a < 180.0 + w:
         return 'behind you'
     return 'to your left'
-
-
-# FOV-constrained constructs: object visible now → bearing stays near ahead;
-# a 45° half-width collapses almost everything to "ahead of you".
-AHEAD_HALF_WIDTH_FOV = 20.0
-# Full-circle constructs after a real pose change (spatial_updating, ID query).
-AHEAD_HALF_WIDTH_FULL = 45.0
-
-# Perspective-taking (stand at A, face B, locate C): signed-angle bins with no
-# "ahead" class. Reject samples within this margin of 0° / ±135° boundaries.
-PT_DIRECTION_BOUNDARY_MARGIN_DEG = 10.0
-PT_DIRECTION_BACK_DEG = 135.0
 
 
 def bearing_deg_xz(dx: float, dz: float) -> Optional[float]:
@@ -282,8 +264,8 @@ def signed_rel_bearing_deg_xz(
 def perspective_direction_label_from_signed(
     signed_deg: float,
     *,
-    margin_deg: float = PT_DIRECTION_BOUNDARY_MARGIN_DEG,
-    back_deg: float = PT_DIRECTION_BACK_DEG,
+    margin_deg: Optional[float] = None,
+    back_deg: Optional[float] = None,
 ) -> Optional[str]:
     """Map signed A→B vs A→C angle to left / right / behind; None if ambiguous.
 
@@ -297,6 +279,11 @@ def perspective_direction_label_from_signed(
     boundaries). World object extent is not used here — episode GT does not
     carry trusted world-space AABB extents for angular span checks.
     """
+    dcfg = get_generation_config().directions
+    if margin_deg is None:
+        margin_deg = dcfg.pt_boundary_margin_deg
+    if back_deg is None:
+        back_deg = dcfg.pt_back_deg
     a = float(signed_deg)
     m = max(0.0, float(margin_deg))
     back = float(back_deg)
@@ -311,8 +298,49 @@ def perspective_direction_label_from_signed(
     return 'to your left'
 
 
+def _sector_boundaries_deg(ahead_half_width: float) -> tuple[float, ...]:
+    """The four ego-sector edges (degrees) for an ahead half-width ``w``."""
+    w = float(ahead_half_width) % 360.0
+    return (w, (180.0 - w) % 360.0, (180.0 + w) % 360.0, (360.0 - w) % 360.0)
+
+
+def angular_span_crosses_sector(
+    bearing_deg: float,
+    ang_width_deg: Optional[float],
+    *,
+    ahead_half_width: Optional[float] = None,
+) -> bool:
+    """True when the object's horizontal angular width straddles a sector edge.
+
+    VSI-Bench drops direction items near an angle boundary but does not publish
+    the cutoff. ViewSpatial-Bench (2025) uses 45° bins and removes ambiguous
+    cases by hand, also without a numeric margin. The measured substitute is
+    the exported ``ang-width-deg``: if any part of the object crosses a sector
+    boundary, the point label is not a fair ground truth. A missing width does
+    not invent a ±10° reject.
+    """
+    if not get_generation_config().directions.refuse_straddling_objects:
+        return False
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
+    if ang_width_deg is None:
+        return False
+    try:
+        half = abs(float(ang_width_deg)) / 2.0
+    except (TypeError, ValueError):
+        return False
+    if half <= 0.0 or math.isnan(half) or math.isinf(half):
+        return False
+    bearing = float(bearing_deg) % 360.0
+    for boundary in _sector_boundaries_deg(ahead_half_width):
+        delta = abs((boundary - bearing + 180.0) % 360.0 - 180.0)
+        if delta <= half:
+            return True
+    return False
+
+
 def local_offset_to_ego_label(
-    local_xyz, *, ahead_half_width: float = AHEAD_HALF_WIDTH_FULL
+    local_xyz, *, ahead_half_width: Optional[float] = None
 ) -> Optional[str]:
     """MC ego label from a local (dx, dy, dz) offset."""
     try:
@@ -320,43 +348,12 @@ def local_offset_to_ego_label(
         z = float(local_xyz[2])
     except (TypeError, ValueError, IndexError):
         return None
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
     bearing = bearing_deg_xz(x, z)
     if bearing is None:
         return None
     return angle_to_ego_label(bearing, ahead_half_width=ahead_half_width)
-
-
-def angle_relation_to_ego_label(
-    angle_relation, *, ahead_half_width: float = AHEAD_HALF_WIDTH_FULL
-) -> Optional[str]:
-    """Map a stored relation triple or local offset to an MC label.
-
-    Prefer ``local_offset_to_ego_label`` / ``angle_to_ego_label`` at call sites.
-    For legacy exclusive triples (one of left/right/front/behind), map directly;
-    composite triples from the old 15° scheme are not recovered — return None
-    so callers recompute from poses.
-    """
-    if not angle_relation or len(angle_relation) < 3:
-        return None
-    # Numeric local offset (dx, dy, dz)
-    try:
-        x, _y, z = float(angle_relation[0]), float(angle_relation[1]), float(angle_relation[2])
-        return local_offset_to_ego_label((x, _y, z), ahead_half_width=ahead_half_width)
-    except (TypeError, ValueError):
-        pass
-    x_dir, _y_dir, z_dir = angle_relation[0], angle_relation[1], angle_relation[2]
-    bits = [b for b in (x_dir, z_dir) if b]
-    if len(bits) > 1:
-        return None
-    if x_dir == 'left':
-        return 'to your left'
-    if x_dir == 'right':
-        return 'to your right'
-    if z_dir == 'front':
-        return 'ahead of you'
-    if z_dir == 'behind':
-        return 'behind you'
-    return None
 
 
 _MC_TO_REFERRING = {
@@ -368,23 +365,9 @@ _MC_TO_REFERRING = {
 
 
 def find_ego_edge(step: dict, obj_id: str) -> Optional[dict]:
+    """The step's ``agent → obj_id`` egocentric edge, or None if the object has none."""
     for edge in step.get('edges_egocentric') or []:
         if edge.get('target') == obj_id and edge.get('source') == 'agent':
-            return edge
-    return None
-
-
-def find_inferred_edge(step: dict, obj_id: str) -> Optional[dict]:
-    for edge in step.get('edges_inferred') or []:
-        if edge.get('target') == obj_id:
-            return edge
-    return None
-
-
-def find_allocentric_edge(step: dict) -> Optional[dict]:
-    for edge in step.get('edges_allocentric') or []:
-        src, tgt = edge.get('source'), edge.get('target')
-        if src and tgt and src != 'agent' and tgt != 'agent':
             return edge
     return None
 
@@ -394,13 +377,15 @@ def translated_egocentric_label(
     landmark_pos: dict,
     target_pos: dict,
     *,
-    ahead_half_width: float = AHEAD_HALF_WIDTH_FOV,
+    ahead_half_width: Optional[float] = None,
 ) -> Optional[str]:
     """Direction of target from landmark in the agent's yaw frame (referring only).
 
     Default FOV half-width: disambiguator landmarks are co-visible in-frame.
     Maps ``angle_to_ego_label`` output to landmark-relative phrases.
     """
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_fov_deg
     dx = float(target_pos['x']) - float(landmark_pos['x'])
     dz = float(target_pos['z']) - float(landmark_pos['z'])
     bearing = bearing_deg_xz(dx, dz)
@@ -433,32 +418,6 @@ def _visible_catalog(step: dict) -> dict[str, dict]:
     return out
 
 
-# Referring expressions must be obvious in the image, not just metrically true.
-# Reject "close to" when the nearest sibling is almost as near (tiny margins).
-MIN_DISAMBIG_MARGIN_M = 0.6
-MIN_DISAMBIG_MARGIN_RATIO = 1.5  # nearest sibling must be ≥ this × target–landmark dist
-
-# Landmarks / recalled query targets need a clearer FOV footprint than the
-# soft Q&A filter when **no** DecisionTree joblib is loaded. These floors are
-# a fallback only — prefer refitting ``visibility_filter.joblib`` from labels
-# instead of bumping these after each bad item.
-QUERY_FOV_MIN_BBOX_AREA = 1200.0
-QUERY_FOV_MIN_SIDE = 32.0
-QUERY_FOV_MIN_VISIBLE_PIXELS = 300.0
-# If the bbox touches the image border, the extent *along that axis* must still
-# be large enough that the object is not just a clipped strip (geometric rule;
-# kept even when the DecisionTree is active).
-QUERY_FOV_EDGE_MARGIN_PX = 2
-QUERY_FOV_MIN_EXTENT_IF_CLIPPED = 48.0
-
-# Invisible-displacement objects are small movable props (Cup, Phone, Bread).
-# Encode distinguishability: DecisionTree when attached on the episode, else these
-# soft floors (not landmark QUERY_FOV). At query they must be invisible.
-ID_ENCODE_FOV_MIN_BBOX_AREA = 100.0
-ID_ENCODE_FOV_MIN_SIDE = 8.0
-ID_ENCODE_FOV_MIN_VISIBLE_PIXELS = 40.0
-
-
 def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
     """Return (width, height) from episode_meta.camera when present."""
     if not isinstance(episode, dict):
@@ -478,8 +437,8 @@ def bbox_not_border_scrape(
     odata: Optional[dict],
     image_wh: Optional[tuple[int, int]],
     *,
-    edge_margin_px: int = QUERY_FOV_EDGE_MARGIN_PX,
-    min_extent_if_clipped: float = QUERY_FOV_MIN_EXTENT_IF_CLIPPED,
+    edge_margin_px: Optional[int] = None,
+    min_extent_if_clipped: Optional[float] = None,
 ) -> bool:
     """False when the detection is only a thin strip along the image border.
 
@@ -487,6 +446,11 @@ def bbox_not_border_scrape(
     clip with width 25 px; a human cannot identify the category.
     When bbox or image size is missing, do not invent a reject.
     """
+    border = get_generation_config().visibility.border
+    if edge_margin_px is None:
+        edge_margin_px = border.edge_margin_px
+    if min_extent_if_clipped is None:
+        min_extent_if_clipped = border.min_extent_if_clipped_px
     if not isinstance(odata, dict) or not image_wh:
         return True
     bbox = odata.get('bbox')
@@ -515,11 +479,11 @@ def bbox_not_border_scrape(
 def fov_metrics_ok(
     odata: Optional[dict],
     *,
-    min_bbox_area: float = QUERY_FOV_MIN_BBOX_AREA,
-    min_side: float = QUERY_FOV_MIN_SIDE,
-    min_visible_pixels: float = QUERY_FOV_MIN_VISIBLE_PIXELS,
+    min_bbox_area: Optional[float] = None,
+    min_side: Optional[float] = None,
+    min_visible_pixels: Optional[float] = None,
     image_wh: Optional[tuple[int, int]] = None,
-    min_extent_if_clipped: float = QUERY_FOV_MIN_EXTENT_IF_CLIPPED,
+    min_extent_if_clipped: Optional[float] = None,
     model: Any = None,
 ) -> bool:
     """True if FOV detection is distinguishable enough to name / encode.
@@ -532,6 +496,13 @@ def fov_metrics_ok(
     from floors; still apply border-scrape when bbox + image size exist.
     Optional ``image_wh`` rejects thin border-clipped scrapes either way.
     """
+    query = get_generation_config().visibility.query
+    if min_bbox_area is None:
+        min_bbox_area = query.min_bbox_area
+    if min_side is None:
+        min_side = query.min_side
+    if min_visible_pixels is None:
+        min_visible_pixels = query.min_visible_pixels
     if not isinstance(odata, dict):
         return False
 
@@ -579,13 +550,7 @@ def format_disambiguator_phrase(info: dict) -> str:
     """Leading-space phrase for templates, e.g. `` close to the Bread``."""
     relation = str(info.get('relation') or '').strip()
     landmark = str(info.get('landmark_type') or '').strip()
-    if not relation or not landmark:
-        return ''
-    if relation == 'close to':
-        return f' close to the {landmark}'
-    if relation == 'behind':
-        return f' behind the {landmark}'
-    return f' {relation} the {landmark}'
+    return f' {relation} the {landmark}' if relation and landmark else ''
 
 
 def find_disambiguator(
@@ -594,8 +559,8 @@ def find_disambiguator(
     duplicate_group: list[str],
     agent_pose: Optional[dict] = None,
     *,
-    min_margin_m: float = MIN_DISAMBIG_MARGIN_M,
-    min_margin_ratio: float = MIN_DISAMBIG_MARGIN_RATIO,
+    min_margin_m: Optional[float] = None,
+    min_margin_ratio: Optional[float] = None,
     model: Any = None,
 ) -> Optional[dict]:
     """Landmark + relation that uniquely identifies target among duplicate_group.
@@ -604,6 +569,11 @@ def find_disambiguator(
     the image (absolute meters AND relative ratio). Landmarks must themselves
     pass ``fov_metrics_ok``. Returns None if nothing qualifies — caller skips.
     """
+    prox = get_generation_config().disambiguation.active_proximity()
+    if min_margin_m is None:
+        min_margin_m = prox.margin_m if prox.margin_m is not None else 0.0
+    if min_margin_ratio is None:
+        min_margin_ratio = prox.ratio if prox.ratio is not None else 0.0
     if len(duplicate_group) < 2:
         return None
 
@@ -659,32 +629,6 @@ def find_disambiguator(
             )
     if best:
         return best[0]
-
-    # 2) fallback — landmark→target direction in agent yaw, unique among siblings
-    heading = None
-    if agent_pose and agent_pose.get('heading') is not None:
-        try:
-            heading = float(agent_pose['heading'])
-        except (TypeError, ValueError):
-            heading = None
-    if heading is None:
-        return None
-
-    for oid, o in landmarks:
-        rel = translated_egocentric_label(heading, o['position'], target_pos)
-        if rel is None:
-            continue
-        sib_rels = {
-            translated_egocentric_label(heading, o['position'], catalog[s]['position'])
-            for s in siblings
-            if s in catalog
-        }
-        if rel not in sib_rels:
-            return {
-                'landmark_id': oid,
-                'relation': rel,
-                'landmark_type': o['category'],
-            }
     return None
 
 
@@ -698,23 +642,25 @@ def resolve_referring_disambiguator(
     """Phrase for templates, or None to skip the candidate.
 
     - Unique category in the step → ``''`` (no phrase; not ambiguous).
-    - Duplicate category + unique landmark phrase → leading-space phrase.
-    - Duplicate category + no unique phrase → ``None`` (exclude from queries).
+    - Duplicate category + proximity or colour-dot mark → leading-space phrase.
+    - Duplicate category + neither → ``None`` (exclude from queries).
+
+    Landmark-relative directions are never used. ``agent_pose`` is unused
+    (kept so existing call sites stay valid).
     """
-    group = duplicate_category_group(step, target_obj_id)
-    if not group:
+    del agent_pose
+    from cm_benchmark.generation.disambiguation import resolve_named_objects
+
+    si = int(step.get('step') or 0)
+    episode = {'steps': [dict(step, step=si)]}
+    names = resolve_named_objects(episode, [si], [target_obj_id], model=model)
+    if names is None or target_obj_id not in names:
         return None
-    if len(group) == 1:
-        return ''
-    info = find_disambiguator(
-        step, target_obj_id, group, agent_pose, model=model
-    )
-    if info is None:
-        return None
-    return format_disambiguator_phrase(info)
+    return names[target_obj_id].phrase
 
 
 def step_by_index(episode: dict, step_idx: int) -> Optional[dict]:
+    """The episode step whose ``step`` equals ``step_idx``, or None."""
     for step in episode.get('steps') or []:
         if int(step.get('step')) == int(step_idx):
             return step
@@ -756,9 +702,17 @@ def _pose_xz_heading(pose: dict) -> tuple[float, float, float]:
 
 
 def net_pose_changed(
-    pose_a: dict, pose_b: dict, pos_tol: float = 0.1, heading_tol_deg: float = 5.0
+    pose_a: dict,
+    pose_b: dict,
+    pos_tol: Optional[float] = None,
+    heading_tol_deg: Optional[float] = None,
 ) -> bool:
     """Real move check from actual positions — never trust action count alone."""
+    su = get_generation_config().spatial_updating
+    if pos_tol is None:
+        pos_tol = su.min_pos_change_m
+    if heading_tol_deg is None:
+        heading_tol_deg = su.min_heading_change_deg
     ax, az, ah = _pose_xz_heading(pose_a)
     bx, bz, bh = _pose_xz_heading(pose_b)
     pos_delta = ((bx - ax) ** 2 + (bz - az) ** 2) ** 0.5
@@ -771,7 +725,7 @@ def imagined_perspective_label(
     pos_b: dict,
     pos_c: dict,
     *,
-    margin_deg: float = PT_DIRECTION_BOUNDARY_MARGIN_DEG,
+    margin_deg: Optional[float] = None,
     ahead_half_width: Optional[float] = None,
 ) -> Optional[str]:
     """Direction of C from an imagined viewpoint standing at A, facing B.
@@ -813,3 +767,8 @@ def xyz_as_dict(pos) -> Optional[dict]:
     if isinstance(pos, (list, tuple)) and len(pos) >= 3:
         return {'x': float(pos[0]), 'y': float(pos[1]), 'z': float(pos[2])}
     return None
+
+
+def __getattr__(name: str):
+    """Former module-level quality constants, read from the active config."""
+    return legacy_constant(name)

@@ -1,6 +1,6 @@
 """Config YAML must load and name the eight constructs.
 
-Numeric gates live in planner.py, not in the YAML. The YAML states what each
+Numeric gates live in configs/generation.yaml. taxonomy.yaml states what each
 construct tests; tests below only lock schema facts that would silently
 contradict the generator.
 """
@@ -39,7 +39,9 @@ def _taxonomy_constructs() -> dict:
 
 
 @pytest.mark.parametrize(
-    'path', [TAXONOMY] + sorted(CONSTRUCT_DIR.glob('*.yaml')), ids=lambda p: p.name
+    'path',
+    [TAXONOMY, CONFIGS / 'generation.yaml'] + sorted(CONSTRUCT_DIR.glob('*.yaml')),
+    ids=lambda p: p.name,
 )
 def test_config_yaml_parses(path):
     assert isinstance(_load(path), dict)

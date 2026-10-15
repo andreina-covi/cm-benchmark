@@ -29,9 +29,13 @@ every item.
 | 4 | Navigation / wayfinding | route knowledge · survey knowledge |
 
 Construct definitions: [`configs/taxonomy.yaml`](configs/taxonomy.yaml).
+Every number that changes which items are produced lives in
+[`configs/generation.yaml`](configs/generation.yaml) (see
+[`docs/parameters_report.md`](docs/parameters_report.md)).
 How we decide an item is well-built: [`Evaluation_process_manual.md`](Evaluation_process_manual.md).
 How to run generation, visibility calibration, and scoring:
 [`docs/generation.md`](docs/generation.md).
+The pipeline, one paragraph per module: [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
@@ -67,7 +71,7 @@ Field brief: [`prompts/ai2thor_collection_extension.md`](prompts/ai2thor_collect
 ## Layout
 
 ```
-configs/          taxonomy + per-construct excerpts
+configs/          taxonomy, generation.yaml (quality knobs), per-construct excerpts
 analysis/dt_tune/ shipped visibility_filter.joblib (Q&A FOV DecisionTree)
 src/cm_benchmark/
   generator/      episode GT from exported CSVs
@@ -159,6 +163,16 @@ python -m cm_benchmark.generation.generate_items \
 ```text
 items/house_007514/items_house_007514.json
 ```
+
+Quality knobs (visibility floors, direction wedges, delays, class-4 pair
+gates, …) are read from [`configs/generation.yaml`](configs/generation.yaml).
+Pass `--config path/to/generation.yaml` to use another file (an ablation is
+a copy of that file with different values). These CLI flags override the
+loaded file when present: `--max_per_construct`, `--swm_min_delay`,
+`--swm_max_delay`, `--su_min_delay`, `--su_max_delay`,
+`--visibility_model_path`. The same `--config` flag is on
+`ai2thor_nav_generator`. Each item stores `generation_config` (the file's
+`name`) and `generation_config_hash` (SHA-256 of the values that produced it).
 
 If a construct cannot be proven from that scene's GT, the item is
 `unsupported` — that is expected, not a bug to tune away.

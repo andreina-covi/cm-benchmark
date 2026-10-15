@@ -8,11 +8,13 @@ from typing import Any, Optional
 
 
 def load_episode_from_json(path: str | Path) -> dict[str, Any]:
+    """Episode GT dict from a ``nav_<scene>.json`` export."""
     with Path(path).open() as f:
         return json.load(f)
 
 
 def load_episode_from_db(db_path: str | Path, episode_id: str) -> dict[str, Any]:
+    """Episode GT dict from the SQLite EpisodeStore; KeyError if the id is absent."""
     from cm_benchmark.storage.episode_store import EpisodeStore
 
     with EpisodeStore(db_path) as store:
@@ -28,6 +30,7 @@ def load_episode(
     episode_id: Optional[str] = None,
     episode_json: Optional[str | Path] = None,
 ) -> dict[str, Any]:
+    """Load from ``episode_json`` if given, else from ``db_path`` + ``episode_id``."""
     if episode_json is not None:
         return load_episode_from_json(episode_json)
     if db_path is not None and episode_id is not None:
@@ -44,6 +47,28 @@ def scene_id_from_nav_json(path: str | Path) -> str:
     return path.parent.name or stem
 
 
+def _list_scene_jsons(folder: str | Path, prefix: str, kind: str, missing_hint: str) -> list[Path]:
+    """``<prefix>*.json`` files under a root of scene folders, one folder, or one file.
+
+    Looks one level down first (``root/<scene>/<prefix><scene>.json``), then
+    directly in ``folder``. Raises when nothing matches.
+    """
+    path = Path(folder)
+    if path.is_file():
+        if path.suffix != '.json':
+            raise FileNotFoundError(f'Expected {kind} JSON file or folder, got {path}')
+        return [path.resolve()]
+    if not path.is_dir():
+        raise NotADirectoryError(path)
+    for pattern in ('*/*.json', '*.json'):
+        found = sorted(
+            child for child in path.glob(pattern) if child.is_file() and child.name.startswith(prefix)
+        )
+        if found:
+            return [child.resolve() for child in found]
+    raise FileNotFoundError(f'No {prefix}<scene>.json under {path}. {missing_hint}')
+
+
 def list_nav_episode_jsons(folder: str | Path) -> list[Path]:
     """Episode JSON files written by ``ai2thor_nav_generator``.
 
@@ -54,33 +79,11 @@ def list_nav_episode_jsons(folder: str | Path) -> list[Path]:
 
     A single scene folder or one ``nav_<scene>.json`` file is also accepted.
     """
-    path = Path(folder)
-    if path.is_file():
-        if path.suffix != '.json':
-            raise FileNotFoundError(f'Expected a nav JSON file or folder, got {path}')
-        return [path.resolve()]
-    if not path.is_dir():
-        raise NotADirectoryError(path)
-
-    nested = sorted(
-        child
-        for child in path.glob('*/*.json')
-        if child.is_file() and child.name.startswith('nav_')
-    )
-    if nested:
-        return [child.resolve() for child in nested]
-
-    direct = sorted(
-        child
-        for child in path.glob('*.json')
-        if child.is_file() and child.name.startswith('nav_')
-    )
-    if direct:
-        return [child.resolve() for child in direct]
-
-    raise FileNotFoundError(
-        f'No nav_<scene>.json under {path}. Pass the nav generator '
-        f'--output_path (nav_data/<scene_id>/nav_<scene_id>.json).'
+    return _list_scene_jsons(
+        folder,
+        'nav_',
+        'a nav',
+        'Pass the nav generator --output_path (nav_data/<scene_id>/nav_<scene_id>.json).',
     )
 
 
@@ -99,37 +102,16 @@ def list_item_jsons(folder: str | Path) -> list[Path]:
 
     A single scene folder or one ``items_<scene>.json`` file is also accepted.
     """
-    path = Path(folder)
-    if path.is_file():
-        if path.suffix != '.json':
-            raise FileNotFoundError(f'Expected an items JSON file or folder, got {path}')
-        return [path.resolve()]
-    if not path.is_dir():
-        raise NotADirectoryError(path)
-
-    nested = sorted(
-        child
-        for child in path.glob('*/*.json')
-        if child.is_file() and child.name.startswith('items_')
-    )
-    if nested:
-        return [child.resolve() for child in nested]
-
-    direct = sorted(
-        child
-        for child in path.glob('*.json')
-        if child.is_file() and child.name.startswith('items_')
-    )
-    if direct:
-        return [child.resolve() for child in direct]
-
-    raise FileNotFoundError(
-        f'No items_<scene>.json under {path}. Pass generate_items '
-        f'--output_path (items/<scene_id>/items_<scene_id>.json).'
+    return _list_scene_jsons(
+        folder,
+        'items_',
+        'an items',
+        'Pass generate_items --output_path (items/<scene_id>/items_<scene_id>.json).',
     )
 
 
 def write_items(items: list[dict[str, Any]], output_path: str | Path) -> Path:
+    """Write ``{n_items, items}`` JSON (creating parent folders); returns the path."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -142,10 +124,12 @@ def write_items(items: list[dict[str, Any]], output_path: str | Path) -> Path:
 
 
 def scene_id_of(episode: dict) -> str:
+    """Scene id from ``episode_meta``, else the episode's ``scene`` tag, else ``unknown``."""
     meta = episode.get('episode_meta') or {}
     return meta.get('scene_id') or episode.get('scene') or 'unknown'
 
 
 def environment_of(episode: dict) -> str:
+    """Simulator tag from ``episode_meta`` (default ``ai2thor``)."""
     meta = episode.get('episode_meta') or {}
     return meta.get('environment') or 'ai2thor'

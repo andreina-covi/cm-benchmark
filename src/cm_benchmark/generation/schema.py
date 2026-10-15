@@ -69,11 +69,15 @@ class CandidateItem:
     # edges, source/goal nodes, pixel marks for review overlays) in ``context``.
     image_roles: Optional[list[str]] = None
     context: Optional[dict[str, Any]] = None
+    disambiguation: str = 'none'  # none | proximity | mark
+    disambiguation_landmark: Optional[str] = None
+    marks: Optional[dict[str, str]] = None
     blind_llm_correct: Optional[bool] = None
     caption_llm_correct: Optional[bool] = None
     vision_necessary: Optional[bool] = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Item as a plain dict, with ``class_`` renamed to ``class``."""
         d = asdict(self)
         d['class'] = d.pop('class_')
         return d
@@ -88,6 +92,7 @@ class CandidateItem:
         environment: str = 'ai2thor',
         reason: str = 'insufficient_metadata',
     ) -> 'CandidateItem':
+        """Placeholder item recording why a construct produced nothing."""
         return cls(
             item_id=item_id,
             construct=construct,

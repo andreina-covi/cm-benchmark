@@ -25,6 +25,7 @@ from cm_benchmark.utils.spatial_transformer import transform_text2list, transfor
 
 
 def _is_valid_obj_id(obj):
+    """False for missing / NaN / empty object ids from the CSV."""
     if obj is None:
         return False
     if isinstance(obj, float) and math.isnan(obj):
@@ -35,6 +36,7 @@ def _is_valid_obj_id(obj):
 
 
 def _as_bool(val):
+    """Parse CSV truthy values (bool, 1, "true", "yes"); NaN and None are False."""
     if isinstance(val, bool):
         return val
     if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -45,13 +47,33 @@ def _as_bool(val):
     return s in ('true', '1', 'yes')
 
 
-def _pose_changed(a, b, eps=1e-4):
+def _finite_xyz(values):
+    """Three finite floats, or None if the catalog cell is missing / NaN."""
+    try:
+        xyz = tuple(float(v) for v in values)
+    except (TypeError, ValueError):
+        return None
+    if len(xyz) == 3 and all(v == v and abs(v) != float('inf') for v in xyz):
+        return xyz
+    return None
+
+
+def _state_sparsify_eps():
+    from cm_benchmark.generation.config import get_generation_config
+
+    return get_generation_config().episode_gt.state_sparsify_eps_m
+
+
+def _pose_changed(a, b, eps=None):
+    """True if any coordinate differs by more than ``eps`` (or one side is None)."""
+    if eps is None:
+        eps = _state_sparsify_eps()
     if a is None or b is None:
         return a != b
     return any(abs(float(x) - float(y)) > eps for x, y in zip(a, b))
 
 
-def sparsify_state_entries(entries, eps=1e-4):
+def sparsify_state_entries(entries, eps=None):
     """Keep first observation + steps where pose/visibility/receptacle change."""
     if not entries:
         return []
@@ -118,6 +140,7 @@ def series_at_step(rows, step, time_field='timestep'):
 
 
 def _file_overrides_from_args(args):
+    """CLI ``--file_*`` overrides as ``{role: path}`` for set flags."""
     mapping = {
         'navigation': getattr(args, 'file_navigation', None),
         'objects': getattr(args, 'file_objects', None),
@@ -142,6 +165,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         question_visibility=None,
         visibility_model_path=None,
     ):
+        """Resolve the episode files, read optional logs and the visibility filter, then build records."""
         self.episode_meta = {}
         self.displacement_events = []
         self.displacement_candidates = []
@@ -207,9 +231,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.dict_navigation = self.get_records_navigation()
 
     def frame_size(self) -> tuple[int, int]:
+        """Camera ``(width, height)`` in pixels."""
         return int(self.hyperparams['w']), int(self.hyperparams['h'])
 
     def _load_optional_logs(self, paths):
+        """Read displacement, object-state, layout, nav-graph, passage and region logs that exist."""
         if 'displacement_events' in paths:
             self.displacement_events = self._read_displacement_events(paths['displacement_events'])
             self.displaced_obj_ids = {
@@ -243,6 +269,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             self.region_trajectory = self._read_region_trajectory(paths['region_trajectory'])
 
     def _read_displacement_events(self, path):
+        """Rows of the displacement_events CSV as dicts."""
         df = pd.read_csv(path)
         events = []
         for _, row in df.iterrows():
@@ -279,6 +306,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return events
 
     def _read_displacement_candidates(self, path):
+        """Rows of the displacement_candidates CSV (chosen / nearby / decoy)."""
         df = pd.read_csv(path)
         rows = []
         for _, row in df.iterrows():
@@ -304,6 +332,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return rows
 
     def _read_object_state(self, path, obj_ids):
+        """``(timestep, obj_id) → state`` for displaced objects only."""
         df = pd.read_csv(path)
         df = df[df['obj-id'].isin(obj_ids)]
         lookup = {}
@@ -346,6 +375,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return lookup
 
     def _read_passage_state(self, path):
+        """Passage open/locked rows, kept only when a passage changes."""
         df = pd.read_csv(path)
         rows = []
         for _, row in df.iterrows():
@@ -375,6 +405,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return sparse
 
     def _read_region_trajectory(self, path):
+        """Region per timestep, kept only when the region changes."""
         df = pd.read_csv(path)
         rows = []
         for _, row in df.iterrows():
@@ -520,6 +551,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         )
 
     def get_records_objects(self):
+        """Non-structural objects from the objects CSV: type, pose, AABB centre, size."""
         df = pd.read_csv(self.path_objects)
         dict_objects = {}
         for _, row in df.iterrows():
@@ -575,6 +607,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return data_object['obj-pos'], data_object['obj-rot'], None
 
     def get_visible_objects(self, data):
+        """Per-object view record for one timestep: pose, bbox, local offset, visibility metrics."""
         visible_objs = {}
         ag_pos = data['ag_pos']
         ag_rot = data['ag_rot']
@@ -628,12 +661,24 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 visible_objs[obj]['occupancy_ratio'] = vis_m.get('occupancy_ratio')
                 visible_objs[obj]['visible_pixels'] = vis_m.get('visible_pixels')
                 visible_objs[obj]['obj_distance'] = vis_m.get('obj_distance')
+                visible_objs[obj]['ang_width_deg'] = vis_m.get('ang_width_deg')
+            catalog = self.dict_objects.get(obj) or {}
+            size = _finite_xyz(catalog.get('size'))
+            if size is not None:
+                visible_objs[obj]['size'] = size
+            # Static catalog AABB center. Displaced objects keep the live
+            # object_state pivot — the catalog center would be the pre-move pose.
+            if state is None:
+                center = _finite_xyz(catalog.get('bbox-c'))
+                if center is not None:
+                    visible_objs[obj]['bbox_center'] = center
             if state is not None:
                 visible_objs[obj]['in_camera_fov'] = state['in_camera_fov']
                 visible_objs[obj]['parent_receptacle'] = state['parent_receptacle']
         return visible_objs
 
     def update_memory(self, memory, visible_objs, timestep):
+        """Record last sighting per object; displaced objects follow object_state."""
         for obj_id, obj_data in visible_objs.items():
             memory[obj_id] = {
                 'category': obj_data['category'],
@@ -651,6 +696,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 memory[obj_id]['in_camera_fov'] = state['in_camera_fov']
 
     def resolve_remembered_position(self, obj_id, timestep, memory_position):
+        """Live object_state pose when logged, else the remembered pose."""
         state = self.state_lookup.get((timestep, obj_id))
         if state is not None:
             return state['position']
@@ -690,6 +736,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return cleaned or None
 
     def _category_for(self, obj_id):
+        """Object type from object_state, else the catalog, else None."""
         for (_t, oid), state in self.state_lookup.items():
             if oid == obj_id:
                 return state['category']
@@ -698,6 +745,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         return None
 
     def enrich_episode_data(self, episode_dict):
+        """Attach displacement, layout, nav graph, camera and visibility-filter fields."""
         episode_dict['object_state_track'] = self.build_object_state_track()
         episode_dict['displacement_events'] = self.displacement_events
         episode_dict['displacement_candidates'] = self.displacement_candidates
@@ -724,6 +772,17 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         }
         if self.scene_id:
             episode_dict['scene'] = self.scene_id
+        catalog = {}
+        for oid, entry in (self.dict_objects or {}).items():
+            rec = {'category': entry.get('obj-type')}
+            center = _finite_xyz(entry.get('bbox-c'))
+            size = _finite_xyz(entry.get('size'))
+            if center is not None:
+                rec['bbox_center'] = center
+            if size is not None:
+                rec['size'] = size
+            catalog[oid] = rec
+        episode_dict['object_catalog'] = catalog
         return episode_dict
 
 
@@ -794,6 +853,16 @@ def main(args):
     ``<output_path>/<scene_id>/nav_<scene_id>.json``
     (for example ``nav_house_007514.json``).
     """
+    from cm_benchmark.generation.config import load_generation_config, use_generation_config
+
+    cfg = load_generation_config(getattr(args, 'config', None))
+    if args.visibility_model_path is None and cfg.visibility.model_path:
+        args.visibility_model_path = cfg.visibility.model_path
+    with use_generation_config(cfg):
+        return _main_episodes(args)
+
+
+def _main_episodes(args):
     episodes = list_collection_episodes(args.csv_path_folder)
     multi = len(episodes) > 1
     if multi and args.scene_id:

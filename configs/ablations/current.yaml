@@ -1,0 +1,5 @@
+# Overlay on configs/generation.yaml — proximity 0.60 m × 1.5 (default).
+name: current
+disambiguation:
+  proximity_setting: current
+  all_marks: false

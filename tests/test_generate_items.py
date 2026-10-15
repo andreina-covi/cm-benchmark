@@ -1467,7 +1467,7 @@ def test_referring_display_name_requires_distinguishable_and_unique():
                 'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
                 'visible_objects': {
                     'Chair|1': _vis(2000, 40, 500, (0.0, 1.0, 1.0)),
-                    'Chair|2': _vis(2000, 40, 500, (2.0, 1.0, 1.0)),
+                    'Chair|2': _vis(2000, 40, 500, (6.0, 1.0, 1.0)),
                     'Table|1': lm,
                 },
                 'edges_egocentric': [
@@ -1977,7 +1977,7 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     )
     assert phrase == ' close to the Bread'
 
-    # Tiny margin only — reject (sibling almost as close)
+    # Tiny margin only — proximity fails, colour-dot mark is the fallback
     tight = {
         'visible_objects': {
             'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
@@ -1985,9 +1985,11 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
             'Bread|1': _vis('Bread', [0.1, 0.0, 1.0]),
         }
     }
-    assert resolve_referring_disambiguator(tight, 'Chair|1') is None
+    assert resolve_referring_disambiguator(tight, 'Chair|1') == (
+        ' marked with a magenta dot'
+    )
 
-    # Landmark too small in FOV — reject
+    # Landmark too small in FOV — proximity fails, mark fallback
     tiny_lm = {
         'visible_objects': {
             'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
@@ -1995,16 +1997,28 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
             'Bread|1': _vis('Bread', [0.1, 0.0, 1.0], area=50, side=5, pix=20),
         }
     }
-    assert resolve_referring_disambiguator(tiny_lm, 'Chair|1') is None
+    assert resolve_referring_disambiguator(tiny_lm, 'Chair|1') == (
+        ' marked with a magenta dot'
+    )
 
-    # No unique landmark → exclude
+    # No unique landmark → mark (not a landmark-relative direction)
     bare_dups = {
         'visible_objects': {
             'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
             'Chair|2': _vis('Chair', [2.0, 0.0, 1.0]),
         }
     }
-    assert resolve_referring_disambiguator(bare_dups, 'Chair|1') is None
+    assert resolve_referring_disambiguator(bare_dups, 'Chair|1') == (
+        ' marked with a magenta dot'
+    )
+
+    # More instances than palette colours → skip
+    overflow = {
+        'visible_objects': {
+            f'Chair|{i}': _vis('Chair', [float(i), 0.0, 1.0]) for i in range(1, 6)
+        }
+    }
+    assert resolve_referring_disambiguator(overflow, 'Chair|1') is None
 
 
 @pytest.mark.parametrize(

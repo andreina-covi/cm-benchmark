@@ -25,10 +25,8 @@ _ACTION_DIR = {
     'turn_right': 'right',
 }
 _DIR_GLYPH = {'up': '↑', 'down': '↓', 'left': '←', 'right': '→'}
-ACTION_LEGEND = '↑ ahead · ↓ back · ← rotate left · → rotate right'
-
-
 def action_parts(raw) -> list[str]:
+    """Action tokens from an arrow-joined string or a list of strings / action rows."""
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -69,11 +67,13 @@ def class4_pair_length(item: dict) -> tuple[int, int, int]:
 
 
 def action_direction(name: str) -> Optional[str]:
+    """Arrow direction key for an action name, or None if unknown."""
     key = str(name).strip().lower().replace('-', '_')
     return _ACTION_DIR.get(key)
 
 
 def action_glyphs(raw) -> list[str]:
+    """Arrow glyph per action (unknown tokens pass through unchanged)."""
     glyphs: list[str] = []
     for part in action_parts(raw):
         direction = action_direction(part)
@@ -99,6 +99,7 @@ def endpoint_glyph(name: str, *, fallback: str = '?') -> str:
 
 
 def compact_glyph_walk(raw, *, max_show: int = 10) -> str:
+    """Glyph string for a slide; long walks show the first 4 and last 3."""
     glyphs = action_glyphs(raw)
     if not glyphs:
         return '—'
@@ -196,6 +197,7 @@ def overlay_class4_frame(
     source_mark: Optional[dict] = None,
     goal_mark: Optional[dict] = None,
 ) -> Path:
+    """Copy one frame with source / goal letter markers drawn at their bbox centres."""
     from PIL import Image, ImageDraw
 
     im = Image.open(src_path).convert('RGB')
@@ -221,6 +223,7 @@ def overlay_class4_frame(
 
 
 def _load_font(size: int):
+    """DejaVu font at ``size`` if installed, else the Pillow default font."""
     from PIL import ImageFont
 
     for name in (
@@ -234,6 +237,7 @@ def _load_font(size: int):
 
 
 def _valid_bbox(bbox: Any) -> Optional[tuple[int, int, int, int]]:
+    """Integer ``(cmin, rmin, cmax, rmax)`` from a tuple or dict, or None if invalid."""
     if bbox is None:
         return None
     if isinstance(bbox, dict):
@@ -319,17 +323,20 @@ def _point_xy(mark: Optional[dict], image_size: tuple[int, int]) -> Optional[tup
 
 
 def _color_for_index(index: int) -> tuple[int, int, int]:
+    """Distinct RGB colour per index (golden-ratio hue steps)."""
     h = (index * 0.61803398875) % 1.0
     r, g, b = colorsys.hsv_to_rgb(h, 0.85, 0.95)
     return int(r * 255), int(g * 255), int(b * 255)
 
 
 def _contrast_text_color(bg: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Black or white, whichever reads better on ``bg``."""
     lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
     return (0, 0, 0) if lum > 140 else (255, 255, 255)
 
 
 def _marker_font_and_radius(glyph: str) -> tuple:
+    """Font and circle radius that fit a 1-, 2- or 3-letter glyph."""
     n = len(glyph or '')
     if n >= 3:
         return _load_font(8), 13
@@ -339,6 +346,7 @@ def _marker_font_and_radius(glyph: str) -> tuple:
 
 
 def _draw_labeled_point(draw, xy: tuple[int, int], color, glyph: str, *, font, radius: int = 9) -> None:
+    """Filled outlined circle with a centred glyph at ``xy``."""
     cx, cy = xy
     draw.ellipse(
         [cx - radius - 1, cy - radius - 1, cx + radius + 1, cy + radius + 1],

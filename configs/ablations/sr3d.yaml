@@ -1,0 +1,5 @@
+# Overlay — ReferIt3D Sr3D horizontal_gap 0.20 m, no ratio.
+name: sr3d
+disambiguation:
+  proximity_setting: sr3d
+  all_marks: false

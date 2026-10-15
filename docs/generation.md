@@ -2,8 +2,12 @@
 
 Operational notes for episode GT, item generation, visibility, and class-4
 scoring. Construct *meaning* lives in [`configs/taxonomy.yaml`](../configs/taxonomy.yaml).
-Numeric gates and algorithms live in `src/cm_benchmark/generation/planner.py`
-and `nav_graph.py`.
+Numeric gates live in [`configs/generation.yaml`](../configs/generation.yaml)
+(see [`parameters_report.md`](parameters_report.md)). Algorithms live in
+`src/cm_benchmark/generation/planner.py` and `nav_graph.py`. Pass `--config`
+to `generate_items` or `ai2thor_nav_generator` to point at another file;
+`--swm_min_delay` / `--su_min_delay` / `--max_per_construct` override that
+file. Each item records `generation_config` and `generation_config_hash`.
 
 ---
 
@@ -103,6 +107,17 @@ database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 - Temporal wording is `{k} steps ago` / `now` — not a bundled “time order” cue.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).
+- Same-type objects are named across **every shown frame** (not only the
+  encode step). Unique type → no extra phrase. Else proximity
+  (`the Chair close to the Bread`) when the floor-plane AABB gap and the
+  2D pixel-bbox gap are obvious, else a colour-dot mark
+  (`the Chair marked with a magenta dot`). Questions never contain
+  landmark-relative directions. When marks are used, `image_paths` point
+  at copies under `<output_path>/<scene>/marked/<item_id>/` — evaluate
+  those frames, not the unmarked originals. `item_id` is stable across
+  proximity settings (`sr3d` / `vsi` / `current` / `strict` / `all_marks`).
+  VSI’s small-room margin is unused: collector regions have no area, so
+  VSI always uses 0.30 m.
 
 Class 4 is not MCQ. The action vocabulary is stated once in
 `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`. Route scores a predicted
@@ -139,8 +154,20 @@ python scripts/build_avance_presentation.py \
 `--items-json` is `generate_items --output_path`: a root of scene folders, one
 scene folder, or one `items_<scene>.json`. Repeat the flag to combine roots.
 
+Proximity-setting ablations (reuse existing nav JSON; do not rebuild it):
+
+```bash
+scripts/run_ablation.sh analysis/baseline/nav_data analysis/ablations
+python scripts/ablation_report.py analysis/ablations
+```
+
+`configs/ablations/*.yaml` are overlays on `generation.yaml`. `item_id` is
+the same across settings so the report can pair items for McNemar and
+Kendall's tau.
+
 Class-4 stills get a letter marker on source and goal. Evaluation uses the
-unmodified frames.
+item’s `image_paths`: unmarked originals when `disambiguation` is `none`
+or `proximity`, and the colour-dot copies when it is `mark`.
 
 Annotate frames for spatial review:
 

@@ -1,0 +1,6 @@
+# Overlay — VSI-Bench 0.15 / 0.30 m by room area.
+# Collector regions have no area, so the generator always uses 0.30 m.
+name: vsi
+disambiguation:
+  proximity_setting: vsi
+  all_marks: false
