@@ -36,7 +36,11 @@ Runs on every candidate item before it's eligible for human review. This is the 
 - For temporal constructs (class 2–4): question text situates “now” / “{k} steps ago”
   relative to the live navigation stream (online sequential protocol). Do **not** require
   a bundled multi-image “time order” cue. Flag as bug if temporal reference is ambiguous.
-- `image_paths` are non-empty and resolvable to real files.
+- `image_paths` are non-empty and resolvable to real files. When
+  `disambiguation` is `mark`, these are the colour-dot copies (not the
+  unmarked collection frames). Reviewers must judge the marked frames
+  the model will see. The phrase in the question (`marked with a
+  {colour} dot`) must match the dots on those copies.
 - No duplicate `item_id`.
 
 ### 2.2 Answer recomputation (per construct)

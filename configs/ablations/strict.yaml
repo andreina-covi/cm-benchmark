@@ -1,0 +1,5 @@
+# Overlay — 1.00 m margin and 2.0 ratio.
+name: strict
+disambiguation:
+  proximity_setting: strict
+  all_marks: false

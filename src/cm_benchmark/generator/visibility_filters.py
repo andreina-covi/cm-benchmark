@@ -60,19 +60,32 @@ LABEL_DISTINGUISHABLE = 'distinguible'
 LABEL_NOT_DISTINGUISHABLE = 'no_distinguible'
 LABEL_AMBIGUOUS = 'ambiguo'
 
-DEFAULT_PROBA_LOW = 0.3
-DEFAULT_PROBA_HIGH = 0.7
+def _visibility_defaults():
+    from cm_benchmark.generation.config import get_generation_config
 
-# Built-in keep rules when no visibility_filter.joblib is provided.
-# Tuned to drop speck detections (Potato/Wrench ~10px) while keeping furniture.
-# Prefer a labeled DecisionTree over editing these constants.
-DEFAULT_QUESTION_VISIBILITY_THRESHOLDS: dict[str, Optional[float]] = {
-    'min_bbox_area': 100.0,
-    'min_side': 8.0,
-    'min_occupancy_ratio': None,
-    'min_visible_pixels': 40.0,
-    'max_obj_distance': None,
-}
+    return get_generation_config().visibility
+
+
+def _default_proba_low() -> float:
+    return _visibility_defaults().proba_low
+
+
+def _default_proba_high() -> float:
+    return _visibility_defaults().proba_high
+
+
+def _default_question_visibility() -> dict[str, Optional[float]]:
+    return _visibility_defaults().static.as_question_visibility()
+
+
+def __getattr__(name: str):
+    if name == 'DEFAULT_PROBA_LOW':
+        return _default_proba_low()
+    if name == 'DEFAULT_PROBA_HIGH':
+        return _default_proba_high()
+    if name == 'DEFAULT_QUESTION_VISIBILITY_THRESHOLDS':
+        return _default_question_visibility()
+    raise AttributeError(name)
 
 # In-process episode key (not written to item JSON).
 EPISODE_VISIBILITY_MODEL_KEY = '_visibility_model'
@@ -169,6 +182,7 @@ def _all_none_visibility(thresholds: Mapping[str, Any]) -> bool:
 
 
 def _finite(val) -> bool:
+    """True if ``val`` converts to a finite float."""
     if val is None:
         return False
     try:
@@ -179,6 +193,7 @@ def _finite(val) -> bool:
 
 
 def _row_get(row: Mapping[str, Any], key: str, default=None):
+    """Value from a pandas row or mapping, with a default."""
     if hasattr(row, 'index') and key in row.index:
         return row.get(key, default)
     if isinstance(row, Mapping):
@@ -197,7 +212,9 @@ def bbox_sides(cmin, rmin, cmax, rmax) -> tuple[Optional[float], Optional[float]
     return w, h, w * h
 
 
-def metrics_from_nav_row(row: Mapping[str, Any], *, frame_w: int = 396, frame_h: int = 224) -> dict[str, Any]:
+def metrics_from_nav_row(
+    row: Mapping[str, Any], *, frame_w: Optional[int] = None, frame_h: Optional[int] = None
+) -> dict[str, Any]:
     """
     Read visibility metrics from a navigation CSV row.
 
@@ -205,6 +222,14 @@ def metrics_from_nav_row(row: Mapping[str, Any], *, frame_w: int = 396, frame_h:
     ``visible-pixels``, ``obj-distance``. Falls back to deriving area/side from
     ``cmin..rmax`` when those columns are absent (legacy fixtures).
     """
+    if frame_w is None or frame_h is None:
+        from cm_benchmark.generation.config import get_generation_config
+
+        egt = get_generation_config().episode_gt
+        if frame_w is None:
+            frame_w = egt.frame_w
+        if frame_h is None:
+            frame_h = egt.frame_h
     cmin = _row_get(row, 'cmin')
     rmin = _row_get(row, 'rmin')
     cmax = _row_get(row, 'cmax')
@@ -270,13 +295,13 @@ def normalize_question_visibility_thresholds(
     if thresholds is False:
         return {k: None for k in QUESTION_VISIBILITY_KEYS}
     if thresholds is None or thresholds is True:
-        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+        return dict(_default_question_visibility())
     if not isinstance(thresholds, Mapping):
-        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+        return dict(_default_question_visibility())
     if _all_none_visibility(thresholds):
-        return dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+        return dict(_default_question_visibility())
 
-    out = dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS)
+    out = dict(_default_question_visibility())
     aliases = {
         'min_bbox_side': 'min_side',
         'min_unoccluded_ratio': 'min_occupancy_ratio',
@@ -298,6 +323,7 @@ def normalize_question_visibility_thresholds(
 
 
 def question_visibility_active(thresholds: Mapping[str, Optional[float]]) -> bool:
+    """True if any static visibility threshold is set."""
     return any(thresholds.get(k) is not None for k in QUESTION_VISIBILITY_KEYS)
 
 
@@ -424,8 +450,8 @@ def apply_question_visibility_to_episode(
 
 def classify_visibility_proba(
     proba: float,
-    low: float = DEFAULT_PROBA_LOW,
-    high: float = DEFAULT_PROBA_HIGH,
+    low: float = _default_proba_low(),
+    high: float = _default_proba_high(),
 ) -> str:
     """
     Map P(distinguishable) to a ternary label.
@@ -476,18 +502,20 @@ class VisibilityFilterModel:
 
     model: Any
     features: list[str]
-    low: float = DEFAULT_PROBA_LOW
-    high: float = DEFAULT_PROBA_HIGH
+    low: float = _default_proba_low()
+    high: float = _default_proba_high()
     ambiguous_proba_stats: Optional[dict[str, float]] = None
     source_path: Optional[str] = None
 
     def predict_proba_distinguishable(self, metrics: Mapping[str, Any]) -> Optional[float]:
+        """P(distinguishable) for one detection, or None if a feature is missing."""
         X = feature_vector_from_metrics(metrics, self.features)
         if X is None:
             return None
         return float(positive_class_proba(self.model, X)[0])
 
     def classify_metrics(self, metrics: Mapping[str, Any]) -> str:
+        """Ternary visibility label for one detection (missing features → ambiguo)."""
         proba = self.predict_proba_distinguishable(metrics)
         if proba is None:
             return LABEL_AMBIGUOUS
@@ -518,13 +546,13 @@ def load_visibility_filter_model(
 
     if isinstance(obj, dict) and 'model' in obj:
         features = list(obj.get('features') or VISIBILITY_METRIC_COLUMNS)
-        band_low = float(obj['low']) if obj.get('low') is not None else DEFAULT_PROBA_LOW
-        band_high = float(obj['high']) if obj.get('high') is not None else DEFAULT_PROBA_HIGH
+        band_low = float(obj['low']) if obj.get('low') is not None else _default_proba_low()
+        band_high = float(obj['high']) if obj.get('high') is not None else _default_proba_high()
         stats = obj.get('ambiguous_proba_stats')
         model = obj['model']
     else:
         features = list(VISIBILITY_METRIC_COLUMNS)
-        band_low, band_high = DEFAULT_PROBA_LOW, DEFAULT_PROBA_HIGH
+        band_low, band_high = _default_proba_low(), _default_proba_high()
         stats = None
         model = obj
 
@@ -550,8 +578,8 @@ def calibrate_proba_bands_from_ambiguous(
     df_ambiguous: pd.DataFrame,
     features: Sequence[str],
     *,
-    default_low: float = DEFAULT_PROBA_LOW,
-    default_high: float = DEFAULT_PROBA_HIGH,
+    default_low: float = _default_proba_low(),
+    default_high: float = _default_proba_high(),
 ) -> tuple[float, float, dict[str, float]]:
     """
     Set (low, high) from P(class=1) on human-labeled ambiguous rows (y=2).
@@ -582,8 +610,9 @@ def calibrate_proba_bands_from_ambiguous(
     # Degenerate band (all amb at one proba) → keep a small margin around it
     if abs(high - low) < 1e-9:
         mid = low
-        low = max(0.0, mid - 0.05)
-        high = min(1.0, mid + 0.05)
+        half = _visibility_defaults().degenerate_band_half_width
+        low = max(0.0, mid - half)
+        high = min(1.0, mid + half)
     return float(low), float(high), stats
 
 
@@ -655,22 +684,25 @@ def resolve_hyperparams_from_episode_meta(
     hyperparams: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build generator hyperparams; prefer episode_meta.camera / .agent over defaults."""
+    from cm_benchmark.generation.config import get_generation_config
+
+    egt = get_generation_config().episode_gt
     base = {
-        'w': 396,
-        'h': 224,
-        'fov_v': 59,
-        'k_neighbors': 3,
-        'radius': 1.5,
-        'ex': 0.1,
-        'ey': 0.1,
-        'ez': 0.15,
-        'angle_threshold_xz': 15,
-        'min_distance': 0.5,
-        'med_distance': 1.0,
-        'max_distance': 1.5,
-        'mov_constant': 0.2,
-        'question_visibility': dict(DEFAULT_QUESTION_VISIBILITY_THRESHOLDS),
-        'visibility_model_path': None,
+        'w': egt.frame_w,
+        'h': egt.frame_h,
+        'fov_v': egt.fov_v_deg,
+        'k_neighbors': egt.k_neighbors,
+        'radius': egt.radius_m,
+        'ex': egt.ex_m,
+        'ey': egt.ey_m,
+        'ez': egt.ez_m,
+        'angle_threshold_xz': int(egt.angle_threshold_xz_deg),
+        'min_distance': egt.min_distance_m,
+        'med_distance': egt.med_distance_m,
+        'max_distance': egt.max_distance_m,
+        'mov_constant': egt.mov_constant_m,
+        'question_visibility': dict(_default_question_visibility()),
+        'visibility_model_path': get_generation_config().visibility.model_path,
     }
 
     meta = episode_meta or {}

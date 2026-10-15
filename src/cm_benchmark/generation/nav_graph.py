@@ -18,26 +18,22 @@ logger = logging.getLogger(__name__)
 # 8-neighbor max step ≈ grid_size * sqrt(2)
 _SQRT2 = math.sqrt(2.0)
 
-TURN_LABELS = (
-    'straight',
-    'turn left',
-    'sharp turn left',
-    'turn right',
-    'sharp turn right',
-    'turn around',
-)
 
-OPPOSITE_TURN = {
-    'straight': 'turn around',
-    'turn around': 'straight',
-    'turn left': 'turn right',
-    'turn right': 'turn left',
-    'sharp turn left': 'sharp turn right',
-    'sharp turn right': 'sharp turn left',
-}
+def _c4():
+    from cm_benchmark.generation.config import get_generation_config
 
+    return get_generation_config().class4
+
+
+def _fallback_grid() -> float:
+    return _c4().fallback.grid_size_m
+
+
+def _fallback_rotation() -> float:
+    return _c4().fallback.agent_rotation_deg
 
 def _as_xyz(pos) -> Optional[tuple[float, float, float]]:
+    """``(x, y, z)`` floats from a dict or 3-sequence, else None."""
     if pos is None:
         return None
     if isinstance(pos, dict):
@@ -54,6 +50,7 @@ def _as_xyz(pos) -> Optional[tuple[float, float, float]]:
 
 
 def _xz_dist(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """Floor-plane (x, z) distance between two 3D points."""
     return math.hypot(a[0] - b[0], a[2] - b[2])
 
 
@@ -87,7 +84,7 @@ def build_nav_graph(
     """
     snap = select_nav_graph_snapshot(nav_graph_json, prefer=snapshot)
     params = snap.get('params') or {}
-    grid_size = float(params.get('grid_size') or 0.25)
+    grid_size = float(params.get('grid_size') or _fallback_grid())
     nodes = snap.get('nodes') or []
     if not nodes:
         raise ValueError('nav graph snapshot has no nodes')
@@ -96,7 +93,7 @@ def build_nav_graph(
     G.graph['grid_size'] = grid_size
     G.graph['agent_move_m'] = float(params.get('agent_move_m') or grid_size)
     G.graph['agent_rotation_deg'] = float(
-        params.get('agent_rotation_deg') or 45.0
+        params.get('agent_rotation_deg') or _fallback_rotation()
     )
     G.graph['snapshot'] = snap.get('snapshot') or snapshot
     G.graph['scene_id'] = snap.get('scene_id') or nav_graph_json.get('scene_id')
@@ -143,9 +140,9 @@ def trajectory_snap_tolerance(graph: nx.Graph) -> float:
     step of ``max(grid_size, agent_move_m)`` still rejects poses that are
     actually far from the graph.
     """
-    grid = float(graph.graph.get('grid_size') or 0.25)
+    grid = float(graph.graph.get('grid_size') or _fallback_grid())
     move = float(graph.graph.get('agent_move_m') or grid)
-    return max(grid, move) * _SQRT2 + 1e-6
+    return max(grid, move) * _c4().snap_tolerance_steps + 1e-6
 
 
 def nodes_within_radius(
@@ -184,7 +181,7 @@ def snap_position_to_graph(
     Default tolerance is half ``grid_size`` (strict on-node). Trajectory
     snapping should pass ``trajectory_snap_tolerance(graph)`` instead.
     """
-    grid = float(graph.graph.get('grid_size') or 0.25)
+    grid = float(graph.graph.get('grid_size') or _fallback_grid())
     tol = float(tolerance) if tolerance is not None else grid / 2.0
     hits = nodes_within_radius(graph, world_pos, tol)
     if not hits:
@@ -204,11 +201,11 @@ def snap_landmark_to_graph(
     the closest floor cell for pathfinding, with a larger radius than agent
     trajectory snapping (default: max(1.5 m, 10 × grid_size)).
     """
-    grid = float(graph.graph.get('grid_size') or 0.25)
+    grid = float(graph.graph.get('grid_size') or _fallback_grid())
     tol = (
         float(max_distance_m)
         if max_distance_m is not None
-        else max(1.5, 10.0 * grid)
+        else max(_c4().landmark_snap_default_m, _c4().landmark_snap_default_grid_mult * grid)
     )
     return snap_position_to_graph(graph, world_pos, tolerance=tol)
 
@@ -232,11 +229,11 @@ def snap_to_nearest_of(
     xyz = _as_xyz(world_pos)
     if xyz is None or not candidate_nodes:
         return None
-    grid = float(graph.graph.get('grid_size') or 0.25)
+    grid = float(graph.graph.get('grid_size') or _fallback_grid())
     tol = (
         float(max_distance_m)
         if max_distance_m is not None
-        else max(1.5, 10.0 * grid)
+        else max(_c4().landmark_snap_default_m, _c4().landmark_snap_default_grid_mult * grid)
     )
     best_id = None
     best_d = float('inf')
@@ -304,6 +301,7 @@ def snap_trajectory_to_graph(
 
 
 def traversed_node_ids(snapped_trajectory: Sequence[dict]) -> list[str]:
+    """Node ids of a snapped trajectory, in walk order."""
     return [row['node_id'] for row in snapped_trajectory if row.get('node_id')]
 
 
@@ -328,7 +326,7 @@ def calibrate_view_radius_m(
     graph: nx.Graph,
     positions: Sequence,
     *,
-    percentile: float = 0.5,
+    percentile: Optional[float] = None,
 ) -> float:
     """Scene-calibrated vista radius from typical landmark/room xz spacing.
 
@@ -337,6 +335,8 @@ def calibrate_view_radius_m(
     nodes (viewed_edges ⊇ exported traversed_edges). Not a class-4 pair
     reject gate — pair length is geodesic metres on the full nav_graph.
     """
+    if percentile is None:
+        percentile = _c4().survey.view_radius_percentile
     floor = trajectory_snap_tolerance(graph)
     coords: list[tuple[float, float]] = []
     for pos in positions or []:
@@ -543,6 +543,7 @@ def is_valid_untraversed_shortcut(
 def _heading_xz_deg(
     p0: tuple[float, float, float], p1: tuple[float, float, float]
 ) -> Optional[float]:
+    """Yaw (degrees, 0 = +Z, clockwise toward +X) from p0 to p1; None if equal."""
     dx, dz = p1[0] - p0[0], p1[2] - p0[2]
     if abs(dx) < 1e-9 and abs(dz) < 1e-9:
         return None
@@ -551,13 +552,16 @@ def _heading_xz_deg(
 
 
 def _signed_delta_deg(h0: float, h1: float) -> float:
+    """Shortest signed turn from heading h0 to h1, in [-180, 180)."""
     d = (h1 - h0 + 180.0) % 360.0 - 180.0
     return d
 
 
-def _bin_turn_label(delta_deg: float, rotation_deg: float = 45.0) -> str:
+def _bin_turn_label(delta_deg: float, rotation_deg: Optional[float] = None) -> str:
     """Bin heading change to agent rotation granularity."""
-    step = float(rotation_deg) or 45.0
+    if rotation_deg is None:
+        rotation_deg = _fallback_rotation()
+    step = float(rotation_deg) or _fallback_rotation()
     # Round to nearest rotation increment
     n = int(round(delta_deg / step))
     # Clamp to ±180 / step
@@ -588,7 +592,7 @@ def derive_turns(
     rot = float(
         rotation_deg
         if rotation_deg is not None
-        else graph.graph.get('agent_rotation_deg') or 45.0
+        else graph.graph.get('agent_rotation_deg') or _fallback_rotation()
     )
     lm = landmark_at_node or {}
     nodes = list(path_nodes)
@@ -789,8 +793,8 @@ def path_to_nav_actions(
     rot = float(
         rotation_deg
         if rotation_deg is not None
-        else graph.graph.get('agent_rotation_deg') or 45.0
-    ) or 45.0
+        else graph.graph.get('agent_rotation_deg') or _fallback_rotation()
+    ) or _fallback_rotation()
     nodes = list(path_nodes)
     if len(nodes) < 2:
         return []
@@ -889,7 +893,7 @@ def follow_path_actions(
     move_m: Optional[float] = None,
     rotation_deg: Optional[float] = None,
     simplify_tolerance_m: Optional[float] = None,
-    max_actions: int = 512,
+    max_actions: Optional[int] = None,
 ) -> Optional[dict]:
     """Greedy follower turning a node path into collected-format actions.
 
@@ -910,19 +914,19 @@ def follow_path_actions(
     rot = float(
         rotation_deg
         if rotation_deg is not None
-        else graph.graph.get('agent_rotation_deg') or 45.0
-    ) or 45.0
+        else graph.graph.get('agent_rotation_deg') or _fallback_rotation()
+    ) or _fallback_rotation()
     step = float(
         move_m
         if move_m is not None
-        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or 0.25
+        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or _fallback_grid()
     )
     if step <= 1e-9:
         return None
     tol = (
         float(simplify_tolerance_m)
         if simplify_tolerance_m is not None
-        else max(step, float(graph.graph.get('grid_size') or 0.25)) * _SQRT2
+        else max(step, float(graph.graph.get('grid_size') or _fallback_grid())) * _SQRT2
     )
     waypoints = simplify_polyline_xz(pts, tol)
     if len(waypoints) < 2:
@@ -936,8 +940,10 @@ def follow_path_actions(
         return None
     heading = float(heading) % 360.0
 
+    if max_actions is None:
+        max_actions = _c4().follower.max_actions
     actions: list[str] = []
-    arrive = step * 0.75
+    arrive = step * _c4().follower.arrive_fraction
     for wp in waypoints[1:]:
         wx, wz = float(wp[0]), float(wp[2])
         stalled = 0
@@ -980,80 +986,6 @@ def follow_path_actions(
     }
 
 
-def neighbor_in_heading(
-    graph: nx.Graph,
-    node_id: str,
-    heading_deg: float,
-    *,
-    half_width_deg: Optional[float] = None,
-) -> Optional[str]:
-    """Neighbor whose xz bearing is closest to ``heading_deg``, within a wedge."""
-    if node_id not in graph:
-        return None
-    rot = float(graph.graph.get('agent_rotation_deg') or 45.0) or 45.0
-    width = float(half_width_deg) if half_width_deg is not None else rot / 2.0 + 1e-6
-    src = graph.nodes[node_id].get('pos')
-    if not src:
-        return None
-    best = None
-    best_err = float('inf')
-    for nbr in graph.neighbors(node_id):
-        dst = graph.nodes[nbr].get('pos')
-        if not dst:
-            continue
-        bear = _heading_xz_deg(src, dst)
-        if bear is None:
-            continue
-        err = abs(_signed_delta_deg(heading_deg, bear))
-        if err <= width and err < best_err:
-            best_err = err
-            best = nbr
-    return best
-
-
-def execute_nav_actions(
-    graph: nx.Graph,
-    start_node: str,
-    actions: Sequence[str],
-    *,
-    start_heading_deg: float = 0.0,
-    rotation_deg: Optional[float] = None,
-) -> tuple[Optional[str], float, bool]:
-    """Walk ``actions`` on ``graph`` from ``start_node``.
-
-    Discrete neighbor-hop helper (not the route scorer). A blocked
-    ``move_ahead`` / ``move_back`` stops the walk and sets the flag False.
-    """
-    if start_node not in graph:
-        return None, float(start_heading_deg) % 360.0, False
-    rot = float(
-        rotation_deg
-        if rotation_deg is not None
-        else graph.graph.get('agent_rotation_deg') or 45.0
-    ) or 45.0
-    node = start_node
-    heading = float(start_heading_deg) % 360.0
-    parsed = parse_nav_actions(list(actions))
-    if parsed is None:
-        return node, heading, False
-    for act in parsed:
-        if act == NAV_ACTION_ROTATE_RIGHT:
-            heading = (heading + rot) % 360.0
-        elif act == NAV_ACTION_ROTATE_LEFT:
-            heading = (heading - rot) % 360.0
-        elif act == NAV_ACTION_MOVE_AHEAD:
-            nxt = neighbor_in_heading(graph, node, heading)
-            if nxt is None:
-                return node, heading, False
-            node = nxt
-        elif act == NAV_ACTION_MOVE_BACK:
-            nxt = neighbor_in_heading(graph, node, (heading + 180.0) % 360.0)
-            if nxt is None:
-                return node, heading, False
-            node = nxt
-    return node, heading, True
-
-
 def filter_traversed_to_exported(
     graph: nx.Graph, traversed_edges: Iterable[tuple[str, str]]
 ) -> set[tuple[str, str]]:
@@ -1093,6 +1025,7 @@ def _spl_ratio(opt_m: Optional[float], path_m: float, *, success: bool) -> float
 
 
 def _route_outcome(success: bool, validity: bool) -> str:
+    """Label for the 2×2 success × validity cell of a class-4 score."""
     if success and validity:
         return 'valid_success'
     if success:
@@ -1119,6 +1052,7 @@ def _route_score_record(
     efficiency: float = 0.0,
     route_efficiency: float = 0.0,
 ) -> dict:
+    """Uniform score dict returned by both class-4 scorers."""
     crossed = [tuple(e) for e in (crossed_edges or [])]
     illegal = [tuple(e) for e in (illegal_edges or [])]
     novel = [tuple(e) for e in (novel_edges or [])]
@@ -1144,6 +1078,7 @@ def _route_score_record(
 
 
 def _crossed_undirected(snapped: Sequence[str]) -> list[tuple[str, str]]:
+    """Sorted undirected edges between consecutive distinct snapped nodes."""
     out: list[tuple[str, str]] = []
     for a, b in zip(snapped, snapped[1:]):
         if a == b:
@@ -1160,6 +1095,7 @@ def node_within_goal_tolerance(
 
 
 def _goal_reached(graph: nx.Graph, end_node, goal_node, goal_tol: float) -> bool:
+    """True if ``end_node`` lies within ``goal_tol`` metres (xz) of ``goal_node``."""
     if end_node not in graph or goal_node not in graph:
         return False
     goal_pos = graph.nodes[goal_node].get('pos')
@@ -1173,6 +1109,7 @@ def _shortest_on_edges(
     source_node: str,
     goal_node: str,
 ) -> Optional[float]:
+    """Shortest-path metres on the subgraph of exported ``edges``, or None."""
     exported = filter_traversed_to_exported(graph, edges)
     if not exported:
         return None
@@ -1228,12 +1165,12 @@ def simulate_nav_action_sequence(
     rot = float(
         rotation_deg
         if rotation_deg is not None
-        else graph.graph.get('agent_rotation_deg') or 45.0
-    ) or 45.0
+        else graph.graph.get('agent_rotation_deg') or _fallback_rotation()
+    ) or _fallback_rotation()
     step = float(
         move_m
         if move_m is not None
-        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or 0.25
+        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or _fallback_grid()
     )
     heading = float(start_heading_deg) % 360.0
     origin = _as_xyz(start_pos) or graph.nodes[source_node].get('pos')
@@ -1290,6 +1227,7 @@ def simulate_nav_action_sequence(
 
 
 def _fail_from_sim(sim: dict) -> dict:
+    """Failed score record built from a simulation that did not finish."""
     return _route_score_record(
         success=False,
         validity=False,
@@ -1591,131 +1529,3 @@ def sanitize_world_layout(layout: Optional[dict]) -> Optional[dict]:
     return out
 
 
-def distance_label_from_xz(
-    dist_m: float, episode: Optional[dict] = None
-) -> str:
-    thr = ((episode or {}).get('thresholds') or {}).get('distance_label') or {
-        'within_reach': [0.0, 0.5],
-        'nearby': [0.5, 1.0],
-        'far': [1.0, 1.5],
-        'beyond': [1.5, 1e9],
-    }
-    for name, bounds in thr.items():
-        lo, hi = float(bounds[0]), float(bounds[1])
-        if lo <= dist_m < hi:
-            return name
-    return 'beyond'
-
-
-def direction_distance_between_landmarks(
-    pos_a, pos_b, *, episode: Optional[dict] = None
-) -> Optional[tuple[str, str]]:
-    """Allocentric-ish relation of B relative to A in world xz (+Z = front).
-
-    Returns ``(direction_label, distance_label)`` or None.
-    """
-    a = _as_xyz(pos_a)
-    b = _as_xyz(pos_b)
-    if a is None or b is None:
-        return None
-    dx, dz = b[0] - a[0], b[2] - a[2]
-    dist = math.hypot(dx, dz)
-    if dist < 1e-6:
-        return None
-    # Treat world +Z as "front", +X as "right" (AI2-THOR yaw-0 frame).
-    angle_thr = float(
-        ((episode or {}).get('thresholds') or {}).get('relation', {}).get(
-            'lateral_deg', 15
-        )
-    )
-    # Primary axis
-    abs_x, abs_z = abs(dx), abs(dz)
-    # Angle from +Z toward +X
-    deg = abs(math.degrees(math.atan2(dx, dz)))
-    if abs_z >= abs_x and deg <= (90 - angle_thr):
-        direction = 'ahead of' if dz > 0 else 'behind'
-    elif abs_x >= abs_z:
-        direction = 'to the right of' if dx > 0 else 'to the left of'
-    else:
-        direction = 'ahead of' if dz > 0 else 'behind'
-    return direction, distance_label_from_xz(dist, episode)
-
-
-def format_survey_relation(
-    direction: str, distance: str, *, source_name: str
-) -> str:
-    if direction in ('ahead of', 'behind'):
-        return f'{direction} the {source_name} and {distance}'
-    return f'{direction} the {source_name} and {distance}'
-
-
-def remove_edges_near_position(
-    graph: nx.Graph,
-    world_pos,
-    *,
-    radius_m: float = 0.6,
-) -> nx.Graph:
-    """Copy of ``graph`` with edges whose midpoint is within ``radius_m`` of pos removed.
-
-    Kept for offline graph edits / experiments. Survey generation no longer uses
-    conditional_detour (doors are static in current data).
-    """
-    xyz = _as_xyz(world_pos)
-    if xyz is None:
-        return graph.copy()
-    G = graph.copy()
-    to_drop = []
-    for u, v, data in G.edges(data=True):
-        pu = G.nodes[u].get('pos')
-        pv = G.nodes[v].get('pos')
-        if not pu or not pv:
-            continue
-        mid = ((pu[0] + pv[0]) / 2.0, (pu[1] + pv[1]) / 2.0, (pu[2] + pv[2]) / 2.0)
-        if _xz_dist(xyz, mid) <= radius_m:
-            to_drop.append((u, v))
-    G.remove_edges_from(to_drop)
-    return G
-
-
-def first_hop_direction_label(
-    graph: nx.Graph, path_nodes: Sequence[str], *, source_pos=None, goal_pos=None
-) -> Optional[str]:
-    """Initial travel direction of ``path_nodes`` from an A-facing-B frame.
-
-    Standing at source facing goal, report where the first hop heads
-    (ahead / left / right / behind) via equal-wedge ego labels. Falls back
-    to world +Z frame if goal pose is missing.
-    """
-    nodes = list(path_nodes)
-    if len(nodes) < 2:
-        return None
-    p0 = graph.nodes[nodes[0]].get('pos')
-    p1 = graph.nodes[nodes[1]].get('pos')
-    if not p0 or not p1:
-        return None
-    # Prefer relational A→B heading when both poses given
-    if source_pos is not None and goal_pos is not None:
-        from cm_benchmark.generation.constructs import (
-            AHEAD_HALF_WIDTH_FULL,
-            angle_to_ego_label,
-            bearing_deg_xz,
-            xyz_as_dict,
-        )
-
-        a = xyz_as_dict(source_pos)
-        b = xyz_as_dict(goal_pos)
-        if a and b:
-            heading = bearing_deg_xz(
-                float(b['x']) - float(a['x']), float(b['z']) - float(a['z'])
-            )
-            hop = bearing_deg_xz(p1[0] - float(a['x']), p1[2] - float(a['z']))
-            if heading is not None and hop is not None:
-                rel = (hop - heading) % 360.0
-                return angle_to_ego_label(rel, ahead_half_width=AHEAD_HALF_WIDTH_FULL)
-    # World-frame fallback
-    dx, dz = p1[0] - p0[0], p1[2] - p0[2]
-    if abs(dx) < 1e-9 and abs(dz) < 1e-9:
-        return None
-    if abs(dz) >= abs(dx):
-        return 'ahead of you' if dz > 0 else 'behind you'
-    return 'to your right' if dx > 0 else 'to your left'

@@ -28,14 +28,17 @@ shared_rules:
     # each other — naming without relating. This tests tolerance to added scene
     # detail, not distractor resistance; see invisible_displacement
     # difficulty_axis (verbosity) below.
-  # EXCEPTION (any construct with duplicate-label objects): the queried
-    # object's name may be extended with a disambiguating reference to ONE
-    # other, already-unambiguous object (e.g. "the Chair close to the
-    # Bread"), when multiple instances of the same category are visible.
-    # This is a referring expression, not the tested relation — it must
-    # never state the viewer-relative direction being asked about. If no
-    # unique disambiguator exists, the object is excluded from query
-    # candidates entirely.
+  # EXCEPTION (any construct with duplicate-label objects): every named
+    # object (queried, ID destination landmark + swap partner, PT A/B/C,
+    # class-4 source/goal) is checked across EVERY shown frame. If the same
+    # type appears more than once, the name may be extended with either
+    # (1) proximity to ONE unique, co-visible landmark ("the Chair close to
+    # the Bread") when the 3D AABB gap and 2D pixel-bbox gap are obvious,
+    # or (2) a colour-dot mark on every visible instance of that type
+    # ("the Chair marked with a magenta dot"). This is a referring
+    # expression, not the tested relation — it must never use a
+    # landmark-relative direction ("left of the Bread"). If neither
+    # proximity nor a mark is available, the object is excluded.
   - all spatial facts come from frames + CSV metadata, never from text
   - every item has a non-null answer_source tracing to metadata field(s)
   - frame_of_reference must be unambiguous (stated or fixed by construct)

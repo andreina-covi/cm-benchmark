@@ -1,0 +1,142 @@
+# Quality-affecting generation parameters. One file is the source of truth.
+# justification tags: literature / calibrated / derived / none found
+# (same tags as docs/parameters_report.md). Do not invent a source.
+name: default
+
+visibility:
+  # Path to the DecisionTree bundle; empty = search defaults / env.
+  model_path: null  # calibrated: fit_thresholds.py on human labels
+  proba_low: 0.3  # none found (b6fc1ca); fallback when a bundle has no band
+  proba_high: 0.7  # none found (b6fc1ca)
+  degenerate_band_half_width: 0.05  # none found ("small margin" around a one-point band)
+  static:
+    min_bbox_area: 100.0  # none found (b418bda; drop speck detections)
+    min_side: 8.0  # none found (b418bda)
+    min_visible_pixels: 40.0  # none found (b418bda)
+    min_occupancy_ratio: null
+    max_obj_distance: null
+  query:
+    min_bbox_area: 1200.0  # none found (c87ae77 raised from 800; fallback only)
+    min_side: 32.0  # none found (c87ae77 raised from 24)
+    min_visible_pixels: 300.0  # none found (c87ae77 raised from 200)
+  border:
+    edge_margin_px: 2  # none found (c87ae77; geometric clip rule)
+    min_extent_if_clipped_px: 48.0  # none found (c87ae77)
+  id_encode:
+    min_bbox_area: 100.0  # none found (5c7eb3c; soft bar for small displaced props)
+    min_side: 8.0  # none found (5c7eb3c)
+    min_visible_pixels: 40.0  # none found (5c7eb3c)
+
+directions:
+  ahead_half_width_fov_deg: 20.0  # none found (d56b883; 45° collapses FOV objects to ahead)
+  ahead_half_width_full_deg: 45.0  # derived: four equal 90° sectors; behind boundary = 135°
+  pt_back_deg: 135.0  # literature: VSI-Bench relative direction, back = turn ≥ 135°
+  pt_boundary_margin_deg: 10.0  # none found (c87ae77; not a published VSI/ViewSpatial constant)
+  refuse_straddling_objects: true  # derived: drop when exported ang-width crosses a sector edge
+
+options:
+  n_options: 4  # derived: four ego labels
+
+disambiguation:
+  proximity_setting: current  # none found; ablation: sr3d / vsi / current / strict
+  all_marks: false  # true = colour-dot marks only (ablation reference)
+  ratio_2d: 1.5  # none found; sibling 2D gap must be ≥ this × target gap
+  min_gap_2d_frac: 0.10  # none found; plus this fraction of image width
+  mark_palette: [magenta, cyan, lime, yellow]  # none found; skip type if more instances
+  settings:
+    current:
+      margin_m: 0.6  # none found (b418bda; "obvious in the image")
+      ratio: 1.5  # none found (b418bda)
+    sr3d:
+      margin_m: 0.20  # literature: ReferIt3D Sr3D horizontal_gap
+      ratio: null
+    vsi:
+      margin_m_small: 0.15  # literature: VSI-Bench, rooms ≤ 40 m²
+      margin_m_large: 0.30  # literature: VSI-Bench, rooms > 40 m²
+      room_area_split_m2: 40.0
+      ratio: null
+    strict:
+      margin_m: 1.0  # none found (upper bound)
+      ratio: 2.0
+
+budget:
+  max_per_construct: 3  # none found
+
+spatial_working_memory:
+  min_delay: 2  # none found
+  max_delay: null
+  count_divisor: 3  # none found (5c7eb3c; max(1, max_items // divisor))
+  count_min_instances: 2  # derived: n=1 has no memory load
+
+spatial_updating:
+  min_delay: 2  # none found
+  max_delay: null
+  min_pos_change_m: 0.1  # none found (05535fa)
+  min_heading_change_deg: 5.0  # none found (05535fa)
+  object_static_eps_m: 0.05  # none found (05535fa)
+
+motion:
+  position_eps_m: 0.001  # derived: float noise, far below the 0.20 m step
+
+invisible_displacement:
+  floor_anchor_radius_m: 1.2  # none found (05535fa)
+  min_diagnostic_labels: 2  # derived: invariant 7 (at least one diagnostic distractor)
+
+landmarks:
+  layout_base: 2.0  # none found (05535fa; layout salience boost)
+  layout_per_sighting: 0.1  # none found (05535fa)
+  other_base: 1.0  # none found (05535fa)
+  other_per_sighting: 0.05  # none found (05535fa)
+  top_n_per_region: 5  # none found (05535fa)
+  max_total: 40  # none found (05535fa)
+
+perspective_taking:
+  top_n_per_region: 4  # none found (05535fa)
+  max_total: 18  # none found (05535fa)
+
+templates:
+  verbose_max_nonvisible_names: 4  # none found (b418bda)
+
+class4:
+  min_pair_geodesic_m: 1.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
+  max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
+  scene_geodesic_percentile: 0.5  # none found (7a2ee6a; small ProcTHOR houses)
+  landmark_snap_m: 2.5  # none found (5c7eb3c)
+  landmark_snap_default_m: 1.5  # none found (63130d5; unused when landmark_snap_m is set)
+  landmark_snap_default_grid_mult: 10.0  # none found (63130d5)
+  snap_tolerance_steps: 1.4142135623730951  # derived: √2 · one 8-neighbour step
+  route:
+    max_ratio_floor: 1.1  # literature: Habitat PointNav rejects geo/eucl < 1.1
+    min_hop_count: 2  # none found (5b4cb02; at least one real edge)
+    max_subpath_nodes: 512  # none found (274e5ff)
+    min_turns: 2  # none found (274e5ff; analogy to Habitat episode_min_steps=11)
+    max_turns: 12  # none found (274e5ff)
+  survey:
+    max_ratio_floor: 1.05  # literature: HSSD-200 (CVPR 2024) geo/eucl < 1.05 is nearly straight
+    min_agent_source_dist_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m
+    view_radius_percentile: 0.5  # none found (5b4cb02)
+  follower:
+    ladder_multipliers: [1.5, 1.0, 1.0, 0.5]  # derived: multiples of max(grid, move) / grid
+    arrive_fraction: 0.75  # none found (274e5ff)
+    max_actions: 512  # none found (274e5ff)
+  fallback:
+    grid_size_m: 0.25  # derived: unused when the export supplies grid_size
+    agent_rotation_deg: 45.0  # derived: unused when the export supplies rotation
+    agent_move_m: null  # derived: unused; falls back to grid_size
+
+# Episode-GT hyperparameters. Camera / agent fields are overridden by episode_meta.
+episode_gt:
+  frame_w: 396  # derived: SPOC nav camera; overridden by episode_meta.camera
+  frame_h: 224  # derived: SPOC nav camera
+  fov_v_deg: 59.0  # derived: fallback; measured fov_vertical_deg overrides
+  k_neighbors: 3  # none found (11d1c8f); object–object edges (allocentric unused)
+  radius_m: 1.5  # none found (11d1c8f)
+  ex_m: 0.1  # none found (11d1c8f); unused
+  ey_m: 0.1  # none found (11d1c8f); above/below on episode edges
+  ez_m: 0.15  # none found (11d1c8f); skip projection closer than this
+  angle_threshold_xz_deg: 15  # none found (11d1c8f); passed then discarded
+  min_distance_m: 0.5  # none found (11d1c8f); edge distance_label only
+  med_distance_m: 1.0  # none found (11d1c8f)
+  max_distance_m: 1.5  # none found (11d1c8f)
+  mov_constant_m: 0.2  # derived: fallback; episode_meta.agent.movement_constant overrides
+  state_sparsify_eps_m: 0.0001  # derived: float noise for object_state_track

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
+from cm_benchmark.generation.config import get_generation_config
+from cm_benchmark.generation.disambiguation import draw_marked_frames
 from cm_benchmark.generation.constructs import (
     OPPOSITE,
     ORTHOGONAL,
@@ -108,7 +111,7 @@ def _shuffle_options(correct: str, pool: list[str], seeds: list[str]) -> tuple[d
         if seed and seed not in labels:
             labels.append(seed)
 
-    labels = labels[:4]
+    labels = labels[: get_generation_config().options.n_options]
     if correct not in labels:
         if labels:
             labels[0] = correct
@@ -157,6 +160,7 @@ def _usable_display_name(planned: Optional[str], obj_id: Optional[str]) -> str:
 
 
 def _core_question(fact: PlannedFact) -> str:
+    """Fill the construct's template with the fact's names, delay and cues."""
     extra = fact.extra or {}
     mode = extra.get('template_mode')
     tmpl_index = int(extra.get('template_index') or 0)
@@ -308,7 +312,8 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         nv_cats: list[str] = []
         nv_seen: set[str] = set()
         for st in detail_steps:
-            for oid, odata in list((st.get('non_visible_objects') or {}).items())[:4]:
+            cap = get_generation_config().templates.verbose_max_nonvisible_names
+            for oid, odata in list((st.get('non_visible_objects') or {}).items())[:cap]:
                 if oid == queried:
                     continue
                 typ = object_type_from_id(oid, {oid: odata})
@@ -317,9 +322,9 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
                     continue
                 nv_seen.add(key)
                 nv_cats.append(typ)
-                if len(nv_cats) >= 4:
+                if len(nv_cats) >= cap:
                     break
-            if len(nv_cats) >= 4:
+            if len(nv_cats) >= cap:
                 break
         if nv_cats:
             parts.append(
@@ -342,6 +347,7 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
     return preamble or 'You observe several objects in the environment.'
 
 def build_question(episode: dict, fact: PlannedFact, style: str) -> str:
+    """Question text for one style: concise, or preamble + concise."""
     core = _core_question(fact)
     if style == 'verbose':
         preamble = build_verbose_preamble(episode, fact)
@@ -350,6 +356,7 @@ def build_question(episode: dict, fact: PlannedFact, style: str) -> str:
 
 
 def _frame_of_reference_for_fact(fact: PlannedFact) -> str:
+    """The fact's frame of reference, else the construct default."""
     extra = fact.extra or {}
     if extra.get('frame_of_reference'):
         return str(extra['frame_of_reference'])
@@ -357,6 +364,7 @@ def _frame_of_reference_for_fact(fact: PlannedFact) -> str:
 
 
 def _step_of(entry) -> Optional[int]:
+    """Integer ``step`` of a trajectory / action row, or None."""
     if not isinstance(entry, dict):
         return None
     try:
@@ -502,6 +510,9 @@ def _slide_context(fact: PlannedFact) -> dict:
         'traversed_edges',
         'viewed_edges',
         'view_radius_m',
+        'disambiguation',
+        'disambiguation_landmark',
+        'marks',
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
     return ctx
@@ -565,57 +576,6 @@ def infer_image_roles(fact: PlannedFact) -> list[str]:
     return [f'frame {i}' for i in range(n)]
 
 
-def slide_readout(construct: str, context: Optional[dict] = None) -> str:
-    """One-line how-to-read the images for a construct (slide caption)."""
-    ctx = context or {}
-    if construct == 'perspective_taking':
-        a, b, c = ctx.get('A'), ctx.get('B'), ctx.get('C')
-        return (
-            f'Imagined pose: stand at {a}, face {b}, report where {c} is — '
-            'not the camera’s egocentric answer.'
-        )
-    if construct == 'route_knowledge':
-        return (
-            f"SOURCE ({ctx.get('source')}) and GOAL ({ctx.get('goal')}) "
-            "carry a letter marker on the still where each was sighted. Scoring is "
-            "metric simulation on traversed edges "
-            "(success / validity / SPL), not exact-match to the stored action string."
-        )
-    if construct == 'survey_based_route_planning':
-        return (
-            f"SOURCE ({ctx.get('source')}) and GOAL ({ctx.get('goal')}) "
-            "carry a letter marker. The stored walk is one valid never-walked "
-            "plan on viewed_edges. Scoring uses viewed_edges with a "
-            "required untraversed hop — same simulator as route knowledge."
-        )
-    if construct == 'spatial_working_memory':
-        if ctx.get('template_mode') == 'recall_count':
-            return (
-                'Ordered navigation frames. Count how many distinct instances of '
-                f"{ctx.get('object_category') or ctx.get('object_type')} you saw "
-                'along the stream up to now.'
-            )
-        return (
-            'Ordered navigation: encode the object in the first frame, then recall '
-            'its earlier bearing at query (object is gone from the final view).'
-        )
-    if construct == 'spatial_updating':
-        return (
-            'Ordered navigation: encode early, track your own motion through '
-            'intermediate frames, report the updated bearing at the final pose.'
-        )
-    if construct == 'invisible_displacement':
-        return (
-            'Encode while visible, then the object moves while hidden; query when '
-            'still absent — use the destination cue in the question.'
-        )
-    if construct == 'egocentric_encoding':
-        return 'Single current view: report the object’s bearing in the camera frame.'
-    if construct == 'allocentric_encoding':
-        return 'Single view: object–object relation in a trusted object-centered frame.'
-    return 'Raw images shown to the model (same as evaluation input).'
-
-
 def class4_slide_panel(*args, **kwargs):
     """Re-export for tests / callers that already import templates."""
     from cm_benchmark.generation.slide_copy import class4_slide_panel as _panel
@@ -624,6 +584,7 @@ def class4_slide_panel(*args, **kwargs):
 
 
 def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) -> None:
+    """Copy per-frame poses, window actions and displacement events onto the item."""
     if fact.construct in _TRAJECTORY_HOOKS:
         item.agent_trajectory = _frame_poses(episode, fact) or None
     if fact.construct in _ACTIONS_HOOKS:
@@ -632,16 +593,74 @@ def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) 
         item.displacement_event = dict(fact.displacement_event)
 
 
+def _stable_item_id(base_id: str, fact: PlannedFact, style: str) -> str:
+    """Id without the fact index, so proximity settings share the same key."""
+    extra = fact.extra or {}
+    parts: list = [base_id, fact.construct]
+    if extra.get('template_mode'):
+        parts.append(extra['template_mode'])
+    if fact.encoding_step is not None:
+        parts.append(fact.encoding_step)
+    if fact.query_step is not None:
+        parts.append(fact.query_step)
+    if fact.queried_object_id:
+        parts.append(fact.queried_object_id)
+    elif extra.get('object_category'):
+        parts.append(extra['object_category'])
+    for key in (
+        'landmark_a_id',
+        'landmark_b_id',
+        'landmark_c_id',
+        'source_landmark_id',
+        'goal_landmark_id',
+        'swap_partner_id',
+        'floor_anchor_id',
+        'destination_landmark_id',
+    ):
+        val = extra.get(key)
+        if val:
+            parts.append(val)
+    parts.append(style)
+    return '_'.join(str(p) for p in parts).replace('|', '_').replace(' ', '_')
+
+
+def _image_paths_for_item(
+    episode: dict,
+    fact: PlannedFact,
+    item_id: str,
+    marked_root: Optional[Path],
+) -> list[str]:
+    """Original frames, or marked copies under ``marked_root/<item_id>/``."""
+    paths = list(fact.image_paths or [])
+    extra = fact.extra or {}
+    marks = extra.get('marks') or {}
+    if not marks or marked_root is None or not paths:
+        return paths
+    steps = [int(s) for s in (extra.get('shown_frame_steps') or [])]
+    if len(steps) != len(paths):
+        from cm_benchmark.generation.planner import _step_for_image_path
+
+        steps = [
+            si if (si := _step_for_image_path(episode, p)) is not None else 0
+            for p in paths
+        ]
+    dest = Path(marked_root) / item_id
+    return draw_marked_frames(episode, paths, steps, marks, dest)
+
+
 def fact_to_items(
     episode: dict,
     fact: PlannedFact,
     *,
     base_id: str,
     styles: tuple[str, ...] = ('concise', 'verbose'),
+    marked_root: Optional[Path] = None,
 ) -> list[CandidateItem]:
+    """One item per question style for a fact (or one unsupported placeholder)."""
     scene = scene_id_of(episode)
     env = environment_of(episode)
     fo_r = _frame_of_reference_for_fact(fact)
+    extra = fact.extra or {}
 
     if fact.status == 'unsupported':
         return [
@@ -673,14 +692,11 @@ def fact_to_items(
         )
 
     items: list[CandidateItem] = []
-    ids = []
-    for style in styles:
-        iid = f'{base_id}_{fact.construct}_{fact.query_step}_{fact.queried_object_id}_{style}'
-        iid = iid.replace('|', '_').replace(' ', '_')
-        ids.append(iid)
+    ids = [_stable_item_id(base_id, fact, style) for style in styles]
 
     for i, style in enumerate(styles):
         paired = ids[1 - i] if len(ids) == 2 else None
+        image_paths = _image_paths_for_item(episode, fact, ids[i], marked_root)
         item = CandidateItem(
             item_id=ids[i],
             construct=fact.construct,
@@ -688,7 +704,7 @@ def fact_to_items(
             frame_of_reference=fo_r,
             environment=env,
             scene_id=scene,
-            image_paths=list(fact.image_paths or []),
+            image_paths=image_paths,
             question=build_question(episode, fact, style),
             options=options,
             answer=answer_key,
@@ -701,9 +717,12 @@ def fact_to_items(
             question_style=style,
             paired_item_id=paired,
             displacement_event=fact.displacement_event,
-            difficulty=(fact.extra or {}).get('k'),
+            difficulty=extra.get('k'),
             image_roles=infer_image_roles(fact) or None,
             context=_slide_context(fact) or None,
+            disambiguation=extra.get('disambiguation') or 'none',
+            disambiguation_landmark=extra.get('disambiguation_landmark'),
+            marks=dict(extra.get('marks') or {}),
         )
         _attach_schema_hooks(episode, fact, item)
         items.append(item)
@@ -716,10 +735,18 @@ def build_items_from_facts(
     *,
     episode_tag: str = 'ep',
     styles: tuple[str, ...] = ('concise', 'verbose'),
+    marked_root: Optional[Path] = None,
 ) -> list[CandidateItem]:
+    """Items for every fact. ``item_id`` is stable across proximity settings."""
     items: list[CandidateItem] = []
-    for i, fact in enumerate(facts):
+    for fact in facts:
         items.extend(
-            fact_to_items(episode, fact, base_id=f'{episode_tag}_{i:03d}', styles=styles)
+            fact_to_items(
+                episode,
+                fact,
+                base_id=episode_tag,
+                styles=styles,
+                marked_root=marked_root,
+            )
         )
     return items

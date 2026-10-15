@@ -11,6 +11,7 @@ from cm_benchmark.storage.episode_store import EpisodeStore
 
 
 def _json_default(obj):
+    """JSON encoder fallback for numpy scalars and arrays."""
     if isinstance(obj, np.integer):
         return int(obj)
     if isinstance(obj, np.floating):
@@ -22,6 +23,7 @@ def _json_default(obj):
 
 class NavSequenceGenerator(ABC):
     def __init__(self, path_navigation, path_objects, output_path, output_filename, hyperparams):
+        """Store paths and hyperparameters, then read navigation and object records."""
         self.path_navigation = path_navigation
         self.path_objects = path_objects
         self.output_path = output_path
@@ -32,21 +34,26 @@ class NavSequenceGenerator(ABC):
 
     @abstractmethod
     def get_records_navigation(self):
+        """Per-timestep agent state and FOV detections."""
         pass
 
     @abstractmethod
     def get_records_objects(self):
+        """Object catalog keyed by object id."""
         pass
 
     @abstractmethod
     def get_visible_objects(self, data):
+        """View records for the objects detected at one timestep."""
         pass
 
     @abstractmethod
     def update_memory(self, memory, visible_objs, timestep):
+        """Update the seen-object memory with this timestep."""
         pass
 
     def collect_episode_data(self, extra_data=None):
+        """Episode GT dict: steps with visible / remembered objects and edges, trajectory, actions."""
         if extra_data is None:
             extra_data = {}
         scene = extra_data.get('scene', 'unknown')
@@ -166,6 +173,7 @@ class NavSequenceGenerator(ABC):
         return edges_egocentric, edges_allocentric
 
     def create_edges_for_inferred_objects(self, non_visible_objs, memory, data):
+        """Agent → remembered-object edges for objects out of view."""
         edges = []
         ag_pos = data['ag_pos']
         ag_rot = data['ag_rot']
@@ -192,6 +200,7 @@ class NavSequenceGenerator(ABC):
         return edges
 
     def edges_btw_neighbors(self, obj_id, neighbors, data, last_seen=-1):
+        """Distance + direction edges from ``obj_id`` to each neighbour."""
         edges = []
         local_position_object = np.array(data[obj_id]['local_position'], dtype=float)
         angle_thr = self.hyperparams['angle_threshold_xz']
@@ -223,6 +232,7 @@ class NavSequenceGenerator(ABC):
         return edges
 
     def get_knn(self, obj_id, data):
+        """Up to ``k_neighbors`` objects within ``radius`` of ``obj_id``, nearest first."""
         obj_pos = np.array(data[obj_id]['local_position'], dtype=float)
         neighbors = []
         k = self.hyperparams['k_neighbors']
@@ -279,6 +289,7 @@ class NavSequenceGenerator(ABC):
         return {'landmarks': landmarks, 'turns': turns}
 
     def export_to_json(self, data, json_filename="nav_data.json"):
+        """Write the episode GT JSON under ``output_path``."""
         os.makedirs(self.output_path, exist_ok=True)
         filename = os.path.join(self.output_path, json_filename)
         print(f"Exporting data to {filename}")
@@ -304,6 +315,7 @@ class NavSequenceGenerator(ABC):
 
 
 def parse_args():
+    """CLI arguments of the episode GT generator."""
     parser = argparse.ArgumentParser(
         description=(
             "Build navigation episode GT from one episode folder or a root of them "
@@ -407,7 +419,16 @@ def parse_args():
         default=None,
         help=(
             "Path to visibility_filter.joblib. Applied to every episode under "
-            "--csv_path_folder."
+            "--csv_path_folder. Overrides visibility.model_path in --config."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=(
+            "Path to generation.yaml (quality parameters). Default: "
+            "configs/generation.yaml."
         ),
     )
     return parser.parse_args()
