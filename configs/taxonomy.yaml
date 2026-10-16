@@ -158,7 +158,10 @@ class_2:
         query pose (left / right / ahead / behind). Floor destinations need
         a nearby named landmark ("the floor near the {landmark}"), never a
         bare Floor. Swap items name a previously seen partner object instead
-        of a receptacle; swap_partner_ok applies only to swaps.
+        of a receptacle. A swap partner must be pickupable. When the
+        destination anchor is a non-pickupable receptacle the question uses
+        recall_direction ("moved onto the {anchor}") and is never a swap.
+        swap_partner_ok applies only to swaps.
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
       discriminators:
         - queried object was distinguishable, then hidden, then moved
@@ -248,10 +251,12 @@ class_4:
         The stored reference is the agent's recorded actions between those
         sightings. Scoring replays that sequence with continuous xz+heading;
         a move that lands farther than the calibrated block tolerance from
-        every reachable node is a no-op, and success is the final position
-        within goal_success_m of the goal. Keep only non-trivial walks
-        (at least 2 m, detour, and at least one real turn). A scene with no
-        such walk is unsupported.
+        every reachable node is a no-op. Success is the final position
+        within goal_success_m of the agent's pose at the goal sighting
+        (the recorded arrival). The landmark centroid is not that pose.
+        Keep only non-trivial walks (at least 2 m, detour, and at least
+        one real turn). There is no scene-percentile length gate. A scene
+        with no such walk is unsupported.
       distractor_pattern: []
       discriminators:
         - the queried route was previously traversed (path on traversed_edges)
