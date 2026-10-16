@@ -28,10 +28,13 @@ shared_rules:
     # each other — naming without relating. This tests tolerance to added scene
     # detail, not distractor resistance; see invisible_displacement
     # difficulty_axis (verbosity) below.
-  # EXCEPTION (any construct with duplicate-label objects): every named
+  # EXCEPTION (any construct with confusable objects): two objects are
+    # confusable by the obj-synset rule (same synset, one synset is a
+    # hypernym of the other, or they share a direct hypernym). Every named
     # object (queried, ID destination landmark + swap partner, PT A/B/C,
-    # class-4 source/goal) is checked across EVERY shown frame. If the same
-    # type appears more than once, the name may be extended with either
+    # class-4 source/goal) is checked across EVERY shown frame. If any two
+    # named objects are confusable, the item is rejected. A single confusable
+    # object may be extended with either
     # (1) proximity to ONE unique, co-visible landmark ("the Chair close to
     # the Bread") when the 3D AABB gap and 2D pixel-bbox gap are obvious,
     # or (2) a colour-dot mark on every visible instance of that type
@@ -66,7 +69,7 @@ class_1:
       frame_of_reference: egocentric
       definition: Relation of a visible object to the viewer's current pose.
       what_moves: none
-      answer_type: viewer-anchored direction (left/right/ahead/behind/above/below)
+      answer_type: viewer-anchored direction (left / right / ahead / behind only)
       required_temporal_fields: []
       question_template: "From your current view, where is the {object} relative to you?"
       ground_truth_method: >
@@ -139,7 +142,7 @@ class_2:
         - recall_direction: egocentric direction at query pose; question names the destination cue
         - swap: egocentric direction; question names a previously seen partner object as the spatial anchor
       required_temporal_fields:
-        [object_state_track, displacement_event, displacement_candidates]
+        [object_state_track, placement_candidates]
       question_template:
         recall_direction: >-
           While out of view, the {object_type} was moved onto {new_location}.
@@ -148,11 +151,14 @@ class_2:
           The {object_type} was moved to where the {other_object_type} used to be.
           Where is the {object_type} relative to you now?
       ground_truth_method: >
-        Hidden move from displacement_events. Answer is the object's
-        egocentric bearing at the query pose. Floor destinations need a
-        nearby named landmark ("the floor near the {landmark}"), never a
+        Built from successful placement_candidates. The move step is the
+        latest frame in (encode, query] at which the object is hidden.
+        A receptacle destination is kept only when parent_receptacle equals
+        the anchor id. Answer is the object's egocentric bearing at the
+        query pose (left / right / ahead / behind). Floor destinations need
+        a nearby named landmark ("the floor near the {landmark}"), never a
         bare Floor. Swap items name a previously seen partner object instead
-        of a receptacle.
+        of a receptacle; swap_partner_ok applies only to swaps.
       distractor_pattern: [original_location, nearby_receptacle, salient_decoy_location]
       discriminators:
         - queried object was distinguishable, then hidden, then moved
@@ -231,17 +237,21 @@ class_4:
       answer_type: >
         ordered sequence of collected navigation actions
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] scores success / validity / SPL on the walked graph.
+        [CODE] replays the sequence continuously; success is the final
+        position within goal_success_m of the goal, then validity and SPL.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
         List, in order, the navigation actions you took to travel from the
         {source} to the {goal}.
       ground_truth_method: >
-        Source and goal are named landmarks on the walked trajectory.
-        The path is the shortest walk on traversed_edges. Stored answer is a
-        reference action sequence for analysis; scoring is metric simulation.
-        Keep only non-trivial walks (length, detour, and real turns); emit
-        the hardest surviving pairs. A scene with no such walk is unsupported.
+        Source and goal are floor-standing landmarks on the walked trajectory.
+        The stored reference is the agent's recorded actions between those
+        sightings. Scoring replays that sequence with continuous xz+heading;
+        a move that lands farther than the calibrated block tolerance from
+        every reachable node is a no-op, and success is the final position
+        within goal_success_m of the goal. Keep only non-trivial walks
+        (at least 2 m, detour, and at least one real turn). A scene with no
+        such walk is unsupported.
       distractor_pattern: []
       discriminators:
         - the queried route was previously traversed (path on traversed_edges)
@@ -260,8 +270,9 @@ class_4:
       answer_type: >
         ordered sequence of collected navigation actions
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] scores success / validity / SPL on viewed_edges
-        (must use at least one unwalked edge).
+        [CODE] replays the sequence continuously; success is the final
+        position within goal_success_m of the goal. Validity requires the
+        walk to use at least one unwalked viewed edge, then SPL.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template:
         - >-
@@ -271,10 +282,12 @@ class_4:
           Based on what you've seen of this space, list the navigation
           actions, in order, that go from the {source} to the {goal}.
       ground_truth_method: >
-        Source and goal are named landmarks with no path on traversed_edges
-        and a path on viewed_edges (what was actually seen). The path is the
-        shortest walk on viewed_edges. Same scoring simulator as
-        route_knowledge. Keep only non-trivial pairs; emit the hardest
+        Source and goal are floor-standing landmarks with no path on
+        traversed_edges and a path on viewed_edges. The stored reference is
+        a continuous BFS from the source pose over those viewed moves, not
+        the agent's recorded actions. Scoring is the same continuous replay
+        as route_knowledge (goal_success_m). Keep only non-trivial pairs
+        (at least 2 m and at least one real turn); emit the hardest
         surviving ones.
       distractor_pattern: []
       discriminators:
@@ -292,7 +305,7 @@ schema_hooks:
     required_for: [invisible_displacement, spatial_updating]
   displacement_event:
     required_for: [invisible_displacement]
-  displacement_candidates:
+  placement_candidates:
     required_for: [invisible_displacement]
   agent_trajectory:
     required_for:

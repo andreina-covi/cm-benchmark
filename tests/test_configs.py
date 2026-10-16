@@ -12,7 +12,6 @@ import yaml
 
 CONFIGS = Path(__file__).parent.parent / 'configs'
 TAXONOMY = CONFIGS / 'taxonomy.yaml'
-CONSTRUCT_DIR = CONFIGS / 'constructs'
 
 CONSTRUCTS = (
     'egocentric_encoding',
@@ -40,7 +39,7 @@ def _taxonomy_constructs() -> dict:
 
 @pytest.mark.parametrize(
     'path',
-    [TAXONOMY, CONFIGS / 'generation.yaml'] + sorted(CONSTRUCT_DIR.glob('*.yaml')),
+    [TAXONOMY, CONFIGS / 'generation.yaml'],
     ids=lambda p: p.name,
 )
 def test_config_yaml_parses(path):

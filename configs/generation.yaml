@@ -43,7 +43,7 @@ disambiguation:
   all_marks: false  # true = colour-dot marks only (ablation reference)
   ratio_2d: 1.5  # none found; sibling 2D gap must be ≥ this × target gap
   min_gap_2d_frac: 0.10  # none found; plus this fraction of image width
-  mark_palette: [magenta, cyan, lime, yellow, orange, blue, purple]  # none found; skip type if more instances
+  mark_palette: [magenta, cyan, lime, yellow, orange, blue, purple]  # none found; colours are assigned per item, only to instances in that item's shown frames; skip the type if those frames have more instances than colours
   settings:
     current:
       margin_m: 0.6  # none found (b418bda; "obvious in the image")
@@ -52,9 +52,9 @@ disambiguation:
       margin_m: 0.20  # literature: ReferIt3D Sr3D horizontal_gap
       ratio: null
     vsi:
-      margin_m_small: 0.15  # literature: VSI-Bench, rooms ≤ 40 m²
-      margin_m_large: 0.30  # literature: VSI-Bench, rooms > 40 m²
-      room_area_split_m2: 40.0
+      margin_m_small: 0.15  # literature: VSI-Bench, rooms ≤ room_area_split_m2
+      margin_m_large: 0.30  # literature: VSI-Bench, rooms larger than the split; also the fallback when region area is not exported
+      room_area_split_m2: 40.0  # literature: VSI-Bench room-area split; exported regions have no area, so the large margin is used
       ratio: null
     strict:
       margin_m: 1.0  # none found (upper bound)
@@ -108,7 +108,8 @@ class4:
   landmark_snap_default_grid_mult: 10.0  # none found (63130d5)
   snap_tolerance_steps: 1.4142135623730951  # derived: √2 · one 8-neighbour step
   goal_success_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m
-  search_state_quant_m: 0.05  # visited-cell size for continuous A*; not a pair gate
+  search_state_quant_m: 0.05  # visited-cell size for continuous BFS; not a pair gate
+  move_block_slack_m: 1.0e-6  # derived: added to the calibrated block radius so a pose at that distance is not blocked
   route:
     max_ratio_floor: 1.1  # literature: Habitat PointNav rejects geo/eucl < 1.1
     min_hop_count: 2  # none found (5b4cb02; at least one real edge)
@@ -136,7 +137,6 @@ episode_gt:
   fov_v_deg: 59.0  # derived: fallback; measured fov_vertical_deg overrides
   k_neighbors: 3  # none found (11d1c8f); object–object edges (allocentric unused)
   radius_m: 1.5  # none found (11d1c8f)
-  ex_m: 0.1  # none found (11d1c8f); unused
   ey_m: 0.1  # none found (11d1c8f); above/below on episode edges
   ez_m: 0.15  # none found (11d1c8f); skip projection closer than this
   angle_threshold_xz_deg: 15  # none found (11d1c8f); passed then discarded

@@ -210,6 +210,7 @@ class Class4Config:
     snap_tolerance_steps: float
     goal_success_m: float
     search_state_quant_m: float
+    move_block_slack_m: float
     route: Class4RouteConfig
     survey: Class4SurveyConfig
     follower: Class4FollowerConfig
@@ -223,7 +224,6 @@ class EpisodeGtConfig:
     fov_v_deg: float
     k_neighbors: int
     radius_m: float
-    ex_m: float
     ey_m: float
     ez_m: float
     angle_threshold_xz_deg: int
@@ -422,6 +422,7 @@ def generation_config_from_mapping(
             snap_tolerance_steps=float(c4['snap_tolerance_steps']),
             goal_success_m=float(c4['goal_success_m']),
             search_state_quant_m=float(c4['search_state_quant_m']),
+            move_block_slack_m=float(c4['move_block_slack_m']),
             route=Class4RouteConfig(
                 max_ratio_floor=float(c4['route']['max_ratio_floor']),
                 min_hop_count=int(c4['route']['min_hop_count']),
@@ -452,7 +453,6 @@ def generation_config_from_mapping(
             fov_v_deg=float(egt['fov_v_deg']),
             k_neighbors=int(egt['k_neighbors']),
             radius_m=float(egt['radius_m']),
-            ex_m=float(egt['ex_m']),
             ey_m=float(egt['ey_m']),
             ez_m=float(egt['ez_m']),
             angle_threshold_xz_deg=int(egt['angle_threshold_xz_deg']),
