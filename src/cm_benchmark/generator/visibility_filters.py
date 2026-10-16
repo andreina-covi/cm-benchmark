@@ -693,7 +693,6 @@ def resolve_hyperparams_from_episode_meta(
         'fov_v': egt.fov_v_deg,
         'k_neighbors': egt.k_neighbors,
         'radius': egt.radius_m,
-        'ex': egt.ex_m,
         'ey': egt.ey_m,
         'ez': egt.ez_m,
         'angle_threshold_xz': int(egt.angle_threshold_xz_deg),

@@ -1327,7 +1327,7 @@ def calibrate_move_block_tol(graph: nx.Graph, episode: Optional[dict]) -> float:
                 n += 1
     if n == 0:
         return trajectory_snap_tolerance(graph)
-    return worst + 1e-6
+    return worst + float(_c4().move_block_slack_m)
 
 
 def attach_episode_nav_sim(graph: nx.Graph, episode: Optional[dict]) -> nx.Graph:

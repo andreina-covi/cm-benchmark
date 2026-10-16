@@ -69,8 +69,8 @@ value in that range is better.
 | `MIN_DISAMBIG_MARGIN_M` | 0.6 m | `constructs.py:421` (default at `find_disambiguator`) | "the X close to the Y" only if the nearest sibling is this much farther from Y | every construct that names a duplicated object | higher → fewer proximity phrases, more skipped candidates | none found (b418bda, comment "Referring expressions must be obvious in the image, not just metrically true") | 0.15–1.0 (phase 4 settings sr3d / vsi / current / strict) | `disambiguation.settings.current.margin_m` |
 | `MIN_DISAMBIG_MARGIN_RATIO` | 1.5 | `constructs.py:422` | sibling distance must also be ≥ ratio × target distance | same | higher → fewer proximity phrases | none found (b418bda) | none, 1.5, 2.0 | `disambiguation.settings.current.ratio` |
 | landmark-relative direction fallback | 20° wedge, landmark → target in agent yaw | removed | "the X left of the Y" when proximity fails | — | — | none found | **removed** (questions must not contain landmark-relative directions) | — |
-| AABB proximity + 2D bbox check | setting-specific margin / ratio; 2D `ratio_2d=1.5`, `min_gap_2d_frac=0.10` | `disambiguation.py` | whole-item duplicate naming on AABB min/max gap; 2D fail → mark, not skip | every named object | stricter → more marks, fewer proximity phrases | literature: sr3d 0.20 m; VSI-Bench 0.15 / 0.30 m by `world_layout.regions[].area` (≤40 m² vs larger); current = prior 0.60 m × 1.5 | `sr3d` / `vsi` / `current` / `strict` / `all_marks` | `disambiguation.*` |
-| mark palette | magenta, cyan, lime, yellow, orange, blue, purple | `disambiguation.mark_palette` | per-episode colour per confusable group; skip the group if more instances than colours | same | fewer colours → more skipped duplicates | none found | 3–7 colours | `disambiguation.mark_palette` |
+| AABB proximity + 2D bbox check | setting-specific margin / ratio; 2D `ratio_2d=1.5`, `min_gap_2d_frac=0.10` | `disambiguation.py` | whole-item duplicate naming on AABB min/max gap; 2D fail → mark, not skip | every named object | stricter → more marks, fewer proximity phrases | literature: sr3d 0.20 m; VSI-Bench 0.15 / 0.30 m split at 40 m². Exported regions have no area, so the large margin is used | `sr3d` / `vsi` / `current` / `strict` / `all_marks` | `disambiguation.*` |
+| mark palette | magenta, cyan, lime, yellow, orange, blue, purple | `disambiguation.mark_palette` | colours assigned per item, only to instances in that item's shown frames; skip the type if those frames have more instances than colours | same | fewer colours → more skipped duplicates | none found | 3–7 colours | `disambiguation.mark_palette` |
 
 ## 4. Per construct
 
@@ -78,7 +78,7 @@ value in that range is better.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `max_per_construct` | 3 (CLI); `run_baseline.sh` uses 5 | `generate_items.py:83`, `pipeline.py:28`, `planner.py:2682`; per-planner defaults 3/3/3/2/1/2/2/2 at `planner.py:409, 497, 1235, 1462, 1563, 2042, 2274, 2486` (never used through the pipeline) | item budget per construct per episode | all | more → easier items also emitted (ego / SWM emit in walk order) | none found | 2–10 | `budget.max_per_construct` |
 | SWM delay window | min 2, max none (CLI); baseline run 5–10 | `generate_items.py:87`, `pipeline.py:29`, `planner.py:501, 2684` | allowed k between encoding and query | spatial_working_memory | longer → harder recall, fewer items | none found | min 2–10, max 5–30 | `spatial_working_memory.min_delay` / `max_delay` |
-| SWM count budget | `max(1, max_items // 3)` when max_items ≥ 2 | `planner.py:516` | slots reserved for "how many X have you seen" | spatial_working_memory | more → more count items, fewer relation items | none found (5c7eb3c, comment "Relation used to fill max_items and return early, so recall_count never ran") | 0–½ of budget | `spatial_working_memory.count_fraction` |
+| SWM count budget | `max(1, max_items // 3)` when max_items ≥ 2 | `planner.py` | slots reserved for "how many X have you seen" | spatial_working_memory | more → more count items, fewer relation items | none found (5c7eb3c, comment "Relation used to fill max_items and return early, so recall_count never ran") | 0–½ of budget | `spatial_working_memory.count_divisor` |
 | SWM count minimum | n ≥ 2 | `planner.py:637` | categories counted only with ≥ 2 instances | spatial_working_memory | — | derived: n = 1 has no memory load (taxonomy "load") | 2–3 | `spatial_working_memory.count_min_instances` |
 | SWM count distractors | n−1, n+1, n+2 | `planner.py:640-641` | count options | spatial_working_memory | — | derived: off-by-one errors | — | (structural, stays in code) |
 | SU delay window | min 2, max none (CLI); baseline run 5–10 | `generate_items.py:99`, `pipeline.py:31`, `planner.py:1466, 2686` | k between encoding and query | spatial_updating | as SWM | none found | as SWM | `spatial_updating.min_delay` / `max_delay` |
@@ -87,7 +87,7 @@ value in that range is better.
 | real-move epsilon | 0.001 m | `planner.py:214` (`_POSITION_EPS_M`) | "the agent moved on the floor plane" for SWM / ID / route | SWM, ID, route | — | derived: float noise, far below the 0.20 m step | 1e-4–0.05 | `motion.position_eps_m` |
 | `FLOOR_ANCHOR_RADIUS_M` | 1.2 m | `planner.py:690` | floor destination needs a named landmark this close | invisible_displacement | larger → more floor events kept, vaguer anchors | none found (05535fa, comment "Floor destinations need a nearby distinguishable landmark for the question cue") | 0.6–2.0 | `invisible_displacement.floor_anchor_radius_m` |
 | ID diagnostic minimum | ≥ 2 distinct ego labels among the option specs | `planner.py:1137, 1209` | at least one diagnostic distractor besides the answer | invisible_displacement | 3 → fewer items, more diagnostic pools | derived: invariant 7 (each item has a diagnostic distractor) | 2–3 | `invisible_displacement.min_diagnostic_labels` |
-| displacement candidate roles | chosen / original_location / nearby_receptacle / salient_decoy_location | `planner.py:995-1041` | which locations become options | invisible_displacement | — | derived: collector teleport trials (`displacement_candidates` CSV); no numeric gate in this repo | — | (structural) |
+| displacement candidate roles | chosen / original_location / nearby_receptacle / salient_decoy_location | `planner.py` | which locations become options when an episode has no `placement_candidates` | invisible_displacement | — | derived: collector teleport trials; pilots are built from `placement_candidates` (latest hide, receptacle parent = anchor) | — | (structural) |
 | landmark salience | layout 2.0 + 0.1·sightings; others 1.0 + 0.05·sightings | `planner.py:1755, 1759` | landmark ranking for PT and class 4 | perspective_taking, route, survey | changes which landmarks are tried first | none found (05535fa, comment "Layout landmarks get a salience boost; more sightings → higher weight") | layout boost 1–3 | `landmarks.salience.*` |
 | landmark caps (default) | top 5 per region, 40 total | `planner.py:1768-1769` | landmarks kept for class 4 | route, survey | more → more pairs tried | none found (05535fa) | 3–10 / 20–80 | `landmarks.top_n_per_region` / `max_total` |
 | landmark caps (PT) | top 4 per region, 18 total | `planner.py:2496` | landmarks kept for PT triples | perspective_taking | more → more triples (cubic) | none found (05535fa) | 3–6 / 10–30 | `perspective_taking.top_n_per_region` / `max_total` |
@@ -110,6 +110,8 @@ value in that range is better.
 | MC option shuffle seed | 0 | `templates.py` | per-item permutation of MC letters | every MC construct | a different seed reshuffles letters; the same seed is reproducible | none found | — | `options.shuffle_seed` |
 | `SURVEY_MIN_AGENT_SOURCE_DIST_M` | 1.0 m | `planner.py:695` | agent must be this far from the source at the source frame | survey | higher → fewer survey items | literature: ObjectNav success distance 1.0 m (Batra et al. 2020; GOAT-Bench), as cited in the code. 5c7eb3c started at 2.0 m | 0.5–2.0 | `class4.survey.min_agent_source_dist_m` |
 | `CLASS4_GOAL_SUCCESS_M` | 1.0 m | `nav_graph.py` scorer default | final xz vs goal (ObjectNav) | route, survey | larger → easier success | literature: ObjectNav / GOAT success distance 1.0 m | 0.5–2.0 | `class4.goal_success_m` |
+| continuous search cell | 0.05 m | `nav_graph.py` `continuous_bfs_to_goals` | visited (x, z, heading) cell for the survey BFS | survey | finer → more states, same shortest action count when several paths exist | none found | — | `class4.search_state_quant_m` |
+| move-block slack | 1e-6 m | `nav_graph.py` `calibrate_move_block_tol` | added to the worst recorded nearest-node distance; a landing farther than that sum from every reachable node is a blocked no-op | route, survey | larger → fewer moves blocked | derived: float slack so a pose exactly at the calibrated distance still passes | — | `class4.move_block_slack_m` |
 | view radius percentile | 0.5 | `nav_graph.py:315` (`calibrate_view_radius_m`) | radius around the trajectory whose edges count as "viewed" | survey | higher → more viewed edges, more survey pairs | none found (5b4cb02) | 0.25–0.75 | `class4.survey.view_radius_percentile` |
 | trajectory snap tolerance | √2 · max(grid, move) | `nav_graph.py:131`; same formula as follower simplify default `nav_graph.py:911` | agent poses snapped to the graph; goal tolerance when replaying references | route, survey | larger → more poses kept, looser goal check | derived: one 8-neighbour step of the coarser lattice | 1–2 × step | `class4.snap_tolerance_steps` |
 | reference tolerance ladder | [1.5·s, s, grid, grid/2], s = max(grid, move) | `planner.py:1625` | polyline simplification tried before the per-hop fallback | route, survey | — | derived: multiples of the step / grid size | — | `class4.follower.ladder_multipliers` |
@@ -131,9 +133,8 @@ generation. They stay with the nav generator and are listed for completeness.
 | `mov_constant` | 0.2 | `visibility_filters.py:676` | overridden by `episode_meta.agent.movement_constant` |
 | `min/med/max_distance` | 0.5 / 1.0 / 1.5 m | `visibility_filters.py:673-675` | edge `distance_label` only |
 | `angle_threshold_xz` | 15° | `visibility_filters.py:672` | **passed to `get_direction_angle` and discarded** (`spatial_relations.py:84`) |
-| `ey` | 0.1 m | `visibility_filters.py:670` | above / below in edge labels |
-| `ex` | 0.1 m | `visibility_filters.py:669` | unused |
-| `ez` | 0.15 m | `visibility_filters.py:671` | projection skipped closer than this; affects `local_position` / `angles` only |
+| `ey` | 0.1 m | `visibility_filters.py` | above / below in edge labels |
+| `ez` | 0.15 m | `visibility_filters.py` | projection skipped closer than this; affects `local_position` / `angles` only |
 | `k_neighbors`, `radius` | 3, 1.5 m | `visibility_filters.py:667-668` | object–object edges (allocentric, unsupported) |
 | state sparsify eps | 1e-4 m | `ai2thor_nav_generator.py:50, 57` | derived: float noise; drops sub-0.1 mm pose changes from object_state_track |
 
@@ -197,6 +198,6 @@ generation. They stay with the nav generator and are listed for completeness.
     read during generation, so items are unaffected.
 12. **Camera FOV fallback 59°** vs measured 58.7° / 59.6°: harmless, because the
     measured value overrides it.
-13. **VSI-Bench disambiguation setting needs room area**, which the collector
-    does not export. Phase 4 uses the 0.30 m (> 40 m²) branch for every scene
-    and records this on the item.
+13. **VSI-Bench disambiguation setting needs room area**, which exported
+    `world_layout.regions` do not carry. The 0.30 m branch (`margin_m_large`)
+    is used for every scene.
