@@ -186,7 +186,7 @@ Survey pide un par origen→meta tal que:
 En **casas ProcTHOR chicas / planta abierta**, casi todo par de landmarks
 o ya se caminó, o es un atajo corto, o el “visto” coincide con lo recorrido.
 El resultado honesto es `unsupported` con conteo de motivos
-(`path_on_traversed`, `no_viewed_path`, `geodesic_lt_1m`, etc.).
+(`path_on_traversed`, `no_viewed_path`, `geodesic_below_min`, etc.).
 
 `route_knowledge` es el hermano: exige camino **sí** caminado, con **giros
 reales** (2–12). Un pasillo recto de una habitación también queda

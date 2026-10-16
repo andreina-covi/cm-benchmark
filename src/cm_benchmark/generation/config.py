@@ -88,6 +88,7 @@ class DirectionsConfig:
 @dataclass(frozen=True)
 class OptionsConfig:
     n_options: int
+    shuffle_seed: int
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,7 @@ class Class4SurveyConfig:
     max_ratio_floor: float
     min_agent_source_dist_m: float
     view_radius_percentile: float
+    min_turns: int
 
 
 @dataclass(frozen=True)
@@ -363,7 +365,10 @@ def generation_config_from_mapping(
             pt_boundary_margin_deg=float(raw['directions']['pt_boundary_margin_deg']),
             refuse_straddling_objects=bool(raw['directions']['refuse_straddling_objects']),
         ),
-        options=OptionsConfig(n_options=int(raw['options']['n_options'])),
+        options=OptionsConfig(
+            n_options=int(raw['options']['n_options']),
+            shuffle_seed=int(raw['options']['shuffle_seed']),
+        ),
         disambiguation=DisambiguationConfig(
             proximity_setting=str(dis['proximity_setting']),
             all_marks=bool(dis['all_marks']),
@@ -428,6 +433,7 @@ def generation_config_from_mapping(
                 max_ratio_floor=float(c4['survey']['max_ratio_floor']),
                 min_agent_source_dist_m=float(c4['survey']['min_agent_source_dist_m']),
                 view_radius_percentile=float(c4['survey']['view_radius_percentile']),
+                min_turns=int(c4['survey']['min_turns']),
             ),
             follower=Class4FollowerConfig(
                 ladder_multipliers=tuple(float(x) for x in c4['follower']['ladder_multipliers']),

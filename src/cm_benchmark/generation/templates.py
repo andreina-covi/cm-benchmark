@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Optional
 
@@ -58,11 +59,20 @@ _VERBOSE_SCENE_DETAIL_CONSTRUCTS = frozenset(
 )
 
 
-def _shuffle_options(correct: str, pool: list[str], seeds: list[str]) -> tuple[dict, dict, str]:
+def _shuffle_options(
+    correct: str,
+    pool: list[str],
+    seeds: list[str],
+    *,
+    shuffle_key: str,
+) -> tuple[dict, dict, str]:
     """Return options dict, distractor_rationale, answer key (A/B/C/D).
 
     Prefers labels already realized in ``pool``. Seed *names* that are failure-mode
     tags (not scene labels) only help classify opposite/orthogonal ego directions.
+    Letter order is a permutation of this item, drawn from ``options.shuffle_seed``
+    and ``shuffle_key``, so the same item always lands on the same letter and
+    different items do not share a letter just because the answer text matches.
     """
     labels: list[str] = []
     for p in pool:
@@ -119,8 +129,10 @@ def _shuffle_options(correct: str, pool: list[str], seeds: list[str]) -> tuple[d
             labels = [correct]
 
     keys = ['A', 'B', 'C', 'D'][: len(labels)]
-    idx = sum(ord(c) for c in correct) % len(labels)
-    ordered = labels[idx:] + labels[:idx]
+    seed = get_generation_config().options.shuffle_seed
+    rng = random.Random(f'{seed}:{shuffle_key}')
+    ordered = list(labels)
+    rng.shuffle(ordered)
     options = {keys[i]: ordered[i] for i in range(len(ordered))}
     answer_key = next(k for k, v in options.items() if v == correct)
 
@@ -605,6 +617,31 @@ def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) 
         item.displacement_event = dict(fact.displacement_event)
 
 
+def _option_shuffle_key(base_id: str, fact: PlannedFact) -> str:
+    """Stable per-fact key. Concise and verbose share it, so they share letters."""
+    extra = fact.extra or {}
+    parts: list = [
+        base_id,
+        fact.construct,
+        fact.encoding_step,
+        fact.query_step,
+        fact.queried_object_id,
+        fact.answer_label,
+    ]
+    for key in (
+        'landmark_a_id',
+        'landmark_b_id',
+        'landmark_c_id',
+        'source_landmark_id',
+        'goal_landmark_id',
+        'swap_partner_id',
+        'floor_anchor_id',
+        'destination_landmark_id',
+    ):
+        parts.append(extra.get(key) or '')
+    return '|'.join('' if p is None else str(p) for p in parts)
+
+
 def _stable_item_id(base_id: str, fact: PlannedFact, style: str) -> str:
     """Id without the fact index, so proximity settings share the same key."""
     extra = fact.extra or {}
@@ -700,7 +737,10 @@ def fact_to_items(
         options, rationale, answer_key = {}, {}, fact.answer_label
     else:
         options, rationale, answer_key = _shuffle_options(
-            fact.answer_label, fact.options_pool or [], fact.distractor_seeds or []
+            fact.answer_label,
+            fact.options_pool or [],
+            fact.distractor_seeds or [],
+            shuffle_key=_option_shuffle_key(base_id, fact),
         )
 
     items: list[CandidateItem] = []

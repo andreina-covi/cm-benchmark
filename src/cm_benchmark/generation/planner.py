@@ -200,6 +200,53 @@ def _named_ids_for_fact(episode: dict, fact: PlannedFact, frames: list[int]) -> 
     return ids
 
 
+def _named_ids_confusable(episode: dict, obj_ids: Sequence[str]) -> bool:
+    """True when two different named objects are confusable under the synset rule."""
+    ids = [oid for oid in dict.fromkeys(obj_ids) if oid]
+    for i, left in enumerate(ids):
+        for right in ids[i + 1 :]:
+            if objects_are_confusable(episode, left, right):
+                return True
+    return False
+
+
+_PASSAGE_STEMS = frozenset({'door', 'doorway', 'doorframe'})
+
+
+def _is_passage_landmark(obj_id: str, category: Optional[str] = None) -> bool:
+    """Doors and doorways. SPOC ``salient_landmarks`` does not use them as endpoints."""
+    stem = (category or str(obj_id).split('|')[0]).strip().lower()
+    if stem in _PASSAGE_STEMS:
+        return True
+    lowered = str(obj_id).lower()
+    return lowered.startswith(('door|', 'doorway|', 'doorframe|'))
+
+
+def _salient_floor_landmark_ids(episode: dict) -> Optional[set[str]]:
+    """Floor-standing endpoint ids from ``world_layout`` landmarks.
+
+    That list is the collector's ``salient_landmarks`` set: non-pickupable
+    objects whose box sits on the floor. Passages are removed. ``None`` means
+    the episode has no layout list, so callers keep every non-passage landmark
+    (unit fixtures).
+    """
+    layout = (episode.get('world_layout') or {}).get('landmarks') or []
+    if not layout:
+        return None
+    ids: set[str] = set()
+    for lm in layout:
+        if not isinstance(lm, dict):
+            continue
+        oid = lm.get('landmark_id') or lm.get('obj_id')
+        if not oid:
+            continue
+        category = lm.get('obj-type') or lm.get('category')
+        if _is_passage_landmark(str(oid), None if category is None else str(category)):
+            continue
+        ids.add(str(oid))
+    return ids
+
+
 def _rewrite_fact_names(fact: PlannedFact, names: dict) -> None:
     """Overwrite display phrases on ``fact.extra`` from whole-item results."""
     extra = fact.extra or {}
@@ -279,11 +326,17 @@ def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[Pla
         group = by_c[construct]
         kept: list[PlannedFact] = []
         had_ok = False
+        dropped_confusable = False
         for fact in group:
             if fact.status != 'ok':
                 kept.append(fact)
                 continue
             had_ok = True
+            frames = [int(s) for s in ((fact.extra or {}).get('shown_frame_steps') or [])]
+            named_ids = _named_ids_for_fact(episode, fact, frames)
+            if _named_ids_confusable(episode, named_ids):
+                dropped_confusable = True
+                continue
             updated = _relabel_fact(episode, fact)
             if updated is not None:
                 kept.append(updated)
@@ -292,7 +345,11 @@ def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[Pla
                 PlannedFact(
                     construct=construct,
                     status='unsupported',
-                    reason='duplicate_unnameable_across_shown_frames',
+                    reason=(
+                        'confusable_named_objects'
+                        if dropped_confusable
+                        else 'duplicate_unnameable_across_shown_frames'
+                    ),
                 )
             )
         out.extend(kept)
@@ -1625,7 +1682,9 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
                 },
                 disambiguator=disambiguator,
             )
-            if fact is not None:
+            if fact is not None and not _named_ids_confusable(
+                episode, [obj_id, partner_id]
+            ):
                 out.append(fact)
             continue
 
@@ -1685,7 +1744,14 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
             disambiguator=disambiguator,
         )
         if fact is not None:
-            out.append(fact)
+            extra = fact.extra or {}
+            named_ids = [
+                obj_id,
+                extra.get('floor_anchor_id'),
+                extra.get('destination_landmark_id'),
+            ]
+            if not _named_ids_confusable(episode, named_ids):
+                out.append(fact)
 
     if not out and events:
         return [
@@ -2722,14 +2788,17 @@ def select_landmark_candidates(
     top_n_per_region: Optional[int] = None,
     max_total: Optional[int] = None,
     unique_category: bool = True,
+    floor_standing: bool = False,
 ) -> list[dict]:
     """Salience-filtered landmarks: visibility first, then top-N weighted per region.
 
     Never nearest-distance-only and never uniform-random. Class-4 endpoints
     pass ``unique_category=False`` and uniquely name duplicates via
     ``_referring_display_name`` (GOAT-Bench 2024 instance language; shared
-    taxonomy referring-expression exception). Other callers keep the default
-    True so source/goal names stay category-unique.
+    taxonomy referring-expression exception). Route and survey also pass
+    ``floor_standing=True`` so endpoints are the collector's floor-standing
+    landmarks (SPOC ``salient_landmarks``), not every visible object.
+    Other callers keep the default True so source/goal names stay category-unique.
     """
     lm_cfg = _cfg().landmarks
     if top_n_per_region is None:
@@ -2739,6 +2808,18 @@ def select_landmark_candidates(
     candidates = _distinguishable_landmark_candidates(episode)
     if not candidates:
         return []
+    if floor_standing:
+        allowed = _salient_floor_landmark_ids(episode)
+        if allowed is not None:
+            candidates = [lm for lm in candidates if lm.get('obj_id') in allowed]
+        else:
+            candidates = [
+                lm
+                for lm in candidates
+                if lm.get('obj_id') and not _is_passage_landmark(lm['obj_id'], lm.get('name'))
+            ]
+        if not candidates:
+            return []
     if unique_category:
         ids = [lm['obj_id'] for lm in candidates if lm.get('obj_id')]
         candidates = [
@@ -2944,7 +3025,7 @@ def _class4_pair_reject_reason(
     if geo is None:
         return 'no_full_graph_path'
     if geo < float(_cfg().class4.min_pair_geodesic_m):
-        return 'geodesic_lt_1m'
+        return 'geodesic_below_min'
     if geo > float(_cfg().class4.max_pair_geodesic_m):
         return 'geodesic_gt_30m'
     if min_scene_geodesic_m is not None and geo < float(min_scene_geodesic_m):
@@ -3103,7 +3184,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
 
-    landmarks = select_landmark_candidates(episode, unique_category=False)
+    landmarks = select_landmark_candidates(
+        episode, unique_category=False, floor_standing=True
+    )
     id_to_node, _node_to_name, meta = _build_landmark_node_map(
         graph,
         landmarks,
@@ -3182,6 +3265,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 continue
             if source == goal:
                 rejects['source_name_eq_goal'] += 1
+                continue
+            if _named_ids_confusable(episode, [src_id, goal_id]):
+                rejects['confusable_endpoints'] += 1
                 continue
             try:
                 path = shortest_path(walked, n0, n1)
@@ -3382,7 +3468,9 @@ def route_pair_funnel(episode: dict) -> dict:
     if graph is None:
         return info
     _snapped, traversed, edges, walked = _episode_traversed_subgraph(episode, graph)
-    landmarks = select_landmark_candidates(episode, unique_category=False)
+    landmarks = select_landmark_candidates(
+        episode, unique_category=False, floor_standing=True
+    )
     id_to_node, _names, meta = _build_landmark_node_map(
         graph,
         landmarks,
@@ -3591,7 +3679,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         ]
 
     _snapped, _traversed, edges, walked = _episode_traversed_subgraph(episode, graph)
-    landmarks = select_landmark_candidates(episode, unique_category=False)
+    landmarks = select_landmark_candidates(
+        episode, unique_category=False, floor_standing=True
+    )
     id_to_node, _node_to_name, meta = _build_landmark_node_map(
         graph, landmarks, max_distance_m=_cfg().class4.landmark_snap_m
     )
@@ -3676,6 +3766,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 continue
             if source == goal:
                 rejects['source_name_eq_goal'] += 1
+                continue
+            if _named_ids_confusable(episode, [src_id, goal_id]):
+                rejects['confusable_endpoints'] += 1
                 continue
             t0 = int(meta[src_id]['first_seen_step'])
             t1 = int(meta[goal_id]['first_seen_step'])
@@ -3778,6 +3871,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         )
         hops = len(path) - 1
         turn_count = int(ref['turn_count'])
+        if turn_count < _cfg().class4.survey.min_turns:
+            rejects[f'turns_lt_{_cfg().class4.survey.min_turns}'] += 1
+            continue
         geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
         fact = (
             PlannedFact(
@@ -3914,6 +4010,10 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 name_b = _referring_display_name(episode, sb, b['obj_id'])
                 name_c = _referring_display_name(episode, sc, c['obj_id'])
                 if name_a is None or name_b is None or name_c is None:
+                    continue
+                if _named_ids_confusable(
+                    episode, [a['obj_id'], b['obj_id'], c['obj_id']]
+                ):
                     continue
 
                 label = imagined_perspective_label(pos_a, pos_b, pos_c)
