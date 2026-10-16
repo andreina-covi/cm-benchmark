@@ -80,6 +80,9 @@ class CandidateItem:
         """Item as a plain dict, with ``class_`` renamed to ``class``."""
         d = asdict(self)
         d['class'] = d.pop('class_')
+        k = (d.get('context') or {}).get('k')
+        if k is not None:
+            d['k'] = k
         return d
 
     @classmethod

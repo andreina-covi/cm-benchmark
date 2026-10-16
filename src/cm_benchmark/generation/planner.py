@@ -404,6 +404,27 @@ def _delay_is_allowed(k: int, min_delay: int, max_delay: Optional[int]) -> bool:
     return k >= min_delay and (max_delay is None or k <= max_delay)
 
 
+def _spread_by_delay(facts: list[PlannedFact], steps: Sequence[int]) -> list[PlannedFact]:
+    """Round-robin facts whose ``k`` is in ``steps``.
+
+    When none of those delays occur, the original list is kept.
+    """
+    buckets: dict[int, list[PlannedFact]] = {int(k): [] for k in steps}
+    for fact in facts:
+        k = (fact.extra or {}).get('k')
+        if k in buckets:
+            buckets[int(k)].append(fact)
+    if not any(buckets.values()):
+        return facts
+    ordered: list[PlannedFact] = []
+    while any(buckets.values()):
+        for k in steps:
+            bucket = buckets[int(k)]
+            if bucket:
+                ordered.append(bucket.pop(0))
+    return ordered
+
+
 def _displaced_ids(episode: dict) -> set[str]:
     """Object ids moved by any displacement event (excluded from static-object items)."""
     return {e.get('obj_id') for e in (episode.get('displacement_events') or []) if e.get('obj_id')}
@@ -741,22 +762,23 @@ def plan_spatial_working_memory(
     # Taxonomy lists both relation and count. Relation used to fill ``max_items``
     # and return early, so recall_count never ran. Reserve count slots when
     # the budget allows more than one item.
+    final_n = min(max_items, _cfg().budget.max_per_construct)
     count_budget = (
         0
-        if max_items < 2
-        else max(1, max_items // _cfg().spatial_working_memory.count_divisor)
+        if final_n < 2
+        else max(1, final_n // _cfg().spatial_working_memory.count_divisor)
     )
-    relation_budget = max_items - count_budget
+    pool_cap = max(max_items, _cfg().budget.candidate_pool)
 
     for step in episode.get('steps') or []:
-        if len(out) >= relation_budget:
+        if len(out) >= pool_cap:
             break
         step_idx = int(step['step'])
         if not is_fov_step(episode, step_idx):
             continue
         non_vis = step.get('non_visible_objects') or {}
         for obj_id, mem in non_vis.items():
-            if len(out) >= relation_budget:
+            if len(out) >= pool_cap:
                 break
             if obj_id in displaced:
                 continue
@@ -841,12 +863,14 @@ def plan_spatial_working_memory(
                 )
             )
 
+    relations = _spread_by_delay(out, _cfg().spatial_working_memory.delay_steps)
     # Count / load mode (taxonomy: "How many {objects} have you seen so far?").
-    # Uses leftover budget, including slots reserved above when max_items >= 2.
-    if len(out) < max_items:
+    # A few count facts stay in the pool so the final cut can still include one.
+    counts: list[PlannedFact] = []
+    if count_budget:
         seen_cats: set[str] = set()
         for step in episode.get('steps') or []:
-            if len(out) >= max_items:
+            if len(counts) >= count_budget:
                 break
             step_idx = int(step['step'])
             if step_idx < min_delay or not is_fov_step(episode, step_idx):
@@ -862,7 +886,7 @@ def plan_spatial_working_memory(
                 key=lambda pair: (-pair[0], pair[1]),
             )
             for n, cat in ranked:
-                if len(out) >= max_items:
+                if len(counts) >= count_budget:
                     break
                 if n < _cfg().spatial_working_memory.count_min_instances or cat in seen_cats:
                     continue
@@ -880,7 +904,7 @@ def plan_spatial_working_memory(
                     continue
                 if not _has_real_move_between(episode, enc_idx, step_idx):
                     continue
-                out.append(
+                counts.append(
                     PlannedFact(
                         construct='spatial_working_memory',
                         status='ok',
@@ -906,7 +930,34 @@ def plan_spatial_working_memory(
                 )
                 seen_cats.add(cat)
                 break  # one count item per query step
-    return out
+    spread = _spread_by_delay(relations, _cfg().spatial_working_memory.delay_steps)
+    return (counts[:count_budget] + spread)[:max_items]
+
+
+# SPOC ALL_PICKUP_TYPES_THOR. The objects CSV has no pickupable column.
+_PICKUPABLE_TYPES = frozenset({
+    'AlarmClock', 'AluminumFoil', 'Apple', 'AppleSliced', 'Book', 'Boots',
+    'Bottle', 'Bowl', 'Box', 'Bread', 'BreadSliced', 'ButterKnife', 'Candle',
+    'CD', 'CellPhone', 'Cloth', 'CreditCard', 'Cup', 'DishSponge', 'Dumbbell',
+    'Egg', 'EggCracked', 'Fork', 'HandTowel', 'Kettle', 'KeyChain', 'Knife',
+    'Ladle', 'Laptop', 'Lettuce', 'LettuceSliced', 'Mug', 'Newspaper', 'Pan',
+    'PaperTowelRoll', 'Pen', 'Pencil', 'PepperShaker', 'Pillow', 'Plate',
+    'Plunger', 'Pot', 'Potato', 'PotatoSliced', 'RemoteControl', 'SaltShaker',
+    'ScrubBrush', 'SoapBar', 'SoapBottle', 'Spatula', 'Spoon', 'SprayBottle',
+    'Statue', 'TableTopDecor', 'TeddyBear', 'TennisRacket', 'TissueBox',
+    'ToiletPaper', 'Tomato', 'TomatoSliced', 'Towel', 'Vase', 'Watch',
+    'WateringCan', 'WineBottle',
+})
+
+
+def _type_stem(obj_id: Optional[str]) -> str:
+    """Simulator type at the front of an object id (``CounterTop|1`` → ``CounterTop``)."""
+    return str(obj_id or '').split('|')[0]
+
+
+def _is_pickupable_id(obj_id: Optional[str]) -> bool:
+    """True when the id's type is a SPOC pickupable."""
+    return _type_stem(obj_id) in _PICKUPABLE_TYPES
 
 
 def _is_floor_receptacle(receptacle_id: Optional[str]) -> bool:
@@ -1631,9 +1682,10 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
         if not _has_real_move_between(episode, enc_idx, int(query_step)):
             continue
 
-        if _is_swap_event(ev):
-            partner_id = ev.get('swap_partner_id')
-            if not partner_id or not _partner_event(episode, ev):
+        partner_id = ev.get('swap_partner_id')
+        dest_is_fixed = not _is_floor_receptacle(to_r) and not _is_pickupable_id(to_r)
+        if _is_swap_event(ev) and partner_id and _is_pickupable_id(partner_id) and not dest_is_fixed:
+            if not _partner_event(episode, ev):
                 continue
             partner_enc = _last_distinguishable_sighting(
                 episode, partner_id, int(at_t), **enc_kw
@@ -1967,19 +2019,36 @@ def _swap_partner_ready(
     return partner_enc, named
 
 
+def _anchor_forces_recall(cand: dict) -> bool:
+    """Non-pickupable receptacle anchors are place/recall items, never swaps."""
+    kind = str(cand.get('anchor_kind') or '').lower()
+    if kind != 'receptacle':
+        return False
+    anchor = cand.get('anchor_id')
+    if _is_floor_receptacle(anchor):
+        return False
+    return not _is_pickupable_id(anchor)
+
+
 def _placement_swap_decision(
     episode: dict, cand: dict, obj_id: str, move: int, query: int
 ) -> tuple[str, Optional[str], Optional[int], Optional[tuple[str, str]]]:
     """``(recall|swap|drop, partner_id, partner_encode, partner_name)``.
 
-    A partner that occupies the destination makes a swap only when that partner
-    can be encoded, hidden, and named. Receptacle and floor placements that
-    fail those checks stay recall items. Any other placement that would have
-    been a swap is dropped when the partner fails.
+    A non-pickupable receptacle anchor is always recall ("moved onto the
+    anchor"). A swap partner must be pickupable and encodable. Receptacle and
+    floor placements whose partner fails stay recall items. Any other
+    placement that would have been a swap is dropped when the partner fails.
     """
+    if _anchor_forces_recall(cand):
+        return 'recall', None, None, None
     partner_id = _partner_occupying(episode, cand.get('position'), obj_id)
     if not partner_id:
         return 'recall', None, None, None
+    if not _is_pickupable_id(partner_id):
+        if _placement_is_receptacle_or_floor(cand):
+            return 'recall', None, None, None
+        return 'drop', None, None, None
     ready = _swap_partner_ready(episode, partner_id, move, query)
     if ready is not None:
         partner_enc, named = ready
@@ -2388,9 +2457,12 @@ def plan_spatial_updating(
 
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
+    pool_cap = max(max_items, _cfg().budget.candidate_pool)
     # (obj_id, encode_step) -> answer_label of first emitted item
     seen_answers: dict[tuple[str, int], str] = {}
     for step in episode.get('steps') or []:
+        if len(out) >= pool_cap:
+            break
         step_idx = int(step['step'])
         if not is_fov_step(episode, step_idx):
             continue
@@ -2468,9 +2540,7 @@ def plan_spatial_updating(
                     },
                 )
             )
-            if len(out) >= max_items:
-                return out
-    return out
+    return _spread_by_delay(out, _cfg().spatial_updating.delay_steps)[:max_items]
 
 
 def plan_allocentric_encoding(episode: dict, max_items: int = 1) -> list[PlannedFact]:
@@ -2539,7 +2609,7 @@ def _recorded_route_reference(
         start_heading_deg=heading,
         start_pos=start_pos,
     )
-    if not sim.get('ok'):
+    if not sim.get('ok') or sim.get('blocked_moves'):
         return None
     goal_xyz = _xyz_tuple(goal_pos)
     if not xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance']):
@@ -2549,6 +2619,7 @@ def _recorded_route_reference(
         'answer_label': format_nav_actions(actions),
         'start_heading_deg': heading,
         'turn_count': count_direction_changes(actions),
+        'travel_m': float(sim.get('simulated_length_m') or 0.0),
     }
 
 
@@ -3222,14 +3293,14 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
     )
     unique_ids = _unique_endpoint_ids(episode, ordered_ids)
     route_nodes = [id_to_node[oid] for oid in ordered_ids]
-    # Length and detour floors use walked landmark pairs only. Survey keeps
-    # the full-scene pool (it does not pass the traversed subgraph).
-    scene_geodesic_floor, scene_ratio_floor = _scene_class4_floors(
+    # Detour floor only. Route length is min_pair_geodesic_m, not the scene percentile.
+    _geo_floor, scene_ratio_floor = _scene_class4_floors(
         graph,
         route_nodes,
         ratio_cap=_cfg().class4.route.max_ratio_floor,
         pair_graph=walked,
     )
+    del _geo_floor
     # Walk order enumerates pairs; the emitted subset is ranked by difficulty
     # below. Taking the first passing pairs in walk order yields the walk's
     # nearest neighbours, which are the easiest pairs in the scene.
@@ -3249,7 +3320,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 n0,
                 n1,
                 min_ratio=scene_ratio_floor,
-                min_scene_geodesic_m=scene_geodesic_floor,
             )
             if pair_reason:
                 rejects[pair_reason] += 1
@@ -3302,31 +3372,27 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 rejects['goal_not_after_source'] += 1
                 continue
             start_pos, start_heading = _start_pose_at_step(episode, t_src)
+            arrival_pos, _arrival_heading = _start_pose_at_step(episode, t_goal)
+            # The recorded actions end at the agent's pose when the goal was
+            # sighted. That pose is the success target. Ideal 0.2 m steps snap
+            # onto the neighboring grid cell of the THOR poses, so an exported
+            # edge check rejects the true log even when the replay is within
+            # a few centimetres of the recorded arrival.
             ref = _recorded_route_reference(
                 episode,
                 graph,
                 t0=t_src,
                 t1=t_goal,
                 source_node=n0,
-                goal_pos=meta[goal_id]['position'],
+                goal_pos=arrival_pos,
                 start_pos=start_pos,
                 start_heading_deg=start_heading,
             )
             if ref is None:
                 rejects['actions_unusable'] += 1
                 continue
-            scored = score_route_action_sequence(
-                graph,
-                n0,
-                n1,
-                ref['actions'],
-                edges,
-                start_heading_deg=ref['start_heading_deg'],
-                start_pos=start_pos,
-                goal_pos=meta[goal_id]['position'],
-            )
-            if scored.get('outcome') != 'valid_success':
-                rejects['actions_unusable'] += 1
+            if float(ref['travel_m']) < float(_cfg().class4.min_pair_geodesic_m):
+                rejects['recorded_shorter_than_min'] += 1
                 continue
             turn_count = int(ref['turn_count'])
             if turn_count < _cfg().class4.route.min_turns:
@@ -3389,7 +3455,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'action_sequence': ref['actions'],
                         'start_heading_deg': ref['start_heading_deg'],
                         'start_pos': start_pos,
-                        'goal_pos': list(_xyz_tuple(meta[goal_id]['position']) or []),
+                        'goal_pos': list(_xyz_tuple(arrival_pos) or _xyz_tuple(meta[goal_id]['position']) or []),
                         'traversed_edges': traversed_edge_list,
                         'answer_format': 'action_sequence',
                         'scoring': 'success_validity_efficiency',
@@ -3434,7 +3500,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
 _ROUTE_PAIR_GATES = (
     'landmark_pairs_on_walked_nodes',
     'same_node',
-    'geodesic_scene_floor',
+    'min_path',
     'detour_ratio',
     'names',
     'walked_path',
@@ -3554,12 +3620,11 @@ def route_pair_funnel(episode: dict) -> dict:
             meta[goal]['position'],
             id_to_node[src],
             id_to_node[goal],
-            min_scene_geodesic_m=route_floor,
         )
         if reason is None:
             kept.append((src, goal))
     pairs = kept
-    gates.append(('geodesic_scene_floor', len(pairs)))
+    gates.append(('min_path', len(pairs)))
 
     kept = []
     for src, goal in pairs:
@@ -3570,7 +3635,6 @@ def route_pair_funnel(episode: dict) -> dict:
             id_to_node[src],
             id_to_node[goal],
             min_ratio=_route_ratio,
-            min_scene_geodesic_m=route_floor,
         )
         if reason is None:
             kept.append((src, goal))
@@ -3620,29 +3684,20 @@ def route_pair_funnel(episode: dict) -> dict:
             continue
         n0, n1 = id_to_node[src], id_to_node[goal]
         start_pos, start_heading = _start_pose_at_step(episode, t_src)
+        arrival_pos, _arrival_heading = _start_pose_at_step(episode, t_goal)
         ref = _recorded_route_reference(
             episode,
             graph,
             t0=t_src,
             t1=t_goal,
             source_node=n0,
-            goal_pos=meta[goal]['position'],
+            goal_pos=arrival_pos,
             start_pos=start_pos,
             start_heading_deg=start_heading,
         )
         if ref is None:
             continue
-        scored = score_route_action_sequence(
-            graph,
-            n0,
-            n1,
-            ref['actions'],
-            edges,
-            start_heading_deg=ref['start_heading_deg'],
-            start_pos=start_pos,
-            goal_pos=meta[goal]['position'],
-        )
-        if scored.get('outcome') != 'valid_success':
+        if float(ref['travel_m']) < float(_cfg().class4.min_pair_geodesic_m):
             continue
         replayed.append((src, goal, ref))
     gates.append(('recorded_actions_replay', len(replayed)))
@@ -4165,6 +4220,93 @@ PLANNERS = {
 }
 
 
+def _answer_letter(fact: PlannedFact, base_id: str) -> Optional[str]:
+    """MC letter this fact will receive, or None for a free-form action item."""
+    if fact.status != 'ok' or not fact.answer_label:
+        return None
+    if fact.construct in ('route_knowledge', 'survey_based_route_planning'):
+        return None
+    from cm_benchmark.generation.templates import _option_shuffle_key, _shuffle_options
+
+    _options, _rationale, letter = _shuffle_options(
+        fact.answer_label,
+        list(fact.options_pool or []),
+        list(fact.distractor_seeds or []),
+        shuffle_key=_option_shuffle_key(base_id, fact),
+    )
+    return letter
+
+
+def select_balanced_facts(
+    facts: list[PlannedFact],
+    max_items: int,
+    base_id: str,
+) -> list[PlannedFact]:
+    """Per construct, cap each answer label and prefer a uniform letter spread.
+
+    Unsupported constructs keep a single placeholder. Class-4 items have no
+    letter; their existing difficulty order is the tie break.
+    """
+    share = float(_cfg().options.max_label_share)
+    cap = max(1, int(share * max_items))
+    order: list[str] = []
+    grouped: dict[str, list[PlannedFact]] = {}
+    for fact in facts:
+        if fact.construct not in grouped:
+            order.append(fact.construct)
+            grouped[fact.construct] = []
+        grouped[fact.construct].append(fact)
+    chosen: list[PlannedFact] = []
+    for construct in order:
+        group = grouped[construct]
+        ok = [fact for fact in group if fact.status == 'ok']
+        if not ok:
+            chosen.extend(group[:1])
+            continue
+        counts = [
+            fact
+            for fact in ok
+            if (fact.extra or {}).get('template_mode') == 'recall_count'
+        ]
+        rest = [fact for fact in ok if fact not in counts]
+        count_slots = 0
+        if construct == 'spatial_working_memory' and max_items >= 2 and counts:
+            count_slots = max(1, max_items // _cfg().spatial_working_memory.count_divisor)
+        selected: list[PlannedFact] = []
+        labels: Counter = Counter()
+        letters: Counter = Counter()
+
+        def _take(pool: list[PlannedFact], slots: int) -> None:
+            pending = list(pool)
+            while len(selected) < max_items and slots > 0 and pending:
+                eligible = [
+                    fact
+                    for fact in pending
+                    if labels[fact.answer_label or ''] < cap
+                ]
+                if not eligible:
+                    break
+                best = min(
+                    eligible,
+                    key=lambda fact: (
+                        letters[_answer_letter(fact, base_id) or ''],
+                        pending.index(fact),
+                    ),
+                )
+                selected.append(best)
+                pending.remove(best)
+                labels[best.answer_label or ''] += 1
+                letter = _answer_letter(best, base_id)
+                if letter:
+                    letters[letter] += 1
+                slots -= 1
+
+        _take(counts, count_slots)
+        _take(rest, max_items - len(selected))
+        chosen.extend(selected)
+    return chosen
+
+
 def plan_episode(
     episode: dict,
     constructs: Optional[list[str]] = None,
@@ -4214,12 +4356,15 @@ def plan_episode(
             'spatial_working_memory': {'min_delay': swm_min_delay, 'max_delay': swm_max_delay},
             'spatial_updating': {'min_delay': su_min_delay, 'max_delay': su_max_delay},
         }
+        pool_n = max(max_per_construct, active.budget.candidate_pool)
         facts: list[PlannedFact] = []
         for key in constructs or list(PLANNERS):
             fn = PLANNERS.get(key)
             if fn is not None:
-                facts.extend(fn(episode, max_items=max_per_construct, **delay_kwargs.get(key, {})))
-        return _apply_whole_item_names(episode, facts)
+                facts.extend(fn(episode, max_items=pool_n, **delay_kwargs.get(key, {})))
+        base_id = str(episode.get('scene') or episode.get('scene_id') or 'ep')
+        named = _apply_whole_item_names(episode, facts)
+        return select_balanced_facts(named, max_per_construct, base_id)
     finally:
         if token is not None:
             reset_generation_config(token)

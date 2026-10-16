@@ -89,6 +89,7 @@ class DirectionsConfig:
 class OptionsConfig:
     n_options: int
     shuffle_seed: int
+    max_label_share: float
 
 
 @dataclass(frozen=True)
@@ -116,12 +117,14 @@ class DisambiguationConfig:
 @dataclass(frozen=True)
 class BudgetConfig:
     max_per_construct: int
+    candidate_pool: int
 
 
 @dataclass(frozen=True)
 class SpatialWorkingMemoryConfig:
     min_delay: int
     max_delay: Optional[int]
+    delay_steps: tuple[int, ...]
     count_divisor: int
     count_min_instances: int
 
@@ -130,6 +133,7 @@ class SpatialWorkingMemoryConfig:
 class SpatialUpdatingConfig:
     min_delay: int
     max_delay: Optional[int]
+    delay_steps: tuple[int, ...]
     min_pos_change_m: float
     min_heading_change_deg: float
     object_static_eps_m: float
@@ -368,6 +372,7 @@ def generation_config_from_mapping(
         options=OptionsConfig(
             n_options=int(raw['options']['n_options']),
             shuffle_seed=int(raw['options']['shuffle_seed']),
+            max_label_share=float(raw['options']['max_label_share']),
         ),
         disambiguation=DisambiguationConfig(
             proximity_setting=str(dis['proximity_setting']),
@@ -377,16 +382,21 @@ def generation_config_from_mapping(
             mark_palette=tuple(dis['mark_palette']),
             settings={k: _proximity(v) for k, v in (dis.get('settings') or {}).items()},
         ),
-        budget=BudgetConfig(max_per_construct=int(raw['budget']['max_per_construct'])),
+        budget=BudgetConfig(
+            max_per_construct=int(raw['budget']['max_per_construct']),
+            candidate_pool=int(raw['budget']['candidate_pool']),
+        ),
         spatial_working_memory=SpatialWorkingMemoryConfig(
             min_delay=int(raw['spatial_working_memory']['min_delay']),
             max_delay=raw['spatial_working_memory'].get('max_delay'),
+            delay_steps=tuple(int(k) for k in raw['spatial_working_memory']['delay_steps']),
             count_divisor=int(raw['spatial_working_memory']['count_divisor']),
             count_min_instances=int(raw['spatial_working_memory']['count_min_instances']),
         ),
         spatial_updating=SpatialUpdatingConfig(
             min_delay=int(raw['spatial_updating']['min_delay']),
             max_delay=raw['spatial_updating'].get('max_delay'),
+            delay_steps=tuple(int(k) for k in raw['spatial_updating']['delay_steps']),
             min_pos_change_m=float(raw['spatial_updating']['min_pos_change_m']),
             min_heading_change_deg=float(raw['spatial_updating']['min_heading_change_deg']),
             object_static_eps_m=float(raw['spatial_updating']['object_static_eps_m']),

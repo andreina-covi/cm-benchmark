@@ -37,6 +37,7 @@ directions:
 options:
   n_options: 4  # derived: four ego labels
   shuffle_seed: 0  # none found; one seed, a different permutation per item
+  max_label_share: 0.4  # none found; at most this share of one construct's items may share an answer label
 
 disambiguation:
   proximity_setting: current  # none found; ablation: sr3d / vsi / current / strict
@@ -62,16 +63,19 @@ disambiguation:
 
 budget:
   max_per_construct: 3  # none found
+  candidate_pool: 24  # none found; facts gathered before the label/letter cut
 
 spatial_working_memory:
   min_delay: 2  # none found
   max_delay: null
+  delay_steps: [2, 5, 10, 20]  # none found; sample k from this set when the episode has it
   count_divisor: 3  # none found (5c7eb3c; max(1, max_items // divisor))
   count_min_instances: 2  # derived: n=1 has no memory load
 
 spatial_updating:
   min_delay: 2  # none found
   max_delay: null
+  delay_steps: [2, 5, 10, 20]  # none found; sample k from this set when the episode has it
   min_pos_change_m: 0.1  # none found (05535fa)
   min_heading_change_deg: 5.0  # none found (05535fa)
   object_static_eps_m: 0.05  # none found (05535fa)
@@ -102,7 +106,7 @@ templates:
 class4:
   min_pair_geodesic_m: 2.0  # none found; source–goal path at least 2 m (literature band was 1–30 m)
   max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
-  scene_geodesic_percentile: 0.5  # none found (7a2ee6a); route percentile is over walked traversed_edges pairs, survey over full-scene pairs
+  scene_geodesic_percentile: 0.5  # none found (7a2ee6a); survey length floor, and the route/survey detour-ratio floors. Route length uses min_pair_geodesic_m only
   landmark_snap_m: 2.5  # none found (5c7eb3c)
   landmark_snap_default_m: 1.5  # none found (63130d5; unused when landmark_snap_m is set)
   landmark_snap_default_grid_mult: 10.0  # none found (63130d5)
