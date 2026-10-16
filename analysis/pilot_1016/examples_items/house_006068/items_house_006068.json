@@ -1,0 +1,851 @@
+{
+  "n_items": 13,
+  "items": [
+    {
+      "item_id": "house_006068_egocentric_encoding_0_0_Vase_8_32_concise",
+      "construct": "egocentric_encoding",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png"
+      ],
+      "question": "Where is the Vase relative to you right now?",
+      "options": {
+        "A": "to your right",
+        "B": "ahead of you",
+        "C": "behind you",
+        "D": "to your left"
+      },
+      "answer": "D",
+      "answer_source": [
+        "agent_pose@[0] + visible_objects[Vase|8|32].position (equal-wedge bearing)"
+      ],
+      "queried_object_id": "Vase|8|32",
+      "distractor_rationale": {
+        "A": "opposite_direction",
+        "B": "orthogonal_direction",
+        "C": "diagnostic_decoy",
+        "D": "correct"
+      },
+      "status": "ok",
+      "query_step": 0,
+      "encoding_step": 0,
+      "question_style": "concise",
+      "paired_item_id": "house_006068_egocentric_encoding_0_0_Vase_8_32_verbose",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "current view \u00b7 find Vase"
+      ],
+      "context": {
+        "object_type": "Vase",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 1,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_egocentric_encoding_0_0_Vase_8_32_verbose",
+      "construct": "egocentric_encoding",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png"
+      ],
+      "question": "You are looking around a space identified as Kitchen. There is also a Vase in the scene. Where is the Vase relative to you right now?",
+      "options": {
+        "A": "to your right",
+        "B": "ahead of you",
+        "C": "behind you",
+        "D": "to your left"
+      },
+      "answer": "D",
+      "answer_source": [
+        "agent_pose@[0] + visible_objects[Vase|8|32].position (equal-wedge bearing)"
+      ],
+      "queried_object_id": "Vase|8|32",
+      "distractor_rationale": {
+        "A": "opposite_direction",
+        "B": "orthogonal_direction",
+        "C": "diagnostic_decoy",
+        "D": "correct"
+      },
+      "status": "ok",
+      "query_step": 0,
+      "encoding_step": 0,
+      "question_style": "verbose",
+      "paired_item_id": "house_006068_egocentric_encoding_0_0_Vase_8_32_concise",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "current view \u00b7 find Vase"
+      ],
+      "context": {
+        "object_type": "Vase",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 1,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_allocentric_encoding_unsupported",
+      "construct": "allocentric_encoding",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [],
+      "question": "",
+      "options": {},
+      "answer": null,
+      "answer_source": null,
+      "queried_object_id": null,
+      "distractor_rationale": {
+        "reason": "no_trusted_reference_facing_edges_object_frame_empty"
+      },
+      "status": "unsupported",
+      "query_step": null,
+      "encoding_step": null,
+      "question_style": "concise",
+      "paired_item_id": null,
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": null,
+      "context": null,
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": null,
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 1,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_spatial_working_memory_recall_count_0_2_Chair_concise",
+      "construct": "spatial_working_memory",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_1.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_2.png"
+      ],
+      "question": "How many distinct Chairs have you seen up to this point?",
+      "options": {
+        "A": "5",
+        "B": "3",
+        "C": "2",
+        "D": "4"
+      },
+      "answer": "B",
+      "answer_source": [
+        "count[Chair] over steps[0..2].visible_objects"
+      ],
+      "queried_object_id": null,
+      "distractor_rationale": {
+        "A": "diagnostic_decoy",
+        "B": "correct",
+        "C": "off_by_one_count",
+        "D": "off_by_one_count"
+      },
+      "status": "ok",
+      "query_step": 2,
+      "encoding_step": 0,
+      "question_style": "concise",
+      "paired_item_id": "house_006068_spatial_working_memory_recall_count_0_2_Chair_verbose",
+      "difficulty": 2,
+      "agent_trajectory": [
+        {
+          "x": 10.75,
+          "z": 0.92,
+          "heading": 0.0,
+          "step": 0
+        },
+        {
+          "x": 10.75,
+          "z": 1.12,
+          "heading": 0.0,
+          "step": 1
+        },
+        {
+          "x": 10.8,
+          "z": 1.1,
+          "heading": 45.0,
+          "step": 2
+        }
+      ],
+      "agent_actions": [
+        {
+          "action": "move_ahead",
+          "step": 1,
+          "degrees": NaN
+        },
+        {
+          "action": "rotate_right",
+          "step": 2,
+          "degrees": 45.0
+        }
+      ],
+      "displacement_event": null,
+      "image_roles": [
+        "encode \u00b7 last clear view of Chair",
+        "navigation \u00b7 frame 1",
+        "query \u00b7 now"
+      ],
+      "context": {
+        "object_type": "Chair",
+        "object_category": "Chair",
+        "template_mode": "recall_count",
+        "k": 2,
+        "load_n_objects": 3,
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 2,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_spatial_working_memory_recall_count_0_2_Chair_verbose",
+      "construct": "spatial_working_memory",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_1.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_2.png"
+      ],
+      "question": "You are looking around a space identified as Kitchen. Among other things, you can see a Window, a Painting, a Counter Top, a Chair, a Bread, a House Plant, a Vase, a Lettuce, a Plate, a Statue, a Allium Sativum, a Coffeepot, a Wrench, a Dining Table, and a Fridge. Some objects are no longer in view, including Painting, Chair, Bread. How many distinct Chairs have you seen up to this point?",
+      "options": {
+        "A": "5",
+        "B": "3",
+        "C": "2",
+        "D": "4"
+      },
+      "answer": "B",
+      "answer_source": [
+        "count[Chair] over steps[0..2].visible_objects"
+      ],
+      "queried_object_id": null,
+      "distractor_rationale": {
+        "A": "diagnostic_decoy",
+        "B": "correct",
+        "C": "off_by_one_count",
+        "D": "off_by_one_count"
+      },
+      "status": "ok",
+      "query_step": 2,
+      "encoding_step": 0,
+      "question_style": "verbose",
+      "paired_item_id": "house_006068_spatial_working_memory_recall_count_0_2_Chair_concise",
+      "difficulty": 2,
+      "agent_trajectory": [
+        {
+          "x": 10.75,
+          "z": 0.92,
+          "heading": 0.0,
+          "step": 0
+        },
+        {
+          "x": 10.75,
+          "z": 1.12,
+          "heading": 0.0,
+          "step": 1
+        },
+        {
+          "x": 10.8,
+          "z": 1.1,
+          "heading": 45.0,
+          "step": 2
+        }
+      ],
+      "agent_actions": [
+        {
+          "action": "move_ahead",
+          "step": 1,
+          "degrees": NaN
+        },
+        {
+          "action": "rotate_right",
+          "step": 2,
+          "degrees": 45.0
+        }
+      ],
+      "displacement_event": null,
+      "image_roles": [
+        "encode \u00b7 last clear view of Chair",
+        "navigation \u00b7 frame 1",
+        "query \u00b7 now"
+      ],
+      "context": {
+        "object_type": "Chair",
+        "object_category": "Chair",
+        "template_mode": "recall_count",
+        "k": 2,
+        "load_n_objects": 3,
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 2,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_invisible_displacement_unsupported",
+      "construct": "invisible_displacement",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [],
+      "question": "",
+      "options": {},
+      "answer": null,
+      "answer_source": null,
+      "queried_object_id": null,
+      "distractor_rationale": {
+        "reason": "no_placement_with_distinguishable_encode_hidden_query_and_unique_options"
+      },
+      "status": "unsupported",
+      "query_step": null,
+      "encoding_step": null,
+      "question_style": "concise",
+      "paired_item_id": null,
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": null,
+      "context": null,
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": null,
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 2,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_spatial_updating_0_2_Vase_8_32_concise",
+      "construct": "spatial_updating",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_1.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_2.png"
+      ],
+      "question": "Considering the last 2 navigation steps, where is the Vase relative to you now?",
+      "options": {
+        "A": "to your right",
+        "B": "ahead of you",
+        "C": "behind you",
+        "D": "to your left"
+      },
+      "answer": "D",
+      "answer_source": [
+        "agent_trajectory[0\u21922] (net pose change)",
+        "object_state_track[Vase|8|32] (static)",
+        "agent_pose@[2] + object_position (equal-wedge bearing)"
+      ],
+      "queried_object_id": "Vase|8|32",
+      "distractor_rationale": {
+        "A": "opposite_direction",
+        "B": "orthogonal_direction",
+        "C": "diagnostic_decoy",
+        "D": "correct"
+      },
+      "status": "ok",
+      "query_step": 2,
+      "encoding_step": 0,
+      "question_style": "concise",
+      "paired_item_id": "house_006068_spatial_updating_0_2_Vase_8_32_verbose",
+      "difficulty": 2,
+      "agent_trajectory": [
+        {
+          "x": 10.75,
+          "z": 0.92,
+          "heading": 0.0,
+          "step": 0
+        },
+        {
+          "x": 10.75,
+          "z": 1.12,
+          "heading": 0.0,
+          "step": 1
+        },
+        {
+          "x": 10.8,
+          "z": 1.1,
+          "heading": 45.0,
+          "step": 2
+        }
+      ],
+      "agent_actions": [
+        {
+          "action": "move_ahead",
+          "step": 1,
+          "degrees": NaN
+        },
+        {
+          "action": "rotate_right",
+          "step": 2,
+          "degrees": 45.0
+        }
+      ],
+      "displacement_event": null,
+      "image_roles": [
+        "encode \u00b7 last clear view of Vase",
+        "navigation \u00b7 frame 1",
+        "query \u00b7 now"
+      ],
+      "context": {
+        "object_type": "Vase",
+        "k": 2,
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_spatial_updating_0_2_Vase_8_32_verbose",
+      "construct": "spatial_updating",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_0.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_1.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_2.png"
+      ],
+      "question": "You are looking around a space identified as Kitchen. There is also a Vase in the scene. Considering the last 2 navigation steps, where is the Vase relative to you now?",
+      "options": {
+        "A": "to your right",
+        "B": "ahead of you",
+        "C": "behind you",
+        "D": "to your left"
+      },
+      "answer": "D",
+      "answer_source": [
+        "agent_trajectory[0\u21922] (net pose change)",
+        "object_state_track[Vase|8|32] (static)",
+        "agent_pose@[2] + object_position (equal-wedge bearing)"
+      ],
+      "queried_object_id": "Vase|8|32",
+      "distractor_rationale": {
+        "A": "opposite_direction",
+        "B": "orthogonal_direction",
+        "C": "diagnostic_decoy",
+        "D": "correct"
+      },
+      "status": "ok",
+      "query_step": 2,
+      "encoding_step": 0,
+      "question_style": "verbose",
+      "paired_item_id": "house_006068_spatial_updating_0_2_Vase_8_32_concise",
+      "difficulty": 2,
+      "agent_trajectory": [
+        {
+          "x": 10.75,
+          "z": 0.92,
+          "heading": 0.0,
+          "step": 0
+        },
+        {
+          "x": 10.75,
+          "z": 1.12,
+          "heading": 0.0,
+          "step": 1
+        },
+        {
+          "x": 10.8,
+          "z": 1.1,
+          "heading": 45.0,
+          "step": 2
+        }
+      ],
+      "agent_actions": [
+        {
+          "action": "move_ahead",
+          "step": 1,
+          "degrees": NaN
+        },
+        {
+          "action": "rotate_right",
+          "step": 2,
+          "degrees": 45.0
+        }
+      ],
+      "displacement_event": null,
+      "image_roles": [
+        "encode \u00b7 last clear view of Vase",
+        "navigation \u00b7 frame 1",
+        "query \u00b7 now"
+      ],
+      "context": {
+        "object_type": "Vase",
+        "k": 2,
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_perspective_taking_47_64_sink-with-faucet_5_0_0_ObjaAutomaticWasher_5_3_Dresser_4_1_sink-with-faucet_5_0_0_concise",
+      "construct": "perspective_taking",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_47.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_64.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_52.png"
+      ],
+      "question": "Imagine standing at the Automatic Washer, facing the Dresser. From that position, where is the Sink?",
+      "options": {
+        "A": "to your left",
+        "B": "behind you",
+        "C": "to your right",
+        "D": "ahead of you"
+      },
+      "answer": "B",
+      "answer_source": [
+        "landmarks[ObjaAutomaticWasher|5|3].position (A)",
+        "landmarks[Dresser|4|1].position (B)",
+        "landmarks[sink-with-faucet|5|0|0].position (C)",
+        "imagined_perspective_label(A, A\u2192B, C; signed angle)"
+      ],
+      "queried_object_id": "sink-with-faucet|5|0|0",
+      "distractor_rationale": {
+        "A": "orthogonal_direction",
+        "B": "correct",
+        "C": "camera_frame_answer",
+        "D": "opposite_direction"
+      },
+      "status": "ok",
+      "query_step": 64,
+      "encoding_step": 47,
+      "question_style": "concise",
+      "paired_item_id": "house_006068_perspective_taking_47_64_sink-with-faucet_5_0_0_ObjaAutomaticWasher_5_3_Dresser_4_1_sink-with-faucet_5_0_0_verbose",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "A \u00b7 stand here (Automatic Washer)",
+        "B \u00b7 face toward (Dresser)",
+        "C \u00b7 locate (Sink)"
+      ],
+      "context": {
+        "A": "Automatic Washer",
+        "B": "Dresser",
+        "C": "Sink",
+        "source": "Automatic Washer",
+        "goal": "Dresser",
+        "object_type": "Sink",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_perspective_taking_47_64_sink-with-faucet_5_0_0_ObjaAutomaticWasher_5_3_Dresser_4_1_sink-with-faucet_5_0_0_verbose",
+      "construct": "perspective_taking",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_47.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_64.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_52.png"
+      ],
+      "question": "Adopt an imagined viewpoint at Automatic Washer, facing Dresser, then locate Sink. You are looking around a space identified as Bathroom. You previously noticed a Sink. Imagine standing at the Automatic Washer, facing the Dresser. From that position, where is the Sink?",
+      "options": {
+        "A": "to your left",
+        "B": "behind you",
+        "C": "to your right",
+        "D": "ahead of you"
+      },
+      "answer": "B",
+      "answer_source": [
+        "landmarks[ObjaAutomaticWasher|5|3].position (A)",
+        "landmarks[Dresser|4|1].position (B)",
+        "landmarks[sink-with-faucet|5|0|0].position (C)",
+        "imagined_perspective_label(A, A\u2192B, C; signed angle)"
+      ],
+      "queried_object_id": "sink-with-faucet|5|0|0",
+      "distractor_rationale": {
+        "A": "orthogonal_direction",
+        "B": "correct",
+        "C": "camera_frame_answer",
+        "D": "opposite_direction"
+      },
+      "status": "ok",
+      "query_step": 64,
+      "encoding_step": 47,
+      "question_style": "verbose",
+      "paired_item_id": "house_006068_perspective_taking_47_64_sink-with-faucet_5_0_0_ObjaAutomaticWasher_5_3_Dresser_4_1_sink-with-faucet_5_0_0_concise",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "A \u00b7 stand here (Automatic Washer)",
+        "B \u00b7 face toward (Dresser)",
+        "C \u00b7 locate (Sink)"
+      ],
+      "context": {
+        "A": "Automatic Washer",
+        "B": "Dresser",
+        "C": "Sink",
+        "source": "Automatic Washer",
+        "goal": "Dresser",
+        "object_type": "Sink",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_perspective_taking_47_64_Toilet_5_1_ObjaAutomaticWasher_5_3_Dresser_4_1_Toilet_5_1_concise",
+      "construct": "perspective_taking",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_47.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_64.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_53.png"
+      ],
+      "question": "Imagine standing at the Automatic Washer, facing the Dresser. From that position, where is the Toilet?",
+      "options": {
+        "A": "to your left",
+        "B": "behind you",
+        "C": "to your right",
+        "D": "ahead of you"
+      },
+      "answer": "B",
+      "answer_source": [
+        "landmarks[ObjaAutomaticWasher|5|3].position (A)",
+        "landmarks[Dresser|4|1].position (B)",
+        "landmarks[Toilet|5|1].position (C)",
+        "imagined_perspective_label(A, A\u2192B, C; signed angle)"
+      ],
+      "queried_object_id": "Toilet|5|1",
+      "distractor_rationale": {
+        "A": "orthogonal_direction",
+        "B": "correct",
+        "C": "camera_frame_answer",
+        "D": "opposite_direction"
+      },
+      "status": "ok",
+      "query_step": 64,
+      "encoding_step": 47,
+      "question_style": "concise",
+      "paired_item_id": "house_006068_perspective_taking_47_64_Toilet_5_1_ObjaAutomaticWasher_5_3_Dresser_4_1_Toilet_5_1_verbose",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "A \u00b7 stand here (Automatic Washer)",
+        "B \u00b7 face toward (Dresser)",
+        "C \u00b7 locate (Toilet)"
+      ],
+      "context": {
+        "A": "Automatic Washer",
+        "B": "Dresser",
+        "C": "Toilet",
+        "source": "Automatic Washer",
+        "goal": "Dresser",
+        "object_type": "Toilet",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_perspective_taking_47_64_Toilet_5_1_ObjaAutomaticWasher_5_3_Dresser_4_1_Toilet_5_1_verbose",
+      "construct": "perspective_taking",
+      "frame_of_reference": "allocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_47.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_64.png",
+        "/home/andreina/Documents/Programs/Dataset/Generated/navigation/10_16_2026_01_15_01_228108/images/img_53.png"
+      ],
+      "question": "Adopt an imagined viewpoint at Automatic Washer, facing Dresser, then locate Toilet. You are looking around a space identified as Bathroom. You previously noticed a Toilet. Imagine standing at the Automatic Washer, facing the Dresser. From that position, where is the Toilet?",
+      "options": {
+        "A": "to your left",
+        "B": "behind you",
+        "C": "to your right",
+        "D": "ahead of you"
+      },
+      "answer": "B",
+      "answer_source": [
+        "landmarks[ObjaAutomaticWasher|5|3].position (A)",
+        "landmarks[Dresser|4|1].position (B)",
+        "landmarks[Toilet|5|1].position (C)",
+        "imagined_perspective_label(A, A\u2192B, C; signed angle)"
+      ],
+      "queried_object_id": "Toilet|5|1",
+      "distractor_rationale": {
+        "A": "orthogonal_direction",
+        "B": "correct",
+        "C": "camera_frame_answer",
+        "D": "opposite_direction"
+      },
+      "status": "ok",
+      "query_step": 64,
+      "encoding_step": 47,
+      "question_style": "verbose",
+      "paired_item_id": "house_006068_perspective_taking_47_64_Toilet_5_1_ObjaAutomaticWasher_5_3_Dresser_4_1_Toilet_5_1_concise",
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": [
+        "A \u00b7 stand here (Automatic Washer)",
+        "B \u00b7 face toward (Dresser)",
+        "C \u00b7 locate (Toilet)"
+      ],
+      "context": {
+        "A": "Automatic Washer",
+        "B": "Dresser",
+        "C": "Toilet",
+        "source": "Automatic Washer",
+        "goal": "Dresser",
+        "object_type": "Toilet",
+        "disambiguation": "none",
+        "marks": {}
+      },
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": {},
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 3,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    },
+    {
+      "item_id": "house_006068_route_knowledge_unsupported",
+      "construct": "route_knowledge",
+      "frame_of_reference": "egocentric",
+      "environment": "ai2thor",
+      "scene_id": "house_006068",
+      "image_paths": [],
+      "question": "",
+      "options": {},
+      "answer": null,
+      "answer_source": null,
+      "queried_object_id": null,
+      "distractor_rationale": {
+        "reason": "no_experienced_landmark_to_landmark_walk:geodesic_below_scene_median=68,geodesic_euclidean_ratio_lt_1.1=48,actions_unusable=36,same_snapped_node=11,geodesic_lt_1m=5,source_name_eq_goal=2,goal_not_after_source=1"
+      },
+      "status": "unsupported",
+      "query_step": null,
+      "encoding_step": null,
+      "question_style": "concise",
+      "paired_item_id": null,
+      "difficulty": null,
+      "agent_trajectory": null,
+      "agent_actions": null,
+      "displacement_event": null,
+      "image_roles": null,
+      "context": null,
+      "disambiguation": "none",
+      "disambiguation_landmark": null,
+      "marks": null,
+      "blind_llm_correct": null,
+      "caption_llm_correct": null,
+      "vision_necessary": null,
+      "class": 4,
+      "generation_config": "default",
+      "generation_config_hash": "2053a82b8857ec6cef4aa8cb9aa1e6f43a19e1c954f327c29c639068260cecbf"
+    }
+  ]
+}
