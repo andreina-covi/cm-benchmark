@@ -29,6 +29,7 @@ DEFAULT_STEMS = {
     'object_state': 'object_state',
     'displacement_events': 'displacement_events',
     'displacement_candidates': 'displacement_candidates',
+    'placement_candidates': 'placement_candidates',
     'passage_state': 'passage_state',
     'region_trajectory': 'region_trajectory',
     'world_layout': 'world_layout',
@@ -41,6 +42,7 @@ OPTIONAL_KEYS = {
     'object_state',
     'displacement_events',
     'displacement_candidates',
+    'placement_candidates',
     'passage_state',
     'region_trajectory',
     'world_layout',
@@ -294,5 +296,31 @@ def resolve_episode_paths(
         elif key in REQUIRED_KEYS:
             raise FileNotFoundError(f'Required file missing for {key}: {p}')
 
+    if 'placement_candidates' not in paths:
+        found = _find_placement_candidates(annotations_dir, episode_root, scene)
+        if found is not None:
+            paths['placement_candidates'] = found
+
     paths['episode_meta_data'] = episode_meta
     return paths
+
+
+def _find_placement_candidates(
+    annotations_dir: Path, episode_root: Path, scene: str
+) -> Optional[Path]:
+    """``placement_candidates-{scene}*.csv`` in annotations or ``placement_trials/``."""
+    seen: list[Path] = []
+    candidates = [
+        annotations_dir / f'placement_candidates-{scene}.csv',
+        *sorted(annotations_dir.glob(f'placement_candidates-{scene}*.csv')),
+        *sorted(episode_root.glob(f'placement_candidates-{scene}*.csv')),
+    ]
+    for parent in (episode_root / 'placement_trials', episode_root.parent / 'placement_trials'):
+        if parent.is_dir():
+            candidates.append(parent / f'placement_candidates-{scene}.csv')
+            candidates.extend(sorted(parent.glob(f'placement_candidates-{scene}*.csv')))
+    for p in candidates:
+        resolved = p.resolve()
+        if resolved.is_file() and resolved not in seen:
+            return resolved
+    return None

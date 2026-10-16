@@ -42,7 +42,7 @@ disambiguation:
   all_marks: false  # true = colour-dot marks only (ablation reference)
   ratio_2d: 1.5  # none found; sibling 2D gap must be ≥ this × target gap
   min_gap_2d_frac: 0.10  # none found; plus this fraction of image width
-  mark_palette: [magenta, cyan, lime, yellow]  # none found; skip type if more instances
+  mark_palette: [magenta, cyan, lime, yellow, orange, blue, purple]  # none found; skip type if more instances
   settings:
     current:
       margin_m: 0.6  # none found (b418bda; "obvious in the image")
@@ -79,7 +79,8 @@ motion:
   position_eps_m: 0.001  # derived: float noise, far below the 0.20 m step
 
 invisible_displacement:
-  floor_anchor_radius_m: 1.2  # none found (05535fa)
+  floor_anchor_radius_m: 1.2  # none found (05535fa); unused when placement CSV has radius_m
+  min_displacement_m: 0.5  # none found; reject placements closer than this
   min_diagnostic_labels: 2  # derived: invariant 7 (at least one diagnostic distractor)
 
 landmarks:
@@ -100,11 +101,13 @@ templates:
 class4:
   min_pair_geodesic_m: 1.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
   max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
-  scene_geodesic_percentile: 0.5  # none found (7a2ee6a; small ProcTHOR houses)
+  scene_geodesic_percentile: 0.5  # none found (7a2ee6a); route percentile is over walked traversed_edges pairs, survey over full-scene pairs
   landmark_snap_m: 2.5  # none found (5c7eb3c)
   landmark_snap_default_m: 1.5  # none found (63130d5; unused when landmark_snap_m is set)
   landmark_snap_default_grid_mult: 10.0  # none found (63130d5)
   snap_tolerance_steps: 1.4142135623730951  # derived: √2 · one 8-neighbour step
+  goal_success_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m
+  search_state_quant_m: 0.05  # visited-cell size for continuous A*; not a pair gate
   route:
     max_ratio_floor: 1.1  # literature: Habitat PointNav rejects geo/eucl < 1.1
     min_hop_count: 2  # none found (5b4cb02; at least one real edge)

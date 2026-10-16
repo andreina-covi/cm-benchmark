@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import deque
 from typing import Any, Iterable, Optional, Sequence, Union
 
 import networkx as nx
 import numpy as np
+from scipy.spatial import cKDTree
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,105 @@ def select_nav_graph_snapshot(
     raise ValueError('nav_graph_json has no snapshots/nodes')
 
 
+_NAV_JSON_CACHE: dict[str, dict] = {}
+_NAV_GRAPH_CACHE: dict[int, nx.Graph] = {}
+
+
+def load_spoc_nav_json(path) -> dict:
+    """Read one SPOC ``nav_graph-*.json`` file. Cached by resolved path."""
+    from pathlib import Path
+
+    key = str(Path(path).resolve())
+    cached = _NAV_JSON_CACHE.get(key)
+    if cached is None:
+        import json
+
+        with open(key) as handle:
+            cached = json.load(handle)
+        _NAV_JSON_CACHE[key] = cached
+    return cached
+
+
+def nav_json_for_episode(episode: Optional[dict]) -> Optional[dict]:
+    """Embedded nav graph, or the SPOC file at ``nav_graph_path``."""
+    if not isinstance(episode, dict):
+        return None
+    raw = episode.get('nav_graph')
+    if isinstance(raw, dict) and (raw.get('nodes') or raw.get('snapshots')):
+        return raw
+    path = episode.get('nav_graph_path')
+    if not path:
+        return None
+    try:
+        return load_spoc_nav_json(path)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def episode_start_positions(episode_or_raw) -> list[dict]:
+    """Reachable ``episode_start`` nodes as ``{node_id, x, z}`` plus ``y`` when present.
+
+    Replay and move-blocking use these positions. Edges stay in the SPOC file
+    and are loaded only when a shortest path or validity check needs them.
+    """
+    raw = episode_or_raw
+    if isinstance(episode_or_raw, dict) and (
+        'nav_graph' in episode_or_raw or 'nav_graph_path' in episode_or_raw
+    ) and 'snapshots' not in episode_or_raw and 'nodes' not in episode_or_raw:
+        raw = nav_json_for_episode(episode_or_raw)
+    if not isinstance(raw, dict):
+        return []
+    try:
+        snap = select_nav_graph_snapshot(raw, prefer='episode_start')
+    except (TypeError, ValueError):
+        return []
+    out: list[dict] = []
+    for node in snap.get('nodes') or []:
+        if not isinstance(node, dict) or node.get('node_id') is None:
+            continue
+        try:
+            rec = {
+                'node_id': node['node_id'],
+                'x': float(node['x']),
+                'z': float(node['z']),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if node.get('y') is not None:
+            try:
+                rec['y'] = float(node['y'])
+            except (TypeError, ValueError):
+                pass
+        out.append(rec)
+    return out
+
+
+def load_episode_nav_graph(episode: Optional[dict]) -> Optional[nx.Graph]:
+    """``episode_start`` graph for planning and scoring.
+
+    Uses an embedded dict when a fat episode still has one. Otherwise reads
+    the SPOC file at ``nav_graph_path`` and does not copy it onto the episode.
+    """
+    if not isinstance(episode, dict):
+        return None
+    key = id(episode)
+    cached = _NAV_GRAPH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    raw = nav_json_for_episode(episode)
+    if not raw:
+        return None
+    try:
+        graph = build_nav_graph(raw, snapshot='episode_start')
+    except (TypeError, ValueError, KeyError):
+        return None
+    graph = attach_episode_nav_sim(graph, episode)
+    if len(_NAV_GRAPH_CACHE) > 4:
+        _NAV_GRAPH_CACHE.clear()
+    _NAV_GRAPH_CACHE[key] = graph
+    return graph
+
+
 def build_nav_graph(
     nav_graph_json: dict,
     *,
@@ -127,6 +228,7 @@ def build_nav_graph(
                 if 0 < d <= max_step:
                     G.add_edge(ni, ids[j], weight=d)
 
+    _node_xz_index(G)
     return G
 
 
@@ -158,15 +260,18 @@ def nodes_within_radius(
     xyz = _as_xyz(world_pos)
     if xyz is None or graph.number_of_nodes() == 0:
         return []
+    ids, xy = _node_xz_index(graph)
+    if xy.shape[0] == 0:
+        return []
     r = float(radius)
+    # Slack covers hypot rounding; the exact ``math.hypot <= r`` test below
+    # keeps the same hits, in ``graph.nodes`` order, as the linear scan.
+    dist = np.hypot(xy[:, 0] - float(xyz[0]), xy[:, 1] - float(xyz[2]))
     hits: list[tuple[str, float]] = []
-    for nid, data in graph.nodes(data=True):
-        pos = data.get('pos')
-        if pos is None:
-            continue
-        d = _xz_dist(xyz, pos)
-        if d <= r:
-            hits.append((nid, d))
+    for j in np.flatnonzero(dist <= r + 1e-9).tolist():
+        h = math.hypot(float(xyz[0]) - float(xy[j, 0]), float(xyz[2]) - float(xy[j, 1]))
+        if h <= r:
+            hits.append((ids[j], h))
     return hits
 
 
@@ -416,6 +521,8 @@ def subgraph_from_traversed_edges(
     """
     G = nx.Graph()
     G.graph.update(dict(graph.graph))
+    # The copy shares the parent's xz table, which is a different node set.
+    _clear_node_xz_index(G)
     for edge in traversed_edges:
         if not edge or len(edge) != 2:
             continue
@@ -1004,9 +1111,373 @@ def filter_traversed_to_exported(
 
 
 def _heading_step_xz(heading_deg: float, step_m: float) -> tuple[float, float]:
-    """AI2-THOR: yaw 0 faces +Z; positive yaw toward +X."""
+    """AI2-THOR: yaw 0 faces +Z; positive yaw toward +X.
+
+    ``x += m * sin(h)``, ``z += m * cos(h)``.
+    """
     rad = math.radians(float(heading_deg) % 360.0)
     return step_m * math.sin(rad), step_m * math.cos(rad)
+
+
+def _first_float(value) -> Optional[float]:
+    """First finite float from a scalar or a non-empty sequence, else None."""
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        value = value[0]
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def episode_motion(episode: Optional[dict], graph: Optional[nx.Graph] = None) -> tuple[float, float]:
+    """``(move_m, rotation_deg)`` from ``episode_meta.motion``, then agent/config, then graph."""
+    meta = (episode or {}).get('episode_meta') or {}
+    motion = meta.get('motion') if isinstance(meta.get('motion'), dict) else {}
+    agent = meta.get('agent') if isinstance(meta.get('agent'), dict) else {}
+    cfg = meta.get('config') if isinstance(meta.get('config'), dict) else {}
+    move = (
+        _first_float(motion.get('move_m_used'))
+        or _first_float(motion.get('nav_graph_agent_move_m'))
+        or _first_float(agent.get('movement_constant'))
+        or _first_float(cfg.get('movement_m'))
+    )
+    rot = (
+        _first_float(motion.get('rotation_deg_used'))
+        or _first_float(motion.get('nav_graph_agent_rotation_deg'))
+        or _first_float(agent.get('rotation_deg'))
+        or _first_float(cfg.get('rotation_deg'))
+    )
+    if graph is not None:
+        if move is None:
+            move = _first_float(graph.graph.get('agent_move_m'))
+        if rot is None:
+            rot = _first_float(graph.graph.get('agent_rotation_deg'))
+    if move is None:
+        move = float(graph.graph.get('grid_size') if graph is not None else _fallback_grid()) or _fallback_grid()
+    if rot is None:
+        rot = _fallback_rotation()
+    return float(move), float(rot)
+
+
+# Cached xz table and one cKDTree over those rows. Tie-breaks follow node order.
+_NODE_IDS = '_node_ids'
+_NODE_XY = '_node_xy'
+_NODE_N = '_node_xy_n'
+_NODE_TREE = '_node_kdtree'
+_NODE_INDEX_KEYS = (_NODE_IDS, _NODE_XY, _NODE_N, _NODE_TREE)
+
+
+def _clear_node_xz_index(graph: nx.Graph) -> None:
+    for key in _NODE_INDEX_KEYS:
+        graph.graph.pop(key, None)
+
+
+def _node_xz_index(graph: nx.Graph) -> tuple[list, np.ndarray]:
+    """Node ids in ``graph.nodes`` order, float64 ``(x, z)`` rows, and one tree.
+
+    Nodes without ``pos`` are omitted. The table and its ``cKDTree`` are cached
+    on the graph and rebuilt when the node count changes. Subgraphs must not
+    keep a parent's table: same length can still be a different node set and a
+    different order, and tie-breaks follow that order.
+    """
+    n = graph.number_of_nodes()
+    ids = graph.graph.get(_NODE_IDS)
+    xy = graph.graph.get(_NODE_XY)
+    tree = graph.graph.get(_NODE_TREE)
+    if (
+        isinstance(ids, list)
+        and isinstance(xy, np.ndarray)
+        and graph.graph.get(_NODE_N) == n
+        and xy.ndim == 2
+        and xy.shape == (len(ids), 2)
+        and (len(ids) == 0 or tree is not None)
+    ):
+        return ids, xy
+    ids = []
+    coords: list[tuple[float, float]] = []
+    for nid, data in graph.nodes(data=True):
+        pos = data.get('pos')
+        if not pos:
+            continue
+        ids.append(nid)
+        coords.append((float(pos[0]), float(pos[2])))
+    xy = (
+        np.asarray(coords, dtype=np.float64)
+        if coords
+        else np.zeros((0, 2), dtype=np.float64)
+    )
+    graph.graph[_NODE_IDS] = ids
+    graph.graph[_NODE_XY] = xy
+    graph.graph[_NODE_N] = n
+    graph.graph[_NODE_TREE] = None if len(ids) == 0 else cKDTree(xy)
+    return ids, xy
+
+
+def _hypot_xz(x: float, z: float, xy: np.ndarray, j: int) -> float:
+    return math.hypot(x - float(xy[j, 0]), z - float(xy[j, 1]))
+
+
+def nearest_node_xz(graph: nx.Graph, x: float, z: float) -> tuple[Optional[str], float]:
+    """Closest graph node in the xz plane and its distance.
+
+    Matches a single forward scan of ``graph.nodes``: distance is
+    ``math.hypot``, and a tie keeps the earlier node (strict ``<``). One
+    ``cKDTree`` over the cached ``(x, z)`` rows answers every query. The tree
+    does not promise the earlier node on an exact tie, so nodes inside a
+    rounding band of the nearest distance are re-ranked in node order.
+    Block tests must use this full-graph nearest: a landing whose closest
+    node sits outside an allowed subset is blocked.
+    """
+    ids, xy = _node_xz_index(graph)
+    n = int(xy.shape[0])
+    if n == 0:
+        return None, float('inf')
+    x = float(x)
+    z = float(z)
+    tree = graph.graph.get(_NODE_TREE)
+    if n == 1 or tree is None:
+        return ids[0], _hypot_xz(x, z, xy, 0)
+    k = 2
+    dists, idxs = tree.query((x, z), k=k)
+    dists = np.atleast_1d(np.asarray(dists, dtype=np.float64))
+    idxs = np.atleast_1d(np.asarray(idxs, dtype=np.int64))
+    best = float(dists[0])
+    if not math.isfinite(best):
+        return None, float('inf')
+    # Same ulp band the squared-distance scan used, measured in metres.
+    band = best * 1e-9 + 1e-12
+    while k < n and float(dists[-1]) <= best + band:
+        k = n if k * 2 >= n else k * 2
+        dists, idxs = tree.query((x, z), k=k)
+        dists = np.atleast_1d(np.asarray(dists, dtype=np.float64))
+        idxs = np.atleast_1d(np.asarray(idxs, dtype=np.int64))
+    best_i = None
+    best_h = float('inf')
+    for dist, raw in zip(dists, idxs):
+        j = int(raw)
+        if j < 0 or j >= n or float(dist) > best + band:
+            break
+        h = _hypot_xz(x, z, xy, j)
+        if best_i is None or h < best_h or (h == best_h and j < best_i):
+            best_h = h
+            best_i = j
+    if best_i is None:
+        return None, float('inf')
+    return ids[best_i], best_h
+
+
+def calibrate_move_block_tol(graph: nx.Graph, episode: Optional[dict]) -> float:
+    """Block radius so every successful recorded move still maps to a node.
+
+    A proposed move is blocked when the landing point is *farther* than this
+    from every node. Equality passes. Uses recorded poses and an unblocked
+    continuous replay of successful actions (skip start-row), so THOR rotate
+    drift does not fail later blocked checks.
+    """
+    worst = 0.0
+    n = 0
+    traj = (episode or {}).get('agent_trajectory') or []
+    for rec in traj:
+        xyz = _as_xyz(rec.get('position'))
+        if xyz is None:
+            continue
+        _, d = nearest_node_xz(graph, xyz[0], xyz[2])
+        if math.isfinite(d):
+            worst = max(worst, d)
+            n += 1
+    actions: list[str] = []
+    for rec in list((episode or {}).get('agent_actions') or [])[1:]:
+        if rec.get('action_success') is False:
+            continue
+        act = rec.get('action')
+        if act:
+            actions.append(str(act))
+    parsed = parse_nav_actions(actions) if actions else None
+    origin = _as_xyz(traj[0].get('position')) if traj else None
+    if parsed and origin is not None:
+        move, rot = episode_motion(episode, graph)
+        heading = 0.0
+        rot3 = traj[0].get('rotation') or [0.0, 0.0, 0.0]
+        try:
+            heading = float(rot3[1] if len(rot3) > 1 else rot3[0])
+        except (TypeError, ValueError, IndexError):
+            heading = 0.0
+        x, y, z = float(origin[0]), float(origin[1]), float(origin[2])
+        current, _d_here = nearest_node_xz(graph, x, z)
+        for act in parsed:
+            x, y, z, heading, current, _trav, _blocked = _apply_nav_action(
+                graph,
+                x,
+                y,
+                z,
+                heading,
+                act,
+                step_m=move,
+                rotation_deg=rot,
+                block_tol=float('inf'),
+                current_node=current,
+            )
+            _, d = nearest_node_xz(graph, x, z)
+            if math.isfinite(d):
+                worst = max(worst, d)
+                n += 1
+    if n == 0:
+        return trajectory_snap_tolerance(graph)
+    return worst + 1e-6
+
+
+def attach_episode_nav_sim(graph: nx.Graph, episode: Optional[dict]) -> nx.Graph:
+    """Stamp motion and the calibrated move-block radius onto ``graph.graph``."""
+    move, rot = episode_motion(episode, graph)
+    graph.graph['agent_move_m'] = move
+    graph.graph['agent_rotation_deg'] = rot
+    graph.graph['move_block_tol'] = calibrate_move_block_tol(graph, episode)
+    return graph
+
+
+def _heading_bin(heading_deg: float, rotation_deg: float) -> int:
+    """Quantize yaw to the discrete heading the rotation step can reach."""
+    rot = float(rotation_deg) or 1.0
+    n = max(1, int(round(360.0 / rot)))
+    return int(round((float(heading_deg) % 360.0) / rot)) % n
+
+
+def _default_goal_success_m() -> float:
+    return float(_c4().goal_success_m)
+
+
+def _search_state_quant_m() -> float:
+    """Visited-cell size for continuous search. Read from config; not a pair gate."""
+    return float(_c4().search_state_quant_m)
+
+
+def _quant_state_key(
+    x: float, z: float, heading: float, rotation_deg: float, quant_m: float
+) -> tuple[int, int, int]:
+    """``(round(x/q), round(z/q), heading bin)``. Integer bins avoid float keys."""
+    q = float(quant_m)
+    return (
+        int(round(float(x) / q)),
+        int(round(float(z) / q)),
+        _heading_bin(heading, rotation_deg),
+    )
+
+
+def _action_heuristic(
+    x: float,
+    z: float,
+    goal_x: float,
+    goal_z: float,
+    move_m: float,
+    goal_tol: float,
+) -> float:
+    """Remaining metres into the goal ball, in action-steps.
+
+    Success is the ball of radius ``goal_tol``, so the distance that still has
+    to be covered is ``max(0, euclidean - goal_tol)``. Dividing by ``move_m``
+    is admissible: each action costs 1, a translation shortens that gap by at
+    most ``move_m``, and a rotation does not shorten it.
+    """
+    if move_m <= 0.0:
+        return 0.0
+    remain = math.hypot(float(x) - float(goal_x), float(z) - float(goal_z)) - float(goal_tol)
+    if remain <= 0.0:
+        return 0.0
+    return remain / float(move_m)
+
+
+def _default_block_tol(graph: nx.Graph) -> float:
+    stored = graph.graph.get('move_block_tol')
+    if stored is not None:
+        return float(stored)
+    return trajectory_snap_tolerance(graph)
+
+
+def _goal_xyz(graph: nx.Graph, goal_node, goal_pos=None):
+    """Goal world position: explicit ``goal_pos``, else the goal node's ``pos``."""
+    xyz = _as_xyz(goal_pos)
+    if xyz is not None:
+        return xyz
+    if goal_node in graph:
+        return graph.nodes[goal_node].get('pos')
+    return None
+
+
+def xz_reaches_goal(end_xz, goal_xyz, goal_tol: float) -> bool:
+    """True if floor-plane ``(x, z)`` is within ``goal_tol`` metres of ``goal_xyz``."""
+    if end_xz is None or goal_xyz is None:
+        return False
+    gx = goal_xyz[0]
+    gz = goal_xyz[2] if len(goal_xyz) > 2 else goal_xyz[1]
+    return math.hypot(float(end_xz[0]) - float(gx), float(end_xz[1]) - float(gz)) <= float(goal_tol)
+
+
+def _undirected_edge(a, b) -> tuple:
+    return (a, b) if a <= b else (b, a)
+
+
+def _held_node(graph: nx.Graph, x: float, z: float, current_node: Optional[str]):
+    """Nearest node of ``(x, z)``, or ``current_node`` when the caller has it.
+
+    A rotation does not move, so the nearest node cannot change.
+    """
+    if current_node is not None:
+        return current_node
+    nid, _d = nearest_node_xz(graph, x, z)
+    return nid
+
+
+def _apply_nav_action(
+    graph: nx.Graph,
+    x: float,
+    y: float,
+    z: float,
+    heading: float,
+    act: str,
+    *,
+    step_m: float,
+    rotation_deg: float,
+    block_tol: float,
+    allowed_nodes=None,
+    allowed_edges=None,
+    current_node: Optional[str] = None,
+) -> tuple[float, float, float, float, Optional[str], float, bool]:
+    """One continuous action. Blocked translations are no-ops (THOR-style).
+
+    ``current_node`` is the nearest node of the current ``(x, z)`` when the
+    caller already computed it. The block test still snaps the landing point
+    against every node in ``graph``.
+
+    Returns ``(x, y, z, heading, node_id, travelled_m, blocked)``.
+    """
+    if act == NAV_ACTION_ROTATE_RIGHT:
+        heading = (heading + rotation_deg) % 360.0
+        return x, y, z, heading, _held_node(graph, x, z, current_node), 0.0, False
+    if act == NAV_ACTION_ROTATE_LEFT:
+        heading = (heading - rotation_deg) % 360.0
+        return x, y, z, heading, _held_node(graph, x, z, current_node), 0.0, False
+    if act not in (NAV_ACTION_MOVE_AHEAD, NAV_ACTION_MOVE_BACK):
+        return x, y, z, heading, _held_node(graph, x, z, current_node), 0.0, False
+    dx, dz = _heading_step_xz(heading, step_m)
+    if act == NAV_ACTION_MOVE_BACK:
+        dx, dz = -dx, -dz
+    nx_, nz_ = x + dx, z + dz
+    nid, dist = nearest_node_xz(graph, nx_, nz_)
+    blocked = nid is None or dist > block_tol
+    if allowed_nodes is not None and nid not in allowed_nodes:
+        blocked = True
+    if not blocked and allowed_edges is not None:
+        cur_nid = _held_node(graph, x, z, current_node)
+        if cur_nid is not None and nid is not None and cur_nid != nid:
+            if _undirected_edge(cur_nid, nid) not in allowed_edges:
+                blocked = True
+    if blocked:
+        return x, y, z, heading, _held_node(graph, x, z, current_node), 0.0, True
+    return nx_, y, nz_, heading, nid, float(step_m), False
 
 
 def _spl_ratio(opt_m: Optional[float], path_m: float, *, success: bool) -> float:
@@ -1051,6 +1522,8 @@ def _route_score_record(
     shortest_path_full_m: Optional[float] = None,
     efficiency: float = 0.0,
     route_efficiency: float = 0.0,
+    end_xz=None,
+    end_heading_deg=None,
 ) -> dict:
     """Uniform score dict returned by both class-4 scorers."""
     crossed = [tuple(e) for e in (crossed_edges or [])]
@@ -1066,6 +1539,8 @@ def _route_score_record(
         'outcome': _route_outcome(success, validity),
         'parse_ok': bool(parse_ok),
         'end_node': end_node,
+        'end_xz': end_xz,
+        'end_heading_deg': end_heading_deg,
         'actions': list(actions or []),
         'snapped_nodes': list(snapped_nodes or []),
         'simulated_length_m': float(simulated_length_m),
@@ -1090,7 +1565,7 @@ def _crossed_undirected(snapped: Sequence[str]) -> list[tuple[str, str]]:
 def node_within_goal_tolerance(
     graph: nx.Graph, end_node, goal_node, goal_tol: float
 ) -> bool:
-    """Public alias of the scorer's goal test, for generation-side verification."""
+    """Public alias of the node-to-node goal test, for generation-side checks."""
     return _goal_reached(graph, end_node, goal_node, goal_tol)
 
 
@@ -1133,10 +1608,16 @@ def simulate_nav_action_sequence(
     rotation_deg: Optional[float] = None,
     snap_tolerance: Optional[float] = None,
     goal_tolerance: Optional[float] = None,
+    block_tolerance: Optional[float] = None,
+    allowed_nodes=None,
+    allowed_edges=None,
 ) -> dict:
-    """Metric walk shared by route and survey scorers.
+    """Continuous xz + heading walk shared by route and survey scorers.
 
-    ``ok`` is False on unparseable input or the first pose that does not snap.
+    Kinematics: ``x += m * sin(h)``, ``z += m * cos(h)``, ``h ± rotation``.
+    A translation whose landing point is farther than ``block_tolerance`` from
+    every reachable node is a no-op (the pose stays). ``ok`` is False only on
+    unparseable input or a missing start pose.
     """
     parsed = parse_nav_actions(raw_actions)
     snap_tol = (
@@ -1144,8 +1625,11 @@ def simulate_nav_action_sequence(
         if snap_tolerance is not None
         else trajectory_snap_tolerance(graph)
     )
+    block_tol = (
+        float(block_tolerance) if block_tolerance is not None else _default_block_tol(graph)
+    )
     goal_tol = (
-        float(goal_tolerance) if goal_tolerance is not None else snap_tol
+        float(goal_tolerance) if goal_tolerance is not None else _default_goal_success_m()
     )
     empty = {
         'ok': False,
@@ -1154,13 +1638,15 @@ def simulate_nav_action_sequence(
         'snapped': [],
         'simulated_length_m': 0.0,
         'end_node': None,
+        'end_xz': None,
+        'end_heading_deg': None,
+        'blocked_moves': 0,
         'snap_tolerance': snap_tol,
+        'block_tolerance': block_tol,
         'goal_tolerance': goal_tol,
     }
     if parsed is None:
         empty['parse_ok'] = False
-        return empty
-    if source_node not in graph:
         return empty
     rot = float(
         rotation_deg
@@ -1173,46 +1659,40 @@ def simulate_nav_action_sequence(
         else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or _fallback_grid()
     )
     heading = float(start_heading_deg) % 360.0
-    origin = _as_xyz(start_pos) or graph.nodes[source_node].get('pos')
+    origin = _as_xyz(start_pos)
+    if origin is None and source_node in graph:
+        origin = graph.nodes[source_node].get('pos')
     if origin is None:
         return empty
     x, y, z = float(origin[0]), float(origin[1]), float(origin[2])
-    start_nid = snap_position_to_graph(graph, (x, y, z), tolerance=snap_tol)
+    start_nid, _d0 = nearest_node_xz(graph, x, z)
     if start_nid is None:
-        return empty
-
-    snapped = [start_nid]
+        start_nid = source_node if source_node in graph else None
+    snapped = [start_nid] if start_nid is not None else []
     sim_len = 0.0
+    blocked_moves = 0
+    current = start_nid
     for act in parsed:
-        if act == NAV_ACTION_ROTATE_RIGHT:
-            heading = (heading + rot) % 360.0
-        elif act == NAV_ACTION_ROTATE_LEFT:
-            heading = (heading - rot) % 360.0
-        elif act == NAV_ACTION_MOVE_AHEAD:
-            dx, dz = _heading_step_xz(heading, step)
-            x += dx
-            z += dz
-            sim_len += step
-        elif act == NAV_ACTION_MOVE_BACK:
-            dx, dz = _heading_step_xz(heading, step)
-            x -= dx
-            z -= dz
-            sim_len += step
-        else:
+        x, y, z, heading, nid, travelled, blocked = _apply_nav_action(
+            graph,
+            x,
+            y,
+            z,
+            heading,
+            act,
+            step_m=step,
+            rotation_deg=rot,
+            block_tol=block_tol,
+            allowed_nodes=allowed_nodes,
+            allowed_edges=allowed_edges,
+            current_node=current,
+        )
+        current = nid
+        if blocked:
+            blocked_moves += 1
             continue
-        nid = snap_position_to_graph(graph, (x, y, z), tolerance=snap_tol)
-        if nid is None:
-            return {
-                'ok': False,
-                'parse_ok': True,
-                'actions': parsed,
-                'snapped': snapped,
-                'simulated_length_m': sim_len,
-                'end_node': snapped[-1],
-                'snap_tolerance': snap_tol,
-                'goal_tolerance': goal_tol,
-            }
-        if nid != snapped[-1]:
+        sim_len += travelled
+        if nid is not None and (not snapped or nid != snapped[-1]):
             snapped.append(nid)
     return {
         'ok': True,
@@ -1220,10 +1700,215 @@ def simulate_nav_action_sequence(
         'actions': parsed,
         'snapped': snapped,
         'simulated_length_m': sim_len,
-        'end_node': snapped[-1],
+        'end_node': snapped[-1] if snapped else start_nid,
+        'end_xz': (x, z),
+        'end_heading_deg': heading,
+        'blocked_moves': blocked_moves,
         'snap_tolerance': snap_tol,
+        'block_tolerance': block_tol,
         'goal_tolerance': goal_tol,
     }
+
+
+class _SearchPose:
+    """Continuous pose stored on the open path, plus the parent link."""
+
+    __slots__ = ('x', 'y', 'z', 'heading', 'node', 'parent', 'action', 'g')
+
+    def __init__(self, x, y, z, heading, node, parent, action, g):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.heading = heading
+        self.node = node
+        self.parent = parent
+        self.action = action
+        self.g = g
+
+
+def _reconstruct_actions(states: list, si: int) -> list[str]:
+    """Walk parent pointers back to the start pose."""
+    actions: list[str] = []
+    while si >= 0:
+        action = states[si].action
+        si = states[si].parent
+        if action is not None:
+            actions.append(action)
+    actions.reverse()
+    return actions
+
+
+def _out_of_cap(x, z, g_next, goal_xyzs, remaining, step, goal_tol, cap) -> bool:
+    """True when no remaining goal is still admissible within ``cap`` actions."""
+    if g_next > cap or not remaining:
+        return True
+    for gi in remaining:
+        gxyz = goal_xyzs[gi]
+        if g_next + _action_heuristic(x, z, gxyz[0], gxyz[2], step, goal_tol) <= cap:
+            return False
+    return True
+
+
+def continuous_bfs_to_goals(
+    graph: nx.Graph,
+    start_pos,
+    start_heading_deg: float,
+    goals,
+    *,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    block_tolerance: Optional[float] = None,
+    goal_tolerance: Optional[float] = None,
+    allowed_nodes=None,
+    allowed_edges=None,
+    max_actions: Optional[int] = None,
+) -> list[Optional[list[str]]]:
+    """Breadth-first actions from one pose to each goal, one flood.
+
+    The first time a goal ball is entered is the sequence a solo search would
+    store, so several goals that share a source pose do not change each other.
+    Visited state is the quantised cell ``(round(x/q), round(z/q), heading)``
+    and the nearest-node heading. Closing the node heading keeps the lattice
+    on the nav graph: a finer cell reopening the same node selects a different
+    shortest sequence when several exist. Expansions stay in action-count order
+    for the same reason. An admissible heuristic (metres still outside the goal
+    ball, divided by ``move_m``) only drops states that cannot finish inside
+    the action cap. Nearest-node checks use the scene cKDTree.
+    """
+    origin = _as_xyz(start_pos)
+    goal_xyzs = [_as_xyz(g) for g in goals]
+    if origin is None:
+        return [None for _ in goal_xyzs]
+    rot = float(
+        rotation_deg
+        if rotation_deg is not None
+        else graph.graph.get('agent_rotation_deg') or _fallback_rotation()
+    ) or _fallback_rotation()
+    step = float(
+        move_m
+        if move_m is not None
+        else graph.graph.get('agent_move_m') or graph.graph.get('grid_size') or _fallback_grid()
+    )
+    block_tol = (
+        float(block_tolerance) if block_tolerance is not None else _default_block_tol(graph)
+    )
+    goal_tol = (
+        float(goal_tolerance) if goal_tolerance is not None else _default_goal_success_m()
+    )
+    quant_m = _search_state_quant_m()
+    cap = int(max_actions if max_actions is not None else _c4().follower.max_actions)
+    x0, y0, z0 = float(origin[0]), float(origin[1]), float(origin[2])
+    h0 = float(start_heading_deg) % 360.0
+    nid0, _d0 = nearest_node_xz(graph, x0, z0)
+    found: dict[int, list[str]] = {}
+    remaining: set[int] = set()
+    for gi, gxyz in enumerate(goal_xyzs):
+        if gxyz is None:
+            continue
+        if xz_reaches_goal((x0, z0), gxyz, goal_tol):
+            found[gi] = []
+        else:
+            remaining.add(gi)
+    if not remaining:
+        return [found.get(i) for i in range(len(goal_xyzs))]
+    tokens = (
+        NAV_ACTION_ROTATE_LEFT,
+        NAV_ACTION_ROTATE_RIGHT,
+        NAV_ACTION_MOVE_AHEAD,
+        NAV_ACTION_MOVE_BACK,
+    )
+    states: list[_SearchPose] = [_SearchPose(x0, y0, z0, h0, nid0, -1, None, 0)]
+    visited_nodes: set[tuple] = set()
+    visited_cells: set[tuple[int, int, int]] = set()
+    if nid0 is not None:
+        visited_nodes.add((nid0, _heading_bin(h0, rot)))
+    visited_cells.add(_quant_state_key(x0, z0, h0, rot, quant_m))
+    queue: deque[int] = deque([0])
+    while queue and remaining:
+        si = queue.popleft()
+        pose = states[si]
+        if pose.g >= cap:
+            continue
+        for act in tokens:
+            nx_, ny_, nz_, nh, nnid, _travelled, blocked = _apply_nav_action(
+                graph,
+                pose.x,
+                pose.y,
+                pose.z,
+                pose.heading,
+                act,
+                step_m=step,
+                rotation_deg=rot,
+                block_tol=block_tol,
+                allowed_nodes=allowed_nodes,
+                allowed_edges=allowed_edges,
+                current_node=pose.node,
+            )
+            if blocked:
+                continue
+            ng = pose.g + 1
+            nsi = len(states)
+            states.append(_SearchPose(nx_, ny_, nz_, nh, nnid, si, act, ng))
+            hit_any = False
+            for gi in list(remaining):
+                if xz_reaches_goal((nx_, nz_), goal_xyzs[gi], goal_tol):
+                    found[gi] = _reconstruct_actions(states, nsi)
+                    remaining.discard(gi)
+                    hit_any = True
+            if not remaining:
+                break
+            nkey = None if nnid is None else (nnid, _heading_bin(nh, rot))
+            ckey = _quant_state_key(nx_, nz_, nh, rot, quant_m)
+            if (nkey is not None and nkey in visited_nodes) or ckey in visited_cells:
+                if not hit_any:
+                    states.pop()
+                continue
+            if _out_of_cap(nx_, nz_, ng, goal_xyzs, remaining, step, goal_tol, cap):
+                if not hit_any:
+                    states.pop()
+                continue
+            if nkey is not None:
+                visited_nodes.add(nkey)
+            visited_cells.add(ckey)
+            queue.append(nsi)
+    return [found.get(i) for i in range(len(goal_xyzs))]
+
+
+def continuous_bfs_actions(
+    graph: nx.Graph,
+    start_pos,
+    start_heading_deg: float,
+    goal_pos,
+    *,
+    move_m: Optional[float] = None,
+    rotation_deg: Optional[float] = None,
+    block_tolerance: Optional[float] = None,
+    goal_tolerance: Optional[float] = None,
+    allowed_nodes=None,
+    allowed_edges=None,
+    max_actions: Optional[int] = None,
+) -> Optional[list[str]]:
+    """Shortest action sequence under the same continuous kinematics as the scorer.
+
+    See ``continuous_bfs_to_goals``. The name is kept so stored ``answer_source``
+    strings stay stable.
+    """
+    found = continuous_bfs_to_goals(
+        graph,
+        start_pos,
+        start_heading_deg,
+        [goal_pos],
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        block_tolerance=block_tolerance,
+        goal_tolerance=goal_tolerance,
+        allowed_nodes=allowed_nodes,
+        allowed_edges=allowed_edges,
+        max_actions=max_actions,
+    )
+    if not found:
+        return None
+    return found[0]
 
 
 def _fail_from_sim(sim: dict) -> dict:
@@ -1236,6 +1921,8 @@ def _fail_from_sim(sim: dict) -> dict:
         actions=sim.get('actions') or [],
         snapped_nodes=sim.get('snapped') or [],
         simulated_length_m=float(sim.get('simulated_length_m') or 0.0),
+        end_xz=sim.get('end_xz'),
+        end_heading_deg=sim.get('end_heading_deg'),
     )
 
 
@@ -1248,22 +1935,25 @@ def score_route_action_sequence(
     *,
     start_heading_deg: float = 0.0,
     start_pos=None,
+    goal_pos=None,
     move_m: Optional[float] = None,
     rotation_deg: Optional[float] = None,
     snap_tolerance: Optional[float] = None,
     goal_tolerance: Optional[float] = None,
+    block_tolerance: Optional[float] = None,
 ) -> dict:
-    """[CODE] route_knowledge scorer: metric simulation, not node hopping.
+    """[CODE] route_knowledge scorer: continuous replay, not node hopping.
 
     Returns ``success``, ``validity``, and two SPL fields as separate values.
 
     * Simulate with ``agent_move_m`` / ``agent_rotation_deg`` (continuous xz).
-    * Snap each pose; reject at the first pose that does not snap.
-    * ``success`` / ``success_raw``: final snap within ``goal_tolerance``.
+    * A move farther than the calibrated block radius from every node is a no-op.
+    * ``success`` / ``success_raw``: final xz within ObjectNav ``goal_success_m``
+      (1.0 m) of the goal position.
     * ``validity``: every snapped edge is in the exported-only subset of
       ``traversed_edges``. Always logged (``illegal_edges``, ``outcome``).
     * ``efficiency``: SPL given success: ``S * ℓ / max(p, ℓ)`` on the filtered
-      traversed subgraph (0 on failure, capped at 1).
+      traversed subgraph (0 on failure, capped at 1). ``p`` is unblocked metres.
     * ``route_efficiency``: same SPL given success **and** validity (construct
       score). ``route_success`` is the valid-success bit.
     """
@@ -1277,10 +1967,12 @@ def score_route_action_sequence(
         rotation_deg=rotation_deg,
         snap_tolerance=snap_tolerance,
         goal_tolerance=goal_tolerance,
+        block_tolerance=block_tolerance,
     )
     if not sim['ok']:
         return _fail_from_sim(sim)
-    if goal_node not in graph:
+    goal_xyz = _goal_xyz(graph, goal_node, goal_pos)
+    if goal_xyz is None:
         return _fail_from_sim({**sim, 'ok': False})
 
     snapped = sim['snapped']
@@ -1289,7 +1981,7 @@ def score_route_action_sequence(
     crossed = _crossed_undirected(snapped)
     illegal = [edge for edge in crossed if edge not in exported]
     validity = not illegal
-    success = _goal_reached(graph, snapped[-1], goal_node, sim['goal_tolerance'])
+    success = xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance'])
 
     opt_traversed = _shortest_on_edges(graph, exported, source_node, goal_node)
     try:
@@ -1307,7 +1999,7 @@ def score_route_action_sequence(
         success=success,
         validity=validity,
         parse_ok=True,
-        end_node=snapped[-1],
+        end_node=sim.get('end_node'),
         actions=sim['actions'],
         snapped_nodes=snapped,
         simulated_length_m=sim_len,
@@ -1317,6 +2009,8 @@ def score_route_action_sequence(
         shortest_path_full_m=opt_full,
         efficiency=efficiency,
         route_efficiency=route_efficiency,
+        end_xz=sim.get('end_xz'),
+        end_heading_deg=sim.get('end_heading_deg'),
     )
 
 
@@ -1330,14 +2024,17 @@ def score_survey_action_sequence(
     *,
     start_heading_deg: float = 0.0,
     start_pos=None,
+    goal_pos=None,
     move_m: Optional[float] = None,
     rotation_deg: Optional[float] = None,
     snap_tolerance: Optional[float] = None,
     goal_tolerance: Optional[float] = None,
+    block_tolerance: Optional[float] = None,
+    allowed_nodes=None,
 ) -> dict:
-    """[CODE] survey scorer: same metric simulator as route_knowledge.
+    """[CODE] survey scorer: same continuous simulator as route_knowledge.
 
-    * ``success``: final snap within goal tolerance.
+    * ``success``: final xz within ObjectNav ``goal_success_m`` of the goal.
     * ``validity``: every crossed edge is in exported ``viewed_edges``, and at
       least one crossed edge is **not** in exported ``traversed_edges``.
     * ``efficiency``: SPL given success against the shortest path in the
@@ -1355,10 +2052,13 @@ def score_survey_action_sequence(
         rotation_deg=rotation_deg,
         snap_tolerance=snap_tolerance,
         goal_tolerance=goal_tolerance,
+        block_tolerance=block_tolerance,
+        allowed_nodes=allowed_nodes,
     )
     if not sim['ok']:
         return _fail_from_sim(sim)
-    if goal_node not in graph:
+    goal_xyz = _goal_xyz(graph, goal_node, goal_pos)
+    if goal_xyz is None:
         return _fail_from_sim({**sim, 'ok': False})
 
     snapped = sim['snapped']
@@ -1369,7 +2069,7 @@ def score_survey_action_sequence(
     illegal = [edge for edge in crossed if edge not in viewed]
     novel = [edge for edge in crossed if edge not in traversed]
     validity = (not illegal) and bool(novel)
-    success = _goal_reached(graph, snapped[-1], goal_node, sim['goal_tolerance'])
+    success = xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance'])
     opt_viewed = _shortest_on_edges(graph, viewed, source_node, goal_node)
     efficiency = _spl_ratio(opt_viewed, sim_len, success=success)
     route_efficiency = _spl_ratio(
@@ -1379,7 +2079,7 @@ def score_survey_action_sequence(
         success=success,
         validity=validity,
         parse_ok=True,
-        end_node=snapped[-1],
+        end_node=sim.get('end_node'),
         actions=sim['actions'],
         snapped_nodes=snapped,
         simulated_length_m=sim_len,
@@ -1389,6 +2089,8 @@ def score_survey_action_sequence(
         shortest_path_m=opt_viewed,
         efficiency=efficiency,
         route_efficiency=route_efficiency,
+        end_xz=sim.get('end_xz'),
+        end_heading_deg=sim.get('end_heading_deg'),
     )
 
 

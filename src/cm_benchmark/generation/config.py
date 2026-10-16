@@ -142,6 +142,7 @@ class MotionConfig:
 @dataclass(frozen=True)
 class InvisibleDisplacementConfig:
     floor_anchor_radius_m: float
+    min_displacement_m: float
     min_diagnostic_labels: int
 
 
@@ -205,6 +206,8 @@ class Class4Config:
     landmark_snap_default_m: float
     landmark_snap_default_grid_mult: float
     snap_tolerance_steps: float
+    goal_success_m: float
+    search_state_quant_m: float
     route: Class4RouteConfig
     survey: Class4SurveyConfig
     follower: Class4FollowerConfig
@@ -386,6 +389,7 @@ def generation_config_from_mapping(
         motion=MotionConfig(position_eps_m=float(raw['motion']['position_eps_m'])),
         invisible_displacement=InvisibleDisplacementConfig(
             floor_anchor_radius_m=float(raw['invisible_displacement']['floor_anchor_radius_m']),
+            min_displacement_m=float(raw['invisible_displacement']['min_displacement_m']),
             min_diagnostic_labels=int(raw['invisible_displacement']['min_diagnostic_labels']),
         ),
         landmarks=LandmarksConfig(
@@ -411,6 +415,8 @@ def generation_config_from_mapping(
             landmark_snap_default_m=float(c4['landmark_snap_default_m']),
             landmark_snap_default_grid_mult=float(c4['landmark_snap_default_grid_mult']),
             snap_tolerance_steps=float(c4['snap_tolerance_steps']),
+            goal_success_m=float(c4['goal_success_m']),
+            search_state_quant_m=float(c4['search_state_quant_m']),
             route=Class4RouteConfig(
                 max_ratio_floor=float(c4['route']['max_ratio_floor']),
                 min_hop_count=int(c4['route']['min_hop_count']),
@@ -540,6 +546,7 @@ def _legacy_lookup(name: str) -> Any:
         'ID_ENCODE_FOV_MIN_VISIBLE_PIXELS': cfg.visibility.id_encode.min_visible_pixels,
         'FLOOR_ANCHOR_RADIUS_M': cfg.invisible_displacement.floor_anchor_radius_m,
         'SURVEY_MIN_AGENT_SOURCE_DIST_M': cfg.class4.survey.min_agent_source_dist_m,
+        'CLASS4_GOAL_SUCCESS_M': cfg.class4.goal_success_m,
         'MIN_PAIR_GEODESIC_M': cfg.class4.min_pair_geodesic_m,
         'MAX_PAIR_GEODESIC_M': cfg.class4.max_pair_geodesic_m,
         'SCENE_PAIR_GEODESIC_PERCENTILE': cfg.class4.scene_geodesic_percentile,

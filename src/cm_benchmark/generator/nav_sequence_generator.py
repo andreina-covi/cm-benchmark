@@ -79,6 +79,7 @@ class NavSequenceGenerator(ABC):
             'object_state_track': None,
             'displacement_events': [],
             'displacement_candidates': [],
+            'placement_candidates': [],
             'world_layout': None,
             'passage_state': [],
             'region_trajectory': [],
@@ -102,6 +103,8 @@ class NavSequenceGenerator(ABC):
             if data.get('current_room') is not None:
                 step_dict['current_room'] = data.get('current_room')
                 step_dict['current_room_type'] = data.get('current_room_type')
+            if 'action_success' in data:
+                step_dict['action_success'] = data.get('action_success')
 
             visible_objs = self.get_visible_objects(data)
             self.update_memory(seen_objects_memory, visible_objs, timestep)
@@ -136,11 +139,14 @@ class NavSequenceGenerator(ABC):
                 'rotation': data['ag_rot'],
                 'image_path': data['path'],
             })
-            episode_dict['agent_actions'].append({
+            action_rec = {
                 'step': timestep,
                 'action': data['action'],
                 'degrees': data['degrees'],
-            })
+            }
+            if 'action_success' in data:
+                action_rec['action_success'] = data.get('action_success')
+            episode_dict['agent_actions'].append(action_rec)
 
         episode_dict['route'] = self.build_route(episode_dict['steps'])
         self.enrich_episode_data(episode_dict)
@@ -289,12 +295,21 @@ class NavSequenceGenerator(ABC):
         return {'landmarks': landmarks, 'turns': turns}
 
     def export_to_json(self, data, json_filename="nav_data.json"):
-        """Write the episode GT JSON under ``output_path``."""
+        """Write compact episode GT JSON (no indent). ``.json.gz`` is optional."""
+        from cm_benchmark.generation.step_derived import persistable_episode
+
         os.makedirs(self.output_path, exist_ok=True)
         filename = os.path.join(self.output_path, json_filename)
+        payload = persistable_episode(data)
         print(f"Exporting data to {filename}")
-        with open(filename, "w") as f:
-            json.dump(data, f, indent=4, default=_json_default)
+        if str(filename).endswith('.gz'):
+            import gzip
+
+            with gzip.open(filename, 'wt') as handle:
+                json.dump(payload, handle, separators=(',', ':'), default=_json_default)
+        else:
+            with open(filename, 'w') as handle:
+                json.dump(payload, handle, separators=(',', ':'), default=_json_default)
 
     def export_to_db(
         self,
@@ -370,6 +385,12 @@ def parse_args():
         type=str,
         default=None,
         help="Override displacement_candidates CSV basename or path",
+    )
+    parser.add_argument(
+        "--file_placement_candidates",
+        type=str,
+        default=None,
+        help="Override placement_candidates CSV basename or path",
     )
     parser.add_argument(
         "--output_path",

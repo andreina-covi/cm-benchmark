@@ -130,24 +130,26 @@ def class4_slide_panel(
         return {
             'task': f'Plan (never walked): {src}  →  {goal}',
             'graph': (
-                'Evidence: viewed but never walked · scored on viewed edges '
-                f'({hop_bit} on the stored viewed-edge path)'
+                'Evidence: viewed but never walked · continuous BFS reference · '
+                f'scored on viewed edges ({hop_bit} on the stored viewed-edge path)'
             ),
             'path': f'Stored walk: {walk}',
             'actions': 'Letter marker at the object bbox center on that still.',
             'scoring': (
-                'Score: success = near the goal; validity = stay on viewed edges '
-                'and use at least one unwalked hop; efficiency = SPL vs viewed shortest path.'
+                'Score: success = within 1.0 m of the goal (continuous replay); '
+                'validity = stay on viewed edges and use at least one unwalked hop; '
+                'efficiency = SPL vs viewed shortest path.'
             ),
         }
     return {
         'task': f'Retrace (walked): {src}  →  {goal}',
-        'graph': f'Scored on traversed (experienced) edges · {hop_bit}',
+        'graph': f'Reference = recorded walk · continuous replay on traversed edges · {hop_bit}',
         'path': f'Stored walk: {walk}',
         'actions': 'Letter marker at the object bbox center on that still.',
         'scoring': (
-            'Score: success = near the goal; validity = stay on walked edges; '
-            'efficiency = SPL. Headline = valid-success + route_efficiency.'
+            'Score: success = within 1.0 m of the goal (continuous replay); '
+            'validity = stay on walked edges; efficiency = SPL. '
+            'Headline = valid-success + route_efficiency.'
         ),
     }
 

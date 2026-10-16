@@ -16,9 +16,17 @@ from cm_benchmark.generation.config import get_generation_config
 from cm_benchmark.generation.constructs import (
     camera_size_wh,
     fov_metrics_ok,
+    is_fov_step,
     object_type_from_id,
     step_by_index,
     xyz_as_dict,
+)
+from cm_benchmark.generation.synsets import (
+    confusable_components,
+    confusable_group_of,
+    group_is_unique,
+    objects_are_confusable,
+    type_of,
 )
 from cm_benchmark.generator.visibility_filters import visibility_model_from_episode
 
@@ -27,6 +35,9 @@ MARK_RGB = {
     'cyan': (0, 220, 255),
     'lime': (80, 220, 36),
     'yellow': (255, 220, 0),
+    'orange': (255, 128, 0),
+    'blue': (16, 96, 255),
+    'purple': (168, 50, 216),
 }
 
 
@@ -46,6 +57,21 @@ class NameResult:
         return f'{self.object_type}{self.phrase}'
 
 
+def aabb_minmax_gap_xz(min_a, max_a, min_b, max_b) -> Optional[float]:
+    """Closest-point gap (metres) between two floor-plane AABB min/max corners."""
+    a0, a1 = _xz(min_a), _xz(max_a)
+    b0, b1 = _xz(min_b), _xz(max_b)
+    if None in (a0, a1, b0, b1):
+        return None
+    min_ax, max_ax = min(a0[0], a1[0]), max(a0[0], a1[0])
+    min_az, max_az = min(a0[1], a1[1]), max(a0[1], a1[1])
+    min_bx, max_bx = min(b0[0], b1[0]), max(b0[0], b1[0])
+    min_bz, max_bz = min(b0[1], b1[1]), max(b0[1], b1[1])
+    dx = max(min_ax - max_bx, min_bx - max_ax, 0.0)
+    dz = max(min_az - max_bz, min_bz - max_az, 0.0)
+    return math.hypot(dx, dz)
+
+
 def aabb_gap_xz(
     center_a,
     size_a,
@@ -56,6 +82,7 @@ def aabb_gap_xz(
 
     ``center`` is (x, z) or an xyz dict/list. ``size`` is full (sx, sz) or
     (sx, sy, sz); missing size is treated as a point. Overlap → 0.
+    Prefer ``aabb_minmax_gap_xz`` when catalog min/max boxes exist.
     """
     ca = _xz(center_a)
     cb = _xz(center_b)
@@ -63,13 +90,11 @@ def aabb_gap_xz(
         return None
     sa = _half_xz(size_a)
     sb = _half_xz(size_b)
-    min_ax, max_ax = ca[0] - sa[0], ca[0] + sa[0]
-    min_az, max_az = ca[1] - sa[1], ca[1] + sa[1]
-    min_bx, max_bx = cb[0] - sb[0], cb[0] + sb[0]
-    min_bz, max_bz = cb[1] - sb[1], cb[1] + sb[1]
-    dx = max(min_ax - max_bx, min_bx - max_ax, 0.0)
-    dz = max(min_az - max_bz, min_bz - max_az, 0.0)
-    return math.hypot(dx, dz)
+    min_a = (ca[0] - sa[0], ca[1] - sa[1])
+    max_a = (ca[0] + sa[0], ca[1] + sa[1])
+    min_b = (cb[0] - sb[0], cb[1] - sb[1])
+    max_b = (cb[0] + sb[0], cb[1] + sb[1])
+    return aabb_minmax_gap_xz(min_a, max_a, min_b, max_b)
 
 
 def pixel_bbox_gap(box_a, box_b) -> Optional[float]:
@@ -99,7 +124,6 @@ def active_margin_m(episode: Optional[dict] = None) -> tuple[float, Optional[flo
     setting = cfg.active_proximity()
     if cfg.proximity_setting == 'vsi':
         area = _room_area_m2(episode)
-        # world_layout.regions have no polygon / area — use the large-room branch.
         margin = (
             setting.margin_m_small
             if area is not None and setting.room_area_split_m2 is not None
@@ -122,6 +146,8 @@ def passing_objects_in_frames(
     """
     out: dict[int, dict[str, dict]] = {}
     for si in frame_steps:
+        if not is_fov_step(episode, si):
+            continue
         step = step_by_index(episode, int(si))
         if step is None:
             continue
@@ -134,21 +160,37 @@ def passing_objects_in_frames(
     return out
 
 
-def episode_mark_colours(episode: dict) -> dict[str, str]:
-    """Stable ``objectId → colour`` for every duplicated type in the episode.
+def episode_mark_colours(
+    episode: dict, frame_steps: Optional[list[int]] = None
+) -> dict[str, str]:
+    """Stable ``objectId → colour`` for duplicated types in the item's frames.
 
-    Types with more instances than palette colours get no assignment (mark
-    unavailable). Assignment is sorted by objectId so it is deterministic.
+    Only instances that appear in ``frame_steps`` are coloured. When frames
+    are omitted, every FOV step is used. Two items may reuse a palette colour
+    for different objects. Objects outside the shown frames are not marked.
+    Types with more in-frame instances than palette colours get no assignment.
+    Assignment is sorted by objectId so it is deterministic.
     """
     palette = list(get_generation_config().disambiguation.mark_palette)
-    by_type: dict[str, set[str]] = {}
-    for step in episode.get('steps') or []:
-        for oid, odata in (step.get('visible_objects') or {}).items():
-            typ = object_type_from_id(oid, {oid: odata})
-            by_type.setdefault(typ, set()).add(oid)
+    if frame_steps is None:
+        steps = [
+            step
+            for step in episode.get('steps') or []
+            if is_fov_step(episode, step.get('step'))
+        ]
+    else:
+        steps = []
+        for si in frame_steps:
+            step = step_by_index(episode, int(si))
+            if step is not None and is_fov_step(episode, si):
+                steps.append(step)
+    seen: set[str] = set()
+    for step in steps:
+        for oid in (step.get('visible_objects') or {}):
+            seen.add(oid)
     colours: dict[str, str] = {}
-    for typ, ids in by_type.items():
-        ordered = sorted(ids)
+    for group in confusable_components(episode, seen):
+        ordered = sorted(group)
         if len(ordered) < 2 or len(ordered) > len(palette):
             continue
         for i, oid in enumerate(ordered):
@@ -172,17 +214,17 @@ def resolve_named_objects(
     if not ids:
         return {}
     frames = passing_objects_in_frames(episode, frame_steps)
-    by_type = _types_in_frames(episode, frames)
+    pool = _oids_in_frames(frames)
     if model is None:
         model = visibility_model_from_episode(episode)
-    colours = episode_mark_colours(episode)
+    colours = episode_mark_colours(episode, frame_steps)
     cfg = get_generation_config().disambiguation
     out: dict[str, NameResult] = {}
     for oid in ids:
         typ = _type_of(episode, oid, frames)
         if typ is None:
             return None
-        siblings = [x for x in by_type.get(typ, ()) if x != oid]
+        siblings = [x for x in confusable_group_of(episode, oid, pool) if x != oid]
         if not siblings:
             out[oid] = NameResult(oid, typ, '', 'none')
             continue
@@ -310,31 +352,69 @@ def _center_and_size(episode: dict, oid: str, odata: dict) -> tuple[Any, Any]:
     return center, size
 
 
+def _aabb_minmax(episode: dict, oid: str, odata: dict):
+    """``(aabb_min, aabb_max)`` xyz, or None pair if the catalog has no box."""
+    catalog = (episode.get('object_catalog') or {}).get(oid) or {}
+    amin = odata.get('aabb_min') or catalog.get('aabb_min')
+    amax = odata.get('aabb_max') or catalog.get('aabb_max')
+    if amin is not None and amax is not None:
+        return amin, amax
+    center, size = _center_and_size(episode, oid, odata)
+    ca = _xz(center)
+    if ca is None:
+        return None, None
+    hx, hz = _half_xz(size)
+    return (ca[0] - hx, 0.0, ca[1] - hz), (ca[0] + hx, 0.0, ca[1] + hz)
+
+
+def object_aabb_gap_m(episode: dict, oid_a: str, data_a: dict, oid_b: str, data_b: dict) -> Optional[float]:
+    """Floor-plane gap between two objects using catalog AABB min/max when present."""
+    min_a, max_a = _aabb_minmax(episode, oid_a, data_a)
+    min_b, max_b = _aabb_minmax(episode, oid_b, data_b)
+    return aabb_minmax_gap_xz(min_a, max_a, min_b, max_b)
+
+
 def _type_of(episode: dict, oid: str, frames: dict[int, dict[str, dict]]) -> Optional[str]:
     for vis in frames.values():
         if oid in vis:
-            return object_type_from_id(oid, vis)
+            return type_of(episode, oid, vis[oid])
     for step in episode.get('steps') or []:
         vis = step.get('visible_objects') or {}
         if oid in vis:
-            return object_type_from_id(oid, vis)
-    return object_type_from_id(oid)
+            return type_of(episode, oid, vis[oid])
+    return type_of(episode, oid)
 
 
-def _types_in_frames(
-    episode: dict, frames: dict[int, dict[str, dict]]
-) -> dict[str, set[str]]:
-    by_type: dict[str, set[str]] = {}
-    for vis in frames.values():
-        for oid, odata in vis.items():
-            typ = object_type_from_id(oid, {oid: odata})
-            by_type.setdefault(typ, set()).add(oid)
-    return by_type
+def _oids_in_frames(frames: dict[int, dict[str, dict]]) -> set[str]:
+    return {oid for vis in frames.values() for oid in vis}
 
 
 def _room_area_m2(episode: Optional[dict]) -> Optional[float]:
-    """None — collector regions have no polygon / area (vsi uses 0.30 m)."""
-    del episode
+    """Area of the agent's current room from ``world_layout.regions``."""
+    if not isinstance(episode, dict):
+        return None
+    regions = (episode.get('world_layout') or {}).get('regions') or []
+    rid = None
+    for step in episode.get('steps') or []:
+        if step.get('current_room'):
+            rid = step['current_room']
+            break
+    if rid is None:
+        for rec in (episode.get('object_catalog') or {}).values():
+            if rec.get('room_id'):
+                rid = rec['room_id']
+                break
+    for region in regions:
+        if rid is not None and region.get('region_id') != rid:
+            continue
+        area = region.get('area')
+        if area is not None:
+            try:
+                return float(area)
+            except (TypeError, ValueError):
+                continue
+        if rid is not None:
+            break
     return None
 
 
@@ -348,16 +428,17 @@ def _try_proximity(
     model: Any,
 ) -> Optional[NameResult]:
     margin_m, ratio = active_margin_m(episode)
-    type_counts = _types_in_frames(episode, frames)
-    # Landmark type must be unique across all shown frames.
+    pool = _oids_in_frames(frames)
+    # Landmark must not be confusable with anything else in the shown frames.
     candidates: list[str] = []
     seen: set[str] = set()
     for vis in frames.values():
         for oid, odata in vis.items():
             if oid in seen or oid == target_id or oid in siblings:
                 continue
-            typ = object_type_from_id(oid, {oid: odata})
-            if len(type_counts.get(typ, ())) != 1:
+            if objects_are_confusable(episode, oid, target_id, odata, None):
+                continue
+            if not group_is_unique(episode, oid, pool):
                 continue
             if not fov_metrics_ok(odata, model=model):
                 continue
@@ -377,9 +458,7 @@ def _try_proximity(
         # Use the first co-visible frame's poses for the 3D gap.
         t_data = next(vis[target_id] for vis in frames.values() if target_id in vis)
         l_data = next(vis[lid] for vis in frames.values() if lid in vis and target_id in vis)
-        tc, ts = _center_and_size(episode, target_id, t_data)
-        lc, ls = _center_and_size(episode, lid, l_data)
-        d_target = aabb_gap_xz(tc, ts, lc, ls)
+        d_target = object_aabb_gap_m(episode, target_id, t_data, lid, l_data)
         if d_target is None or d_target <= 1e-6:
             continue
         sib_gaps = []
@@ -391,8 +470,7 @@ def _try_proximity(
                     break
             if s_data is None:
                 continue
-            sc, ss = _center_and_size(episode, sib, s_data)
-            g = aabb_gap_xz(sc, ss, lc, ls)
+            g = object_aabb_gap_m(episode, sib, s_data, lid, l_data)
             if g is not None:
                 sib_gaps.append(g)
         if not sib_gaps:

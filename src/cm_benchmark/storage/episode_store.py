@@ -75,6 +75,7 @@ class EpisodeStore:
                 object_state_track_json TEXT,
                 displacement_events_json TEXT NOT NULL DEFAULT '[]',
                 displacement_candidates_json TEXT,
+                placement_candidates_json TEXT,
                 world_layout_json TEXT,
                 nav_graph_json TEXT,
                 passage_state_json TEXT,
@@ -174,10 +175,26 @@ class EpisodeStore:
             'region_trajectory_json': 'TEXT',
             'episode_meta_json': 'TEXT',
             'displacement_candidates_json': 'TEXT',
+            'placement_candidates_json': 'TEXT',
+            'nav_graph_path': 'TEXT',
+            'gt_slim': 'INTEGER',
+            'object_catalog_json': 'TEXT',
+            'camera_json': 'TEXT',
+            'question_visibility_json': 'TEXT',
+            'visibility_filter_model_json': 'TEXT',
         }
         for name, typedef in extras.items():
             if name not in cols:
                 self._conn.execute(f'ALTER TABLE episodes ADD COLUMN {name} {typedef}')
+        step_cols = {r[1] for r in self._conn.execute('PRAGMA table_info(steps)')}
+        step_extras = {
+            'action_success': 'INTEGER',
+            'current_room': 'TEXT',
+            'current_room_type': 'TEXT',
+        }
+        for name, typedef in step_extras.items():
+            if name not in step_cols:
+                self._conn.execute(f'ALTER TABLE steps ADD COLUMN {name} {typedef}')
         self._conn.commit()
 
     def save_episode(
@@ -197,10 +214,11 @@ class EpisodeStore:
             INSERT INTO episodes (
                 episode_id, scene, environment, thresholds_json, movement_constant,
                 object_state_track_json, displacement_events_json,
-                displacement_candidates_json,
+                displacement_candidates_json, placement_candidates_json,
                 world_layout_json, nav_graph_json, passage_state_json, region_trajectory_json,
-                episode_meta_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                episode_meta_json, nav_graph_path, gt_slim, object_catalog_json, camera_json,
+                question_visibility_json, visibility_filter_model_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 episode_id,
@@ -213,21 +231,36 @@ class EpisodeStore:
                 else None,
                 _dumps(episode.get('displacement_events', [])),
                 _dumps(episode.get('displacement_candidates', [])),
+                _dumps(episode.get('placement_candidates', [])),
                 _dumps(episode.get('world_layout'))
                 if episode.get('world_layout') is not None
                 else None,
-                _dumps(episode.get('nav_graph'))
-                if episode.get('nav_graph') is not None
-                else None,
+                None,
                 _dumps(episode.get('passage_state', [])),
                 _dumps(episode.get('region_trajectory', [])),
                 _dumps(episode.get('episode_meta', {})),
+                episode.get('nav_graph_path'),
+                1,
+                _dumps(episode.get('object_catalog'))
+                if episode.get('object_catalog') is not None
+                else None,
+                _dumps(episode.get('camera'))
+                if episode.get('camera') is not None
+                else None,
+                _dumps(episode.get('question_visibility'))
+                if episode.get('question_visibility') is not None
+                else None,
+                _dumps(episode.get('visibility_filter_model'))
+                if episode.get('visibility_filter_model') is not None
+                else None,
                 now,
             ),
         )
 
+        from cm_benchmark.generation.step_derived import slim_step
+
         for step in episode.get('steps', []):
-            self._insert_step(episode_id, step)
+            self._insert_step(episode_id, slim_step(step))
 
         for ord_i, lm in enumerate(episode.get('route', {}).get('landmarks', [])):
             self._conn.execute(
@@ -271,13 +304,16 @@ class EpisodeStore:
         rx, ry, rz = _xyz(agent.get('rotation'))
         step_idx = step['step']
 
+        success = step.get('action_success')
+        success_bit = None if success is None else (1 if success else 0)
         self._conn.execute(
             '''
             INSERT INTO steps (
                 episode_id, step, image_path, action, degrees,
                 agent_pos_x, agent_pos_y, agent_pos_z,
-                agent_rot_x, agent_rot_y, agent_rot_z
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                agent_rot_x, agent_rot_y, agent_rot_z,
+                action_success, current_room, current_room_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 episode_id,
@@ -287,6 +323,9 @@ class EpisodeStore:
                 step.get('degrees'),
                 px, py, pz,
                 rx, ry, rz,
+                success_bit,
+                step.get('current_room'),
+                step.get('current_room_type'),
             ),
         )
 
@@ -385,11 +424,14 @@ class EpisodeStore:
             (episode_id,),
         ).fetchall()
 
+        keys = set(ep.keys())
+        slim = bool(ep['gt_slim']) if 'gt_slim' in keys and ep['gt_slim'] else False
         steps = []
         trajectory = []
         actions = []
         for row in steps_rows:
             step_idx = row['step']
+            row_keys = set(row.keys())
             step_dict = {
                 'step': step_idx,
                 'image_path': row['image_path'],
@@ -400,12 +442,23 @@ class EpisodeStore:
                     'rotation': [row['agent_rot_x'], row['agent_rot_y'], row['agent_rot_z']],
                 },
                 'visible_objects': self._load_objects(episode_id, step_idx, 'visible'),
-                'non_visible_objects': self._load_objects(episode_id, step_idx, 'non_visible'),
-                'edges_egocentric': self._load_edges(episode_id, step_idx, 'egocentric'),
-                'edges_allocentric': self._load_edges(episode_id, step_idx, 'allocentric'),
-                'edges_object_frame': self._load_edges(episode_id, step_idx, 'object_frame'),
-                'edges_inferred': self._load_edges(episode_id, step_idx, 'inferred'),
             }
+            if 'action_success' in row_keys and row['action_success'] is not None:
+                step_dict['action_success'] = bool(row['action_success'])
+            if 'current_room' in row_keys and row['current_room'] is not None:
+                step_dict['current_room'] = row['current_room']
+            if 'current_room_type' in row_keys and row['current_room_type'] is not None:
+                step_dict['current_room_type'] = row['current_room_type']
+            if not slim:
+                step_dict['non_visible_objects'] = self._load_objects(
+                    episode_id, step_idx, 'non_visible'
+                )
+                step_dict['edges_egocentric'] = self._load_edges(episode_id, step_idx, 'egocentric')
+                step_dict['edges_allocentric'] = self._load_edges(episode_id, step_idx, 'allocentric')
+                step_dict['edges_object_frame'] = self._load_edges(
+                    episode_id, step_idx, 'object_frame'
+                )
+                step_dict['edges_inferred'] = self._load_edges(episode_id, step_idx, 'inferred')
             steps.append(step_dict)
             trajectory.append({
                 'step': step_idx,
@@ -413,11 +466,14 @@ class EpisodeStore:
                 'rotation': step_dict['agent']['rotation'],
                 'image_path': row['image_path'],
             })
-            actions.append({
+            action_rec = {
                 'step': step_idx,
                 'action': row['action'],
                 'degrees': row['degrees'],
-            })
+            }
+            if 'action_success' in step_dict:
+                action_rec['action_success'] = step_dict['action_success']
+            actions.append(action_rec)
 
         landmarks = [
             {
@@ -445,7 +501,7 @@ class EpisodeStore:
             ).fetchall()
         ]
 
-        return {
+        loaded = {
             'scene': ep['scene'],
             'thresholds': _loads(ep['thresholds_json'], {}),
             'movement_constant': ep['movement_constant'],
@@ -454,22 +510,43 @@ class EpisodeStore:
             'route': {'landmarks': landmarks, 'turns': turns},
             'object_state_track': _loads(ep['object_state_track_json'], None),
             'displacement_events': _loads(ep['displacement_events_json'], []),
-            'world_layout': _loads(ep['world_layout_json'], None) if 'world_layout_json' in ep.keys() else None,
-            'nav_graph': _loads(ep['nav_graph_json'], None) if 'nav_graph_json' in ep.keys() else None,
-            'passage_state': _loads(ep['passage_state_json'], []) if 'passage_state_json' in ep.keys() else [],
+            'world_layout': _loads(ep['world_layout_json'], None) if 'world_layout_json' in keys else None,
+            'passage_state': _loads(ep['passage_state_json'], []) if 'passage_state_json' in keys else [],
             'region_trajectory': (
                 _loads(ep['region_trajectory_json'], [])
-                if 'region_trajectory_json' in ep.keys()
+                if 'region_trajectory_json' in keys
                 else []
             ),
-            'episode_meta': _loads(ep['episode_meta_json'], {}) if 'episode_meta_json' in ep.keys() else {},
+            'episode_meta': _loads(ep['episode_meta_json'], {}) if 'episode_meta_json' in keys else {},
             'displacement_candidates': (
                 _loads(ep['displacement_candidates_json'], [])
-                if 'displacement_candidates_json' in ep.keys()
+                if 'displacement_candidates_json' in keys
+                else []
+            ),
+            'placement_candidates': (
+                _loads(ep['placement_candidates_json'], [])
+                if 'placement_candidates_json' in keys
                 else []
             ),
             'steps': steps,
         }
+        if 'nav_graph_json' in keys and ep['nav_graph_json']:
+            loaded['nav_graph'] = _loads(ep['nav_graph_json'], None)
+        if 'nav_graph_path' in keys and ep['nav_graph_path']:
+            loaded['nav_graph_path'] = ep['nav_graph_path']
+        if slim:
+            loaded['gt_slim'] = True
+        if 'object_catalog_json' in keys and ep['object_catalog_json']:
+            loaded['object_catalog'] = _loads(ep['object_catalog_json'], {})
+        if 'camera_json' in keys and ep['camera_json']:
+            loaded['camera'] = _loads(ep['camera_json'], {})
+        if 'question_visibility_json' in keys and ep['question_visibility_json']:
+            loaded['question_visibility'] = _loads(ep['question_visibility_json'], {})
+        if 'visibility_filter_model_json' in keys and ep['visibility_filter_model_json']:
+            loaded['visibility_filter_model'] = _loads(ep['visibility_filter_model_json'], None)
+        from cm_benchmark.generation.step_derived import prepare_episode
+
+        return prepare_episode(loaded)
 
     def _load_objects(self, episode_id: str, step_idx: int, visibility: str) -> dict:
         rows = self._conn.execute(
@@ -491,6 +568,42 @@ class EpisodeStore:
             (episode_id, step_idx, edge_type),
         ).fetchall()
         return [json.loads(r['payload_json']) for r in rows]
+
+    def _derived_edges(
+        self,
+        episode_id: str,
+        step: Optional[int],
+        edge_type: Optional[str],
+        target: Optional[str],
+    ) -> list[dict]:
+        """Rebuild edges for a slim episode that does not store them."""
+        row = self._conn.execute(
+            'SELECT gt_slim FROM episodes WHERE episode_id = ?',
+            (episode_id,),
+        ).fetchone()
+        if row is None or not row['gt_slim']:
+            return []
+        episode = self.load_episode(episode_id)
+        names = {
+            'egocentric': 'edges_egocentric',
+            'allocentric': 'edges_allocentric',
+            'object_frame': 'edges_object_frame',
+            'inferred': 'edges_inferred',
+        }
+        wanted = [names[edge_type]] if edge_type in names else list(names.values())
+        out = []
+        for st in episode.get('steps') or []:
+            if step is not None and int(st.get('step')) != int(step):
+                continue
+            for key in wanted:
+                for edge in st.get(key) or []:
+                    if target is not None and edge.get('target') != target:
+                        continue
+                    item = dict(edge)
+                    item['step'] = st.get('step')
+                    item['edge_type'] = key.replace('edges_', '')
+                    out.append(item)
+        return out
 
     def get_edges(
         self,
@@ -520,6 +633,8 @@ class EpisodeStore:
             ORDER BY step, id
         '''
         rows = self._conn.execute(sql, params).fetchall()
+        if not rows:
+            return self._derived_edges(episode_id, step, edge_type, target)
         out = []
         for r in rows:
             item = json.loads(r['payload_json'])

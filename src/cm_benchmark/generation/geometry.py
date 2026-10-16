@@ -71,6 +71,58 @@ def ego_label_from_world_pose(
     return local_offset_to_ego_label(local, ahead_half_width=ahead_half_width)
 
 
+def point_in_camera_frustum(
+    agent_pos,
+    agent_rot,
+    world_pos,
+    episode: Optional[dict] = None,
+) -> Optional[bool]:
+    """True when ``world_pos`` projects inside the camera frame (z>0, u/v in bounds).
+
+    None when camera size / FOV or poses are missing — caller must not invent a gate.
+    Uses the real camera pitch (not yaw-only) so the check matches the recorded view.
+    """
+    if agent_pos is None or agent_rot is None or world_pos is None:
+        return None
+    cam = {}
+    if isinstance(episode, dict):
+        cam = episode.get('camera') or (episode.get('episode_meta') or {}).get('camera') or {}
+    try:
+        width = int(cam.get('width'))
+        height = int(cam.get('height'))
+        fov_v = float(cam.get('fov_vertical_deg') or cam.get('fov_v'))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or fov_v <= 0:
+        return None
+    from cm_benchmark.utils.spatial_transformer import (
+        get_focal_length,
+        projection_with_local_vector,
+        world_to_local,
+    )
+
+    try:
+        local = world_to_local(agent_pos, agent_rot, world_pos)
+    except Exception:
+        return None
+    local = np.asarray(local, dtype=float)
+    if local.shape[0] < 3 or not np.isfinite(local).all():
+        return None
+    if float(local[2]) <= 0.0:
+        return False
+    fx, fy, _fov_h = get_focal_length(width, height, fov_v)
+    try:
+        u, v = projection_with_local_vector(
+            (float(local[0]), float(local[1]), float(local[2])),
+            (width / 2.0, height / 2.0),
+            (fx, fy),
+            {'ez': 0.0},
+        )
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= float(u) < float(width) and 0.0 <= float(v) < float(height)
+
+
 def agent_pose_at_step(episode: dict, step_idx: int) -> tuple[Optional[Any], Optional[Any]]:
     """``(position, rotation)`` of the agent at a step (steps first, then trajectory)."""
     for step in episode.get('steps') or []:

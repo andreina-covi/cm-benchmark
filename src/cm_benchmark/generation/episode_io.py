@@ -8,9 +8,19 @@ from typing import Any, Optional
 
 
 def load_episode_from_json(path: str | Path) -> dict[str, Any]:
-    """Episode GT dict from a ``nav_<scene>.json`` export."""
-    with Path(path).open() as f:
-        return json.load(f)
+    """Episode GT dict from a ``nav_<scene>.json`` export (plain or ``.json.gz``)."""
+    path = Path(path)
+    if path.suffix == '.gz':
+        import gzip
+
+        with gzip.open(path, 'rt') as handle:
+            episode = json.load(handle)
+    else:
+        with path.open() as handle:
+            episode = json.load(handle)
+    from cm_benchmark.generation.step_derived import prepare_episode
+
+    return prepare_episode(episode)
 
 
 def load_episode_from_db(db_path: str | Path, episode_id: str) -> dict[str, Any]:
@@ -21,7 +31,9 @@ def load_episode_from_db(db_path: str | Path, episode_id: str) -> dict[str, Any]
         episode = store.load_episode(episode_id)
     if episode is None:
         raise KeyError(f'episode_id not found: {episode_id}')
-    return episode
+    from cm_benchmark.generation.step_derived import prepare_episode
+
+    return prepare_episode(episode)
 
 
 def load_episode(

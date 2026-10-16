@@ -11,6 +11,8 @@ import pytest
 from cm_benchmark.generation.config import get_generation_config, use_generation_config
 from cm_benchmark.generation.disambiguation import (
     aabb_gap_xz,
+    aabb_minmax_gap_xz,
+    active_margin_m,
     draw_marked_frames,
     episode_mark_colours,
     pixel_bbox_gap,
@@ -64,6 +66,23 @@ def test_aabb_gap_overlap_and_separation():
     assert gap == pytest.approx(2.0)
     # Missing size → centre distance
     assert aabb_gap_xz((0, 0, 0), None, (3, 0, 4), None) == pytest.approx(5.0)
+    assert aabb_minmax_gap_xz((-1, 0, -1), (1, 0, 1), (3, 0, -1), (5, 0, 1)) == pytest.approx(2.0)
+
+
+def test_vsi_margin_uses_world_layout_area():
+    cfg = get_generation_config()
+    vsi = replace(cfg.disambiguation, proximity_setting='vsi')
+    with use_generation_config(replace(cfg, disambiguation=vsi)):
+        small = {
+            'world_layout': {'regions': [{'region_id': 'kitchen', 'area': 20.0}]},
+            'steps': [{'current_room': 'kitchen'}],
+        }
+        large = {
+            'world_layout': {'regions': [{'region_id': 'kitchen', 'area': 80.0}]},
+            'steps': [{'current_room': 'kitchen'}],
+        }
+        assert active_margin_m(small)[0] == pytest.approx(0.15)
+        assert active_margin_m(large)[0] == pytest.approx(0.30)
 
 
 def test_pixel_bbox_gap():
@@ -176,6 +195,37 @@ def test_questions_have_no_landmark_relative_direction():
     for item in ok:
         assert banned.search(item['question']) is None
         assert 'left of the' not in (item.get('question') or '')
+
+
+def test_mark_colours_follow_shown_frames_only():
+    """Colours are assigned inside one item's frames and may be reused later."""
+    episode = {
+        'steps': [
+            _step(
+                0,
+                {
+                    'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+                    'Chair|2': _vis('Chair', [2.0, 0.0, 1.0]),
+                },
+            ),
+            _step(
+                1,
+                {
+                    'Table|1': _vis('Table', [0.0, 0.0, 1.0]),
+                    'Table|2': _vis('Table', [2.0, 0.0, 1.0]),
+                },
+                x=1.0,
+            ),
+        ]
+    }
+    chairs = episode_mark_colours(episode, [0])
+    tables = episode_mark_colours(episode, [1])
+    assert set(chairs) == {'Chair|1', 'Chair|2'}
+    assert set(tables) == {'Table|1', 'Table|2'}
+    assert chairs['Chair|1'] == tables['Table|1']
+    names = resolve_named_objects(episode, [0], ['Chair|1'])
+    assert names is not None
+    assert 'Table|1' not in names['Chair|1'].marks
 
 
 def test_same_object_id_same_colour_across_items():

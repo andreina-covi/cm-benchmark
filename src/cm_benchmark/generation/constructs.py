@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import Any, Optional
 import math
 
@@ -167,6 +169,18 @@ def _category_usable(cat) -> bool:
     return cat is not None and str(cat).strip().lower() not in _BAD_CATEGORIES
 
 
+_OBJ_TYPE_SPLIT = re.compile(r'(?<=[a-z])(?=[A-Z])|[-_]+')
+
+
+def words_from_obj_type(obj_type: str) -> str:
+    """Split a simulator ``obj-type`` into words: ``AlarmClock`` → ``Alarm Clock``."""
+    text = str(obj_type or '').strip()
+    if not text:
+        return ''
+    parts = [p for p in _OBJ_TYPE_SPLIT.split(text) if p]
+    return ' '.join(parts) if parts else text
+
+
 def _strip_obja_asset_prefix(name: str) -> str:
     """Drop the SPOC/Objaverse id prefix so questions say Scooter, not ObjaScooter.
 
@@ -195,10 +209,10 @@ def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -
         if _category_usable(cat):
             cleaned = _strip_obja_asset_prefix(str(cat).strip())
             if cleaned:
-                return cleaned
+                return words_from_obj_type(cleaned)
     stem = str(obj_id).split('|')[0].strip()
     cleaned = _strip_obja_asset_prefix(stem) if stem else ''
-    return cleaned or stem or str(obj_id)
+    return words_from_obj_type(cleaned or stem or str(obj_id))
 
 
 def angle_to_ego_label(angle_deg: float, ahead_half_width: Optional[float] = None) -> str:
@@ -418,6 +432,30 @@ def _visible_catalog(step: dict) -> dict[str, dict]:
     return out
 
 
+def fov_stride_of(episode: Optional[dict]) -> int:
+    """``episode_meta.fov_stride`` (or ``config.fov_stride``); default 1."""
+    if not isinstance(episode, dict):
+        return 1
+    meta = episode.get('episode_meta') or {}
+    raw = meta.get('fov_stride')
+    if raw is None:
+        raw = (meta.get('config') or {}).get('fov_stride')
+    try:
+        stride = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return stride if stride > 1 else 1
+
+
+def is_fov_step(episode: Optional[dict], step_idx) -> bool:
+    """True when ``step_idx`` has object / visibility rows (stride-aligned)."""
+    try:
+        si = int(step_idx)
+    except (TypeError, ValueError):
+        return False
+    return si % fov_stride_of(episode) == 0
+
+
 def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
     """Return (width, height) from episode_meta.camera when present."""
     if not isinstance(episode, dict):
@@ -537,13 +575,21 @@ def fov_metrics_ok(
     )
 
 
-def duplicate_category_group(step: dict, target_obj_id: str) -> list[str]:
-    """Visible object ids sharing the target's category (includes target)."""
-    catalog = _visible_catalog(step)
-    if target_obj_id not in catalog:
+def duplicate_category_group(
+    step: dict, target_obj_id: str, episode: Optional[dict] = None
+) -> list[str]:
+    """Visible ids confusable with the target (includes target)."""
+    vis = step.get('visible_objects') or {}
+    if target_obj_id not in vis:
         return []
-    cat = catalog[target_obj_id]['category']
-    return [oid for oid, o in catalog.items() if o['category'] == cat]
+    from cm_benchmark.generation.synsets import objects_are_confusable
+
+    ep = episode or {'object_catalog': {}, 'steps': [step]}
+    return [
+        oid
+        for oid, odata in vis.items()
+        if objects_are_confusable(ep, target_obj_id, oid, vis.get(target_obj_id), odata)
+    ]
 
 
 def format_disambiguator_phrase(info: dict) -> str:
@@ -638,6 +684,7 @@ def resolve_referring_disambiguator(
     agent_pose: Optional[dict] = None,
     *,
     model: Any = None,
+    episode: Optional[dict] = None,
 ) -> Optional[str]:
     """Phrase for templates, or None to skip the candidate.
 
@@ -652,8 +699,9 @@ def resolve_referring_disambiguator(
     from cm_benchmark.generation.disambiguation import resolve_named_objects
 
     si = int(step.get('step') or 0)
-    episode = {'steps': [dict(step, step=si)]}
-    names = resolve_named_objects(episode, [si], [target_obj_id], model=model)
+    ep = dict(episode) if isinstance(episode, dict) else {}
+    ep['steps'] = [dict(step, step=si)]
+    names = resolve_named_objects(ep, [si], [target_obj_id], model=model)
     if names is None or target_obj_id not in names:
         return None
     return names[target_obj_id].phrase

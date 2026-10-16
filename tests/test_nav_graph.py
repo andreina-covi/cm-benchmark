@@ -300,14 +300,18 @@ def test_path_to_nav_actions_roundtrip_reaches_goal(tiny_graph):
     assert actions[0] == 'move_ahead'
     assert format_nav_actions(actions)
     scored = action_sequence_reaches_goal(
-        tiny_graph, 'n0', 'n2', actions, start_heading_deg=heading
+        tiny_graph, 'n0', 'n2', actions, start_heading_deg=heading, goal_tolerance=0.3
     )
     assert scored['parse_ok'] is True
     assert scored['reached_goal'] is True
     assert scored['success'] is True
-    assert scored['end_node'] == 'n2'
     fail = action_sequence_reaches_goal(
-        tiny_graph, 'n0', 'n2', 'rotate_left, rotate_right', start_heading_deg=heading
+        tiny_graph,
+        'n0',
+        'n2',
+        'rotate_left, rotate_right',
+        start_heading_deg=heading,
+        goal_tolerance=0.3,
     )
     assert fail['reached_goal'] is False
     assert fail['success'] is False
@@ -325,7 +329,13 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     )
     walked = [('n0', 'n1'), ('n1', 'n2')]
     scored = score_route_action_sequence(
-        tiny_graph, 'n0', 'n2', actions, walked, start_heading_deg=heading
+        tiny_graph,
+        'n0',
+        'n2',
+        actions,
+        walked,
+        start_heading_deg=heading,
+        goal_tolerance=0.3,
     )
     assert scored['success'] is True
     assert scored['success_raw'] is True
@@ -341,7 +351,8 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     mixed = [('n0', 'n1'), ('n1', 'n2'), ('n0', 'ghost')]
     assert ('n0', 'ghost') not in filter_traversed_to_exported(tiny_graph, mixed)
 
-    # Off-graph walk rejects at the first pose that does not snap.
+    # Extra moves past the grid become no-ops (blocked); length saturates.
+    step = float(tiny_graph.graph.get('agent_move_m') or tiny_graph.graph.get('grid_size'))
     off = score_route_action_sequence(
         tiny_graph,
         'n0',
@@ -349,12 +360,10 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
         ['move_ahead'] * 8,
         walked,
         start_heading_deg=heading,
+        goal_tolerance=0.3,
     )
-    assert off['success'] is False
-    assert off['validity'] is False
-    assert off['efficiency'] == 0.0
-    assert off['route_efficiency'] == 0.0
-    assert off['outcome'] == 'invalid_fail'
+    assert off['simulated_length_m'] < 8 * step
+    assert off.get('end_xz') is not None
 
     # Success is a goal-distance check, not exact node equality.
     near = score_route_action_sequence(
@@ -543,3 +552,82 @@ def test_score_survey_action_sequence_viewed_and_novel(tiny_graph):
     wrapped = score_survey_based_route_planning(item, tiny_graph, novel_actions)
     assert wrapped['success'] is True
     assert wrapped['validity'] is True
+
+
+def test_continuous_kinematics_sin_cos_and_bfs(tiny_graph):
+    from cm_benchmark.generation.nav_graph import (
+        _heading_step_xz,
+        continuous_bfs_actions,
+        simulate_nav_action_sequence,
+    )
+
+    dx, dz = _heading_step_xz(0.0, 0.25)
+    assert abs(dx) < 1e-9
+    assert abs(dz - 0.25) < 1e-9
+    sim = simulate_nav_action_sequence(
+        tiny_graph,
+        'n0',
+        ['move_ahead'],
+        start_heading_deg=0.0,
+        start_pos=(0.0, 0.0, 0.0),
+    )
+    assert sim['ok'] is True
+    x, z = sim['end_xz']
+    assert abs(x) < 1e-6
+    assert abs(z - 0.25) < 1e-6
+    acts = continuous_bfs_actions(
+        tiny_graph,
+        (0.0, 0.0, 0.0),
+        0.0,
+        (0.0, 0.0, 0.5),
+        goal_tolerance=0.3,
+    )
+    assert acts
+    assert 'move_ahead' in acts
+
+
+def _linear_nearest(graph, x: float, z: float):
+    """Reference scan: first strict minimum of ``math.hypot`` in node order."""
+    best_id = None
+    best_d = float('inf')
+    for nid, data in graph.nodes(data=True):
+        pos = data.get('pos')
+        if not pos:
+            continue
+        d = math.hypot(float(x) - pos[0], float(z) - pos[2])
+        if d < best_d:
+            best_id, best_d = nid, d
+    return best_id, best_d
+
+
+def test_nearest_node_xz_matches_linear_scan_including_tie(tiny_graph):
+    from cm_benchmark.generation.nav_graph import nearest_node_xz
+
+    queries = [(0.0, 0.0), (0.125, 0.0), (0.125, 0.125), (0.4, -0.1)]
+    for _nid, data in tiny_graph.nodes(data=True):
+        pos = data['pos']
+        queries.append((pos[0], pos[2]))
+        queries.append((pos[0] + 0.03, pos[2] - 0.02))
+    for x, z in queries:
+        got_id, got_d = nearest_node_xz(tiny_graph, x, z)
+        exp_id, exp_d = _linear_nearest(tiny_graph, x, z)
+        assert got_id == exp_id
+        assert got_d == pytest.approx(exp_d)
+
+    # Midpoint of n0 (0, 0) and n1 (0.25, 0): equal distance, n0 is earlier.
+    assert nearest_node_xz(tiny_graph, 0.125, 0.0)[0] == 'n0'
+    assert _linear_nearest(tiny_graph, 0.125, 0.0)[0] == 'n0'
+
+    tied = nx.Graph()
+    tied.add_node('first', pos=(1.0, 0.0, 0.0))
+    tied.add_node('second', pos=(-1.0, 0.0, 0.0))
+    tied.add_node('far', pos=(0.0, 0.0, 5.0))
+    tied.add_node('nopos')
+    got_id, got_d = nearest_node_xz(tied, 0.0, 0.0)
+    exp_id, exp_d = _linear_nearest(tied, 0.0, 0.0)
+    assert got_id == 'first'
+    assert exp_id == 'first'
+    assert got_d == pytest.approx(exp_d)
+    assert got_d == pytest.approx(1.0)
+    # Cached table is reused and still agrees after a second query.
+    assert nearest_node_xz(tied, 0.0, 4.0)[0] == _linear_nearest(tied, 0.0, 4.0)[0]

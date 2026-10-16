@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -11,8 +11,17 @@ import networkx as nx
 
 from cm_benchmark.generation.config import get_generation_config, legacy_constant
 from cm_benchmark.generation.disambiguation import (
+    active_margin_m,
     aggregate_disambiguation,
+    object_aabb_gap_m,
+    passing_objects_in_frames,
     resolve_named_objects,
+)
+from cm_benchmark.generation.synsets import (
+    confusable_components,
+    group_is_unique,
+    objects_are_confusable,
+    type_of,
 )
 from cm_benchmark.generation.constructs import (
     EGO_DIRECTION_OPTIONS,
@@ -22,6 +31,7 @@ from cm_benchmark.generation.constructs import (
     camera_size_wh,
     find_ego_edge,
     fov_metrics_ok,
+    is_fov_step,
     humanize_receptacle,
     imagined_perspective_label,
     net_pose_changed,
@@ -34,11 +44,14 @@ from cm_benchmark.generation.constructs import (
 from cm_benchmark.generation.geometry import (
     agent_pose_at_step,
     ego_label_from_world_pose,
+    point_in_camera_frustum,
 )
 from cm_benchmark.generation.nav_graph import (
-    build_nav_graph,
     calibrate_view_radius_m,
+    continuous_bfs_actions,
+    continuous_bfs_to_goals,
     count_direction_changes,
+    episode_motion,
     follow_path_actions,
     format_nav_actions,
     node_within_goal_tolerance,
@@ -46,6 +59,8 @@ from cm_benchmark.generation.nav_graph import (
     path_start_heading_deg,
     path_to_nav_actions,
     sanitize_world_layout,
+    score_route_action_sequence,
+    score_survey_action_sequence,
     shortest_path,
     simulate_nav_action_sequence,
     snap_landmark_to_graph,
@@ -56,7 +71,9 @@ from cm_benchmark.generation.nav_graph import (
     traversed_edges_from_snapped,
     traversed_node_ids,
     viewed_edges_from_trajectory,
+    xz_reaches_goal,
 )
+from cm_benchmark.generation.route_replay import recorded_actions_between
 from cm_benchmark.generator.visibility_filters import (
     apply_question_visibility_to_episode,
     visibility_model_from_episode,
@@ -292,7 +309,11 @@ def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
     window: list[tuple[int, str]] = []
     for step in episode.get('steps') or []:
         step_idx = int(step['step'])
-        if start_step <= step_idx <= end_step and step.get('image_path'):
+        if (
+            start_step <= step_idx <= end_step
+            and step.get('image_path')
+            and is_fov_step(episode, step_idx)
+        ):
             window.append((step_idx, step['image_path']))
     if not window:
         return []
@@ -422,6 +443,7 @@ def _referring_disambiguator(
         obj_id,
         _agent_pose_dict(episode, int(step_idx)),
         model=visibility_model_from_episode(episode),
+        episode=episode,
     )
 
 
@@ -483,6 +505,8 @@ def _distinguishable_encoding_sighting(
     the static floors apply. Thin border-clipped scrapes are always rejected
     when ``episode_meta.camera`` size is available.
     """
+    if not is_fov_step(episode, step_idx):
+        return False
     step = step_by_index(episode, int(step_idx))
     if step is None:
         return False
@@ -608,32 +632,35 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
     return out
 
 
-def _count_category_seen(episode: dict, category: str, up_to_step: int) -> int:
-    """Count distinct ids of ``category`` with a distinguishable sighting ≤ up_to_step."""
+def _ids_seen_distinguishable(episode: dict, up_to_step: int) -> set[str]:
+    """Distinct ids with a distinguishable FOV sighting ≤ ``up_to_step``."""
     seen: set[str] = set()
     for step in episode.get('steps') or []:
         si = int(step['step'])
         if si > int(up_to_step):
             continue
-        for oid, odata in (step.get('visible_objects') or {}).items():
-            if (
-                oid not in seen
-                and object_type_from_id(oid, {oid: odata}) == category
-                and _distinguishable_encoding_sighting(episode, si, oid)
-            ):
+        for oid in step.get('visible_objects') or {}:
+            if oid not in seen and _distinguishable_encoding_sighting(episode, si, oid):
                 seen.add(oid)
-    return len(seen)
+    return seen
+
+
+def _count_category_seen(episode: dict, category: str, up_to_step: int) -> int:
+    """Count distinct ids confusable with ``category`` seen ≤ up_to_step."""
+    seen = _ids_seen_distinguishable(episode, up_to_step)
+    seed = next((oid for oid in seen if type_of(episode, oid) == category), None)
+    if seed is None:
+        return 0
+    return len([oid for oid in seen if objects_are_confusable(episode, seed, oid)])
 
 
 def _first_step_with_category(episode: dict, category: str) -> int:
-    """First step listing any object of ``category`` in view (0 if none).
-
-    SWM count items encode from here. Unlike ``_count_category_seen`` this does
-    not require a distinguishable sighting.
-    """
+    """First FOV step listing any object confusable with ``category`` (0 if none)."""
     for step in episode.get('steps') or []:
+        if not is_fov_step(episode, step.get('step')):
+            continue
         for oid, odata in (step.get('visible_objects') or {}).items():
-            if object_type_from_id(oid, {oid: odata}) == category:
+            if type_of(episode, oid, odata) == category:
                 return int(step['step'])
     return 0
 
@@ -668,6 +695,8 @@ def plan_spatial_working_memory(
         if len(out) >= relation_budget:
             break
         step_idx = int(step['step'])
+        if not is_fov_step(episode, step_idx):
+            continue
         non_vis = step.get('non_visible_objects') or {}
         for obj_id, mem in non_vis.items():
             if len(out) >= relation_budget:
@@ -763,14 +792,10 @@ def plan_spatial_working_memory(
             if len(out) >= max_items:
                 break
             step_idx = int(step['step'])
-            if step_idx < min_delay:
+            if step_idx < min_delay or not is_fov_step(episode, step_idx):
                 continue
-            categories = {
-                object_type_from_id(oid, {oid: odata})
-                for s in episode.get('steps') or []
-                if int(s['step']) <= step_idx
-                for oid, odata in (s.get('visible_objects') or {}).items()
-            }
+            seen_ids = _ids_seen_distinguishable(episode, step_idx)
+            categories = {type_of(episode, oid) for oid in seen_ids}
             # Prefer multi-instance categories (load); skip trivial n=1.
             ranked = sorted(
                 (
@@ -874,36 +899,48 @@ def _nearest_floor_anchor(
 ) -> Optional[tuple[str, str]]:
     """Nearest distinguishable landmark within radius of a Floor destination.
 
-    Returns ``(landmark_id, display_name)`` or None (reject that Floor candidate).
-    Display name includes a referring disambiguator when the category is ambiguous.
+    Nearest by AABB-gap, uniquely so by the active proximity margin. Naming
+    uses ``resolve_named_objects`` (proximity, then mark); confusable
+    landmarks are not skipped. ``radius_m`` comes from the placement CSV
+    when present.
     """
     if radius_m is None:
         radius_m = _cfg().invisible_displacement.floor_anchor_radius_m
     target = _xz_from_any(final_pos)
     if target is None:
         return None
-    best = None
-    best_d = float('inf')
+    dest_data = {'aabb_min': (target[0], 0.0, target[1]), 'aabb_max': (target[0], 0.0, target[1])}
+    scored: list[tuple[float, str, str]] = []
+    seen: set[str] = set()
     for si in frame_steps:
         step = step_by_index(episode, si)
         if not step:
             continue
         for oid, odata in (step.get('visible_objects') or {}).items():
-            xz = _xz_from_any(odata.get('position'))
-            if (
-                xz is None
-                or _is_floor_receptacle(oid)
-                or not _distinguishable_encoding_sighting(episode, si, oid)
-            ):
+            if oid in seen or _is_floor_receptacle(oid):
                 continue
-            d = ((xz[0] - target[0]) ** 2 + (xz[1] - target[1]) ** 2) ** 0.5
-            if d <= radius_m and d < best_d:
-                name = _referring_display_name(episode, si, oid)
-                if name is None:
-                    continue
-                best_d = d
-                best = (oid, name)
-    return best
+            if not _distinguishable_encoding_sighting(episode, si, oid):
+                continue
+            gap = object_aabb_gap_m(episode, oid, odata, '_dest', dest_data)
+            if gap is None or gap > float(radius_m):
+                continue
+            seen.add(oid)
+            scored.append((gap, oid, object_type_from_id(oid)))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1]))
+    best_gap, best_id, _best_name = scored[0]
+    margin_m, ratio = active_margin_m(episode)
+    if len(scored) > 1:
+        next_gap = scored[1][0]
+        if next_gap - best_gap < float(margin_m):
+            return None
+        if ratio is not None and next_gap < best_gap * float(ratio):
+            return None
+    names = resolve_named_objects(episode, frame_steps, [best_id])
+    if names is None or best_id not in names:
+        return None
+    return best_id, names[best_id].display_name
 
 
 def _landmark_matches(visible_id: str, landmark_id: str) -> bool:
@@ -1038,15 +1075,114 @@ def _relation_shift_magnitude(
     return 'same_side' if pre == post else 'flipped_side'
 
 
+def _id_raw_frames(step: dict) -> dict:
+    """Per-frame detections before the question-visibility filter, if stored."""
+    from cm_benchmark.generation.step_derived import raw_visible_frames
+
+    frames = raw_visible_frames(step)
+    return frames if frames else {}
+
+
+def _id_raw_odata(episode: dict, step: dict, obj_id: str) -> Optional[dict]:
+    """Detection for ``obj_id`` on the raw FOV, else the step's visible map."""
+    frames = _id_raw_frames(step)
+    if obj_id in frames:
+        from cm_benchmark.generation.step_derived import hydrate_visible_object
+
+        return hydrate_visible_object(episode, step, obj_id, frames[obj_id])
+    odata = (step.get('visible_objects') or {}).get(obj_id)
+    return odata if isinstance(odata, dict) else None
+
+
+def _id_from_position(episode: dict, obj_id: str, at_step: int):
+    """Pre-move pose: object-state at ``at_step``, else the raw encode detection."""
+    from cm_benchmark.generator.ai2thor_nav_generator import state_at_step
+
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    st = state_at_step(track.get('entries') or [], int(at_step))
+    if st and st.get('position') is not None:
+        pos = st.get('position')
+        if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            return (float(pos[0]), float(pos[1]), float(pos[2]))
+    step = step_by_index(episode, int(at_step))
+    if step is not None:
+        odata = _id_raw_odata(episode, step, obj_id)
+        if isinstance(odata, dict) and odata.get('position') is not None:
+            pos = odata.get('position')
+            if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                return (float(pos[0]), float(pos[1]), float(pos[2]))
+    return _object_world_pos(episode, obj_id)
+
+
+def _id_in_raw_fov(episode: dict, obj_id: str, step_idx: int) -> bool:
+    """True when ``obj_id`` is in the camera on this FOV step, before Q&A filtering."""
+    if not is_fov_step(episode, step_idx):
+        return False
+    step = step_by_index(episode, step_idx)
+    if step is None:
+        return False
+    frames = _id_raw_frames(step)
+    if frames:
+        return obj_id in frames
+    return obj_id in (step.get('visible_objects') or {})
+
+
+def _id_encode_sighting(episode: dict, step_idx: int, obj_id: str) -> bool:
+    """Soft ``id_encode`` floors on the raw detection, plus an egocentric edge.
+
+    The question-visibility DecisionTree drops small props (ambiguo) from
+    ``visible_objects``. Encode still uses the raw frame and the soft floors,
+    so a later hide can open a window.
+    """
+    if not is_fov_step(episode, step_idx):
+        return False
+    step = step_by_index(episode, step_idx)
+    if step is None:
+        return False
+    odata = _id_raw_odata(episode, step, obj_id)
+    if not isinstance(odata, dict):
+        return False
+    if not fov_metrics_ok(
+        odata,
+        image_wh=camera_size_wh(episode),
+        model=None,
+        **_id_encode_fov(),
+    ):
+        return False
+    return find_ego_edge(step, obj_id) is not None
+
+
 def _id_displaced_object_name(
     episode: dict, step_idx: int, obj_id: str
 ) -> Optional[tuple[str, str]]:
     """``(object_type, disambiguator)`` for a displaced prop at its encode step.
 
-    Same as ``_display_name_parts`` but with the soft ``ID_ENCODE_FOV_*`` floors
-    (props are small; the DecisionTree still decides when attached).
+    Sighting uses the raw FOV and soft ``id_encode`` floors. Naming still goes
+    through ``resolve_named_objects``; a prop the question filter removed is
+    put back on that one step so the name is not lost with the filter.
     """
-    return _display_name_parts(episode, int(step_idx), obj_id, **_id_encode_fov())
+    if not _id_encode_sighting(episode, int(step_idx), obj_id):
+        return None
+    step = step_by_index(episode, int(step_idx))
+    if step is None:
+        return None
+    odata = _id_raw_odata(episode, step, obj_id)
+    vis = dict(step.get('visible_objects') or {})
+    if isinstance(odata, dict) and obj_id not in vis:
+        vis[obj_id] = odata
+    patched = {
+        'step': int(step_idx),
+        'visible_objects': vis,
+        'agent': step.get('agent'),
+        'edges_egocentric': step.get('edges_egocentric') or [],
+        'image_path': step.get('image_path'),
+    }
+    named_ep = dict(episode)
+    named_ep['steps'] = [patched]
+    names = resolve_named_objects(named_ep, [int(step_idx)], [obj_id])
+    if names is None or obj_id not in names:
+        return None
+    return names[obj_id].object_type, names[obj_id].phrase
 
 
 def _object_hidden_through(
@@ -1055,7 +1191,11 @@ def _object_hidden_through(
     """True if ``obj_id`` is never in view (FOV list or track) in ``[start, end]``."""
     for step in episode.get('steps') or []:
         si = int(step['step'])
-        if start_step <= si <= end_step and obj_id in (step.get('visible_objects') or {}):
+        if (
+            start_step <= si <= end_step
+            and is_fov_step(episode, si)
+            and obj_id in (step.get('visible_objects') or {})
+        ):
             return False
     track = (episode.get('object_state_track') or {}).get(obj_id) or {}
     for entry in track.get('entries') or []:
@@ -1163,11 +1303,19 @@ def _hidden_query_candidates(episode: dict, obj_id: str, at_t: int) -> list[int]
     out: list[int] = []
     for step in episode.get('steps') or []:
         si = int(step['step'])
-        if si < int(at_t):
+        if si < int(at_t) or not is_fov_step(episode, si):
             continue
         if _object_hidden_through(episode, obj_id, int(at_t), si):
             out.append(si)
     return out
+
+
+def _unused_ego_label(used: set[str]) -> Optional[str]:
+    """First ego-bank direction not already in ``used``, or None if none remain."""
+    for lab in EGO_DIRECTION_OPTIONS:
+        if lab not in used:
+            return lab
+    return None
 
 
 def _ego_pool_from_specs(
@@ -1175,9 +1323,11 @@ def _ego_pool_from_specs(
 ) -> tuple[Optional[str], list[str], list[str]]:
     """Map option specs to unique ego labels at query_step.
 
-    Answer is kept first. Distractors that share a label already in the pool
-    are skipped (not fatal) so nearby trial-teleports that collapse to the same
-    cardinal direction do not kill the item.
+    Answer is kept first and is never duplicated. A distractor that lands on
+    the answer's label is replaced with an unused ego-bank direction (tagged
+    ``ego_bank_filler``, so the new label is not claimed as that pose). When
+    no unused label remains, that distractor is omitted; the caller drops the
+    item if the pool is still shorter than ``min_diagnostic_labels``.
     """
     ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
     answer_dir: Optional[str] = None
@@ -1199,12 +1349,27 @@ def _ego_pool_from_specs(
         )
         if not lab:
             continue
-        if lab in labels_seen:
+        if spec.get('is_answer'):
+            if answer_dir is None:
+                answer_dir = lab
+                labels_seen.add(lab)
+                dir_pool.append(lab)
             continue
+        replaced = False
+        if lab in labels_seen:
+            if answer_dir is not None and lab == answer_dir:
+                repaired = _unused_ego_label(labels_seen)
+                if repaired is None:
+                    continue
+                lab = repaired
+                replaced = True
+            else:
+                continue
         labels_seen.add(lab)
         dir_pool.append(lab)
-        if spec.get('is_answer'):
-            answer_dir = lab
+        if replaced:
+            dir_seeds.append('ego_bank_filler')
+            dir_seeds.append(_mode_seed('ego_bank_filler', lab))
         else:
             dir_seeds.append(spec['role'])
             dir_seeds.append(_mode_seed(spec['role'], lab))
@@ -1293,12 +1458,17 @@ def _build_id_frame_steps(
             frame_steps.append(int(si))
     if query_step not in frame_steps:
         frame_steps.append(query_step)
-    return sorted(frame_steps)
+    return sorted({int(si) for si in frame_steps})
 
 
 def _images_for_steps(episode: dict, frame_steps: list[int]) -> list[str]:
-    """Frame paths for ``frame_steps`` in order (steps without an image are skipped)."""
-    return [p for si in frame_steps for p in _img(step_by_index(episode, si))]
+    """Frame paths for FOV-aligned ``frame_steps`` (steps without an image are skipped)."""
+    return [
+        p
+        for si in frame_steps
+        if is_fov_step(episode, si)
+        for p in _img(step_by_index(episode, si))
+    ]
 
 
 def _try_ego_direction_fact(
@@ -1350,6 +1520,13 @@ def _try_ego_direction_fact(
 
 
 def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[PlannedFact]:
+    """Placement-candidate events when present; else ``displacement_events`` rows."""
+    if episode.get('placement_candidates'):
+        return _plan_id_from_placements(episode, max_items)
+    return _plan_id_from_events(episode, max_items)
+
+
+def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     """One item per displacement_events row; direct (recall_direction) or swap modes.
 
     Displaced objects (and swap partners) must be **distinguishable** at an encode
@@ -1523,6 +1700,545 @@ def plan_invisible_displacement(episode: dict, max_items: int = 3) -> list[Plann
     return out
 
 
+def _object_current_receptacle(episode: dict, obj_id: str, at_step: int) -> Optional[str]:
+    """Parent receptacle from object_state at ``at_step``, else the catalog."""
+    from cm_benchmark.generator.ai2thor_nav_generator import state_at_step
+
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    st = state_at_step(track.get('entries') or [], int(at_step))
+    if st and st.get('parent_receptacle'):
+        return st['parent_receptacle']
+    rec = (episode.get('object_catalog') or {}).get(obj_id) or {}
+    return rec.get('parent_receptacle') or rec.get('receptacle')
+
+
+def _xz_distance(a, b) -> Optional[float]:
+    pa, pb = _xz_from_any(a), _xz_from_any(b)
+    if pa is None or pb is None:
+        return None
+    return math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+
+
+def _dest_outside_frustum_through(episode: dict, dest_pos, start_step: int, end_step: int) -> bool:
+    """True when ``dest_pos`` is outside the camera in every step of the window."""
+    hits: list[Optional[bool]] = []
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si < int(start_step) or si > int(end_step):
+            continue
+        agent = step.get('agent') or {}
+        hits.append(
+            point_in_camera_frustum(
+                agent.get('position'), agent.get('rotation'), dest_pos, episode
+            )
+        )
+    if not hits or any(h is True for h in hits) or any(h is None for h in hits):
+        return False
+    return True
+
+
+def _partner_occupying(episode: dict, dest_pos, exclude_id: str) -> Optional[str]:
+    """Object whose AABB contains ``dest_pos`` (swap partner), else None."""
+    dest_xz = _xz_from_any(dest_pos)
+    if dest_xz is None:
+        return None
+    dest_data = {
+        'aabb_min': (dest_xz[0], 0.0, dest_xz[1]),
+        'aabb_max': (dest_xz[0], 0.0, dest_xz[1]),
+    }
+    for oid, rec in (episode.get('object_catalog') or {}).items():
+        if oid == exclude_id or _is_floor_receptacle(oid):
+            continue
+        gap = object_aabb_gap_m(episode, oid, rec, '_dest', dest_data)
+        if gap is not None and gap <= 0.0:
+            return oid
+    return None
+
+
+def _anchor_in_frames(
+    episode: dict,
+    anchor_id: Optional[str],
+    dest_pos,
+    frame_steps: list[int],
+    *,
+    radius_m: Optional[float],
+) -> Optional[tuple[str, str, bool]]:
+    """``(anchor_id, display_name, is_floor)`` when the anchor is nameable.
+
+    Confusable anchors are disambiguated like any named object (proximity,
+    then mark) via ``resolve_named_objects``; they are not skipped.
+    """
+    if _is_floor_receptacle(anchor_id):
+        hit = _nearest_floor_anchor(episode, dest_pos, frame_steps, radius_m=radius_m)
+        if hit is None:
+            return None
+        return hit[0], hit[1], True
+    oid = None
+    for vis in passing_objects_in_frames(episode, frame_steps).values():
+        for vid in vis:
+            if _landmark_matches(vid, anchor_id):
+                oid = vid
+                break
+        if oid is not None:
+            break
+    if oid is None:
+        return None
+    names = resolve_named_objects(episode, frame_steps, [oid])
+    if names is None or oid not in names:
+        return None
+    return oid, names[oid].display_name, False
+
+
+def _receptacle_parent_is_anchor(cand: dict) -> bool:
+    """Receptacle dests require ``parent_receptacle == anchor_id`` (floor always ok)."""
+    if _is_floor_receptacle(cand.get('anchor_id')):
+        return True
+    anchor = cand.get('anchor_id')
+    if not anchor:
+        return False
+    parent = cand.get('parent_receptacle')
+    if parent is None:
+        return True
+    return str(parent) == str(anchor)
+
+
+def _id_object_not_visible(episode: dict, obj_id: str, step_idx: int) -> bool:
+    """True when ``obj_id`` is absent from the raw camera list at ``step_idx``."""
+    step = step_by_index(episode, step_idx)
+    return step is not None and not _id_in_raw_fov(episode, obj_id, step_idx)
+
+
+def _id_hidden_through(episode: dict, obj_id: str, start_step: int, end_step: int) -> bool:
+    """True if ``obj_id`` stays out of the raw camera on every FOV step in ``[start, end]``.
+
+    ``start == end`` is the query itself (latest hide is that frame). An inverted
+    range is not a window. The object-state track is checked on the same
+    inclusive range so a logged in-camera sighting still rejects the window.
+    """
+    start_step, end_step = int(start_step), int(end_step)
+    if end_step < start_step:
+        return False
+    saw = False
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si < start_step or si > end_step or not is_fov_step(episode, si):
+            continue
+        saw = True
+        if _id_in_raw_fov(episode, obj_id, si):
+            return False
+    if not saw:
+        return False
+    track = (episode.get('object_state_track') or {}).get(obj_id) or {}
+    for entry in track.get('entries') or []:
+        t = entry.get('step', entry.get('timestep'))
+        if t is None:
+            continue
+        if start_step <= int(t) <= end_step and (
+            entry.get('in_camera_fov') or entry.get('visible')
+        ):
+            return False
+    return True
+
+
+def _id_windows_for_object(episode: dict, obj_id: str) -> list[tuple[int, int, int]]:
+    """``(encode, move, query)`` windows; move is the latest hide in ``(encode, q]``.
+
+    Encode is the latest raw-FOV sighting that clears the soft ``id_encode``
+    floors. For each later query ``q``, ``move`` is the latest step in
+    ``(encode, q]`` at which the object is not in the raw camera. When that
+    step is ``q`` itself, the destination is checked on that query frame only.
+    The agent must translate between encode and query; a hide that lands on
+    the query does not need a further step after the hide.
+    """
+    fov = [
+        int(step['step'])
+        for step in episode.get('steps') or []
+        if is_fov_step(episode, step.get('step'))
+    ]
+    enc = None
+    for si in fov:
+        if _id_encode_sighting(episode, si, obj_id):
+            enc = si
+    if enc is None:
+        return []
+    later = [si for si in fov if si > enc]
+    windows: list[tuple[int, int, int]] = []
+    for q in later:
+        hidden = [si for si in later if si <= q and _id_object_not_visible(episode, obj_id, si)]
+        if not hidden:
+            continue
+        move = hidden[-1]
+        if not _id_hidden_through(episode, obj_id, move, q):
+            continue
+        if not _has_real_move_between(episode, enc, q):
+            continue
+        windows.append((enc, move, q))
+    # Latest queries only; ranking stays cheap.
+    return windows[-4:]
+
+
+def _placement_is_receptacle_or_floor(cand: dict) -> bool:
+    """Receptacle and floor trials are place/recall items, not required swaps."""
+    kind = str(cand.get('anchor_kind') or '').lower()
+    if kind in ('receptacle', 'floor'):
+        return True
+    return _is_floor_receptacle(cand.get('anchor_id'))
+
+
+def _swap_partner_ready(
+    episode: dict, partner_id: str, move: int, query: int
+) -> Optional[tuple[int, tuple[str, str]]]:
+    """``(partner_encode, (type, phrase))`` when the occupying object can be a swap."""
+    enc_kw = _id_encode_fov()
+    partner_enc = _last_distinguishable_sighting(episode, partner_id, move, **enc_kw)
+    if partner_enc is None:
+        return None
+    if not _object_hidden_through(episode, partner_id, move, query):
+        return None
+    named = _id_displaced_object_name(episode, partner_enc, partner_id)
+    if named is None:
+        return None
+    return partner_enc, named
+
+
+def _placement_swap_decision(
+    episode: dict, cand: dict, obj_id: str, move: int, query: int
+) -> tuple[str, Optional[str], Optional[int], Optional[tuple[str, str]]]:
+    """``(recall|swap|drop, partner_id, partner_encode, partner_name)``.
+
+    A partner that occupies the destination makes a swap only when that partner
+    can be encoded, hidden, and named. Receptacle and floor placements that
+    fail those checks stay recall items. Any other placement that would have
+    been a swap is dropped when the partner fails.
+    """
+    partner_id = _partner_occupying(episode, cand.get('position'), obj_id)
+    if not partner_id:
+        return 'recall', None, None, None
+    ready = _swap_partner_ready(episode, partner_id, move, query)
+    if ready is not None:
+        partner_enc, named = ready
+        return 'swap', partner_id, partner_enc, named
+    if _placement_is_receptacle_or_floor(cand):
+        return 'recall', None, None, None
+    return 'drop', None, None, None
+
+
+def _specs_from_placement(chosen: dict, siblings: list[dict], ev: dict) -> list[dict]:
+    """Chosen dest + original location + other successful candidates as distractors."""
+    specs = [
+        {
+            'role': 'chosen',
+            'receptacle': chosen.get('anchor_id'),
+            'position': chosen.get('position'),
+            'is_answer': True,
+        }
+    ]
+    if ev.get('from_position') is not None or ev.get('from_receptacle'):
+        specs.append(
+            {
+                'role': 'original_location',
+                'receptacle': ev.get('from_receptacle'),
+                'position': ev.get('from_position'),
+                'is_answer': False,
+            }
+        )
+    for row in siblings:
+        if row is chosen:
+            continue
+        if row.get('position') == chosen.get('position') and row.get('anchor_id') == chosen.get(
+            'anchor_id'
+        ):
+            continue
+        specs.append(
+            {
+                'role': 'nearby_receptacle',
+                'receptacle': row.get('anchor_id'),
+                'position': row.get('position'),
+                'is_answer': False,
+            }
+        )
+    return specs
+
+
+def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
+    """Count remaining ``(obj, candidate, window)`` triples after each ID gate."""
+    successful = [
+        row
+        for row in episode.get('placement_candidates') or []
+        if row.get('success') and row.get('obj_id') and row.get('position') is not None
+    ]
+    counts: list[tuple[str, int]] = [('successful_candidates', len(successful))]
+    min_disp = _cfg().invisible_displacement.min_displacement_m
+    by_obj: dict[str, list[dict]] = {}
+    for row in successful:
+        by_obj.setdefault(row['obj_id'], []).append(row)
+
+    triples: list[tuple[str, dict, tuple[int, int, int]]] = []
+    for obj_id, rows in by_obj.items():
+        windows = _id_windows_for_object(episode, obj_id)
+        for cand in rows:
+            for window in windows:
+                triples.append((obj_id, cand, window))
+    counts.append(('encode_hidden_query_window', len(triples)))
+
+    named: list[tuple[str, dict, tuple[int, int, int], tuple[str, str]]] = []
+    for obj_id, cand, window in triples:
+        named_obj = _id_displaced_object_name(episode, window[0], obj_id)
+        if named_obj is not None:
+            named.append((obj_id, cand, window, named_obj))
+    counts.append(('displaced_object_nameable', len(named)))
+
+    after_disp = []
+    for obj_id, cand, window, named_obj in named:
+        from_pos = _id_from_position(episode, obj_id, window[0])
+        disp = _xz_distance(from_pos, cand['position'])
+        if disp is not None and disp >= min_disp:
+            after_disp.append((obj_id, cand, window, named_obj, from_pos, disp))
+    counts.append(('min_displacement', len(after_disp)))
+
+    after_rec = []
+    for obj_id, cand, window, named_obj, from_pos, disp in after_disp:
+        from_rec = _object_current_receptacle(episode, obj_id, window[0])
+        if from_rec and cand.get('anchor_id') and _landmark_matches(cand['anchor_id'], from_rec):
+            continue
+        after_rec.append((obj_id, cand, window, named_obj, from_pos, disp, from_rec))
+    counts.append(('dest_not_current_receptacle', len(after_rec)))
+
+    after_parent = []
+    for row in after_rec:
+        if _receptacle_parent_is_anchor(row[1]):
+            after_parent.append(row)
+    counts.append(('receptacle_parent_eq_anchor', len(after_parent)))
+
+    after_frustum = []
+    for obj_id, cand, window, named_obj, from_pos, disp, from_rec in after_parent:
+        _enc, move, query = window
+        if _dest_outside_frustum_through(episode, cand['position'], move, query):
+            after_frustum.append((obj_id, cand, window, named_obj, from_pos, disp, from_rec))
+    counts.append(('dest_outside_frustum', len(after_frustum)))
+
+    after_anchor = []
+    for obj_id, cand, window, named_obj, from_pos, disp, from_rec in after_frustum:
+        enc, move, query = window
+        radius = cand.get('radius_m')
+        if radius is None:
+            radius = _cfg().invisible_displacement.floor_anchor_radius_m
+        frame_steps = _build_id_frame_steps(enc, move, query)
+        anchor = _anchor_in_frames(
+            episode, cand.get('anchor_id'), cand['position'], frame_steps, radius_m=float(radius)
+        )
+        if anchor is not None:
+            after_anchor.append(
+                (obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius)
+            )
+    counts.append(('anchor_nameable', len(after_anchor)))
+
+    after_partner = []
+    for obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius in after_anchor:
+        _enc, move, query = window
+        decision, _partner, _penc, _pnamed = _placement_swap_decision(
+            episode, cand, obj_id, move, query
+        )
+        if decision == 'drop':
+            continue
+        after_partner.append(
+            (obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius)
+        )
+    counts.append(('swap_partner_ok', len(after_partner)))
+
+    n_options = 0
+    for obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius in after_partner:
+        enc, move, query = window
+        object_type, disambiguator = named_obj
+        anchor_id, new_location, is_floor = anchor
+        decision, partner_id, _penc, _pnamed = _placement_swap_decision(
+            episode, cand, obj_id, move, query
+        )
+        if decision == 'drop':
+            continue
+        extra_fields: dict = {
+            'new_location': new_location,
+            'to_receptacle': cand.get('anchor_id'),
+            'from_receptacle': from_rec,
+            'floor_anchor_id': anchor_id if is_floor else None,
+            'floor_anchor_landmark': new_location if is_floor else None,
+        }
+        ev = {
+            'obj_id': obj_id,
+            'at_timestep': move,
+            'from_receptacle': from_rec,
+            'to_receptacle': cand.get('anchor_id'),
+            'from_position': from_pos,
+            'to_position': cand['position'],
+            'hidden_during': True,
+        }
+        images = _images_for_steps(episode, _build_id_frame_steps(enc, move, query))
+        if not images:
+            continue
+        fact = _try_ego_direction_fact(
+            episode,
+            ev,
+            obj_id=obj_id,
+            object_type=object_type,
+            enc_idx=enc,
+            query_step=query,
+            at_t=move,
+            images=images,
+            specs=_specs_from_placement(cand, by_obj[obj_id], ev),
+            template_mode='swap' if decision == 'swap' else 'recall_direction',
+            answer_source=['funnel'],
+            extra_fields=extra_fields,
+            disambiguator=disambiguator,
+        )
+        if fact is not None:
+            n_options += 1
+    counts.append(('diagnostic_options', n_options))
+    return counts
+
+
+def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedFact]:
+    """Build ID items from successful ``placement_candidates`` + hidden walk windows."""
+    successful = [
+        row
+        for row in episode.get('placement_candidates') or []
+        if row.get('success') and row.get('obj_id') and row.get('position') is not None
+    ]
+    if not successful:
+        return [
+            PlannedFact(
+                construct='invisible_displacement',
+                status='unsupported',
+                reason='no_successful_placement_candidates',
+            )
+        ]
+
+    min_disp = _cfg().invisible_displacement.min_displacement_m
+    by_obj: dict[str, list[dict]] = {}
+    for row in successful:
+        by_obj.setdefault(row['obj_id'], []).append(row)
+
+    ranked: list[tuple[tuple, PlannedFact]] = []
+    for obj_id, rows in by_obj.items():
+        named_cache: dict[int, Optional[tuple[str, str]]] = {}
+        for enc, move, query in _id_windows_for_object(episode, obj_id):
+            if enc not in named_cache:
+                named_cache[enc] = _id_displaced_object_name(episode, enc, obj_id)
+            named = named_cache[enc]
+            if named is None:
+                continue
+            object_type, disambiguator = named
+            from_rec = _object_current_receptacle(episode, obj_id, enc)
+            from_pos = _id_from_position(episode, obj_id, enc)
+            frame_steps = _build_id_frame_steps(enc, move, query)
+            for cand in rows:
+                dest = cand['position']
+                disp = _xz_distance(from_pos, dest)
+                if disp is None or disp < min_disp:
+                    continue
+                if from_rec and cand.get('anchor_id') and _landmark_matches(
+                    cand['anchor_id'], from_rec
+                ):
+                    continue
+                if not _receptacle_parent_is_anchor(cand):
+                    continue
+                if not _dest_outside_frustum_through(episode, dest, move, query):
+                    continue
+                radius = cand.get('radius_m')
+                if radius is None:
+                    radius = _cfg().invisible_displacement.floor_anchor_radius_m
+                anchor = _anchor_in_frames(
+                    episode,
+                    cand.get('anchor_id'),
+                    dest,
+                    frame_steps,
+                    radius_m=float(radius),
+                )
+                if anchor is None:
+                    continue
+                anchor_id, new_location, is_floor = anchor
+                decision, partner_id, partner_enc, partner_named = _placement_swap_decision(
+                    episode, cand, obj_id, move, query
+                )
+                if decision == 'drop':
+                    continue
+                extra_steps = []
+                extra_fields: dict = {
+                    'new_location': new_location,
+                    'to_receptacle': cand.get('anchor_id'),
+                    'from_receptacle': from_rec,
+                    'floor_anchor_id': anchor_id if is_floor else None,
+                    'floor_anchor_landmark': new_location if is_floor else None,
+                    'floor_anchor_radius_m': float(radius) if is_floor else None,
+                    'relation_shift_magnitude': _relation_shift_magnitude(
+                        episode, from_pos, dest, query
+                    ),
+                }
+                template_mode = 'recall_direction'
+                answer_source = [
+                    f'placement_candidates[obj_id={obj_id},anchor_id={cand.get("anchor_id")}].position',
+                    f'object_state_track[{obj_id}]',
+                    f'agent_trajectory[{query}]',
+                ]
+                if decision == 'swap' and partner_id and partner_named is not None:
+                    extra_steps.append(int(partner_enc))
+                    extra_fields['other_object_type'] = partner_named[0]
+                    extra_fields['swap_partner_id'] = partner_id
+                    template_mode = 'swap'
+                    answer_source.append(
+                        f'placement_candidates[obj_id={obj_id}].swap_partner={partner_id}'
+                    )
+                ev = {
+                    'obj_id': obj_id,
+                    'at_timestep': move,
+                    'from_receptacle': from_rec,
+                    'to_receptacle': cand.get('anchor_id'),
+                    'from_position': from_pos,
+                    'to_position': dest,
+                    'hidden_during': True,
+                    'swap_partner_id': partner_id if decision == 'swap' else None,
+                    'moved_via': 'swap' if decision == 'swap' else 'place',
+                    'radius_m': radius,
+                }
+                images = _images_for_steps(
+                    episode, _build_id_frame_steps(enc, move, query, extra_steps=extra_steps)
+                )
+                if not images:
+                    continue
+                specs = _specs_from_placement(cand, rows, ev)
+                fact = _try_ego_direction_fact(
+                    episode,
+                    ev,
+                    obj_id=obj_id,
+                    object_type=object_type,
+                    enc_idx=enc,
+                    query_step=query,
+                    at_t=move,
+                    images=images,
+                    specs=specs,
+                    template_mode=template_mode,
+                    answer_source=answer_source,
+                    extra_fields=extra_fields,
+                    disambiguator=disambiguator,
+                )
+                if fact is None:
+                    continue
+                n_diag = len(fact.options_pool or [])
+                ranked.append(((-int(query), -n_diag, -float(disp), obj_id), fact))
+
+    if not ranked:
+        return [
+            PlannedFact(
+                construct='invisible_displacement',
+                status='unsupported',
+                reason=(
+                    'no_placement_with_distinguishable_encode_hidden_query_and_unique_options'
+                ),
+            )
+        ]
+    ranked.sort(key=lambda row: row[0])
+    return [fact for _key, fact in ranked[: max(0, int(max_items))]]
+
+
 def _agent_pose_dict(episode: dict, step_idx: int) -> Optional[dict]:
     """``{x, y, z, heading}`` of the agent at a step (heading = yaw), or None."""
     pos, rot = agent_pose_at_step(episode, step_idx)
@@ -1610,6 +2326,8 @@ def plan_spatial_updating(
     seen_answers: dict[tuple[str, int], str] = {}
     for step in episode.get('steps') or []:
         step_idx = int(step['step'])
+        if not is_fov_step(episode, step_idx):
+            continue
         for obj_id, mem in (step.get('non_visible_objects') or {}).items():
             if obj_id in displaced:
                 continue
@@ -1701,10 +2419,10 @@ def plan_allocentric_encoding(episode: dict, max_items: int = 1) -> list[Planned
 
 
 
-def _rotation_deg(episode: dict) -> float:
-    """Agent rotation step (degrees) from ``episode_meta.agent``; 45° if not exported."""
-    rot = ((episode.get('episode_meta') or {}).get('agent') or {}).get('rotation_deg')
-    return _cfg().class4.fallback.agent_rotation_deg if rot is None else float(rot)
+def _rotation_deg(episode: dict, graph=None) -> float:
+    """Agent rotation step from ``episode_meta.motion``, else agent/config/graph."""
+    _move, rot = episode_motion(episode, graph)
+    return float(rot)
 
 
 def _agent_yaw_at_step(episode: dict, step_idx: int) -> Optional[float]:
@@ -1714,6 +2432,108 @@ def _agent_yaw_at_step(episode: dict, step_idx: int) -> Optional[float]:
     if r is None:
         return None
     return float(r[1]) % 360.0
+
+
+def _xyz_tuple(pos) -> Optional[tuple[float, float, float]]:
+    """``(x, y, z)`` from a dict or sequence, else None."""
+    d = xyz_as_dict(pos)
+    if d is None:
+        return None
+    return (float(d['x']), float(d['y']), float(d['z']))
+
+
+def _start_pose_at_step(episode: dict, step_idx: int):
+    """``([x, y, z], heading_deg)`` of the agent at ``step_idx``, else ``(None, None)``."""
+    rec = _agent_pose_dict(episode, int(step_idx))
+    if rec is None:
+        return None, None
+    return [rec['x'], rec['y'], rec['z']], rec['heading']
+
+
+def _recorded_route_reference(
+    episode: dict,
+    graph,
+    *,
+    t0: int,
+    t1: int,
+    source_node: str,
+    goal_pos,
+    start_pos,
+    start_heading_deg: Optional[float],
+):
+    """Recorded actions between source and goal, verified by continuous replay."""
+    actions = recorded_actions_between(episode, t0, t1)
+    if not actions:
+        return None
+    heading = 0.0 if start_heading_deg is None else float(start_heading_deg)
+    sim = simulate_nav_action_sequence(
+        graph,
+        source_node,
+        actions,
+        start_heading_deg=heading,
+        start_pos=start_pos,
+    )
+    if not sim.get('ok'):
+        return None
+    goal_xyz = _xyz_tuple(goal_pos)
+    if not xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance']):
+        return None
+    return {
+        'actions': actions,
+        'answer_label': format_nav_actions(actions),
+        'start_heading_deg': heading,
+        'turn_count': count_direction_changes(actions),
+    }
+
+
+def _survey_bfs_reference(
+    graph,
+    *,
+    source_node: str,
+    start_pos,
+    start_heading_deg: Optional[float],
+    goal_pos,
+    allowed_nodes,
+    allowed_edges=None,
+    actions=None,
+):
+    """Continuous reference from the source pose to the goal.
+
+    Callers must already have passed the graph geodesic gates. ``actions`` is
+    the sequence from a shared source flood; when omitted, one goal is searched
+    on its own. The search does not apply the geodesic gates itself.
+    """
+    heading = 0.0 if start_heading_deg is None else float(start_heading_deg)
+    if actions is None:
+        actions = continuous_bfs_actions(
+            graph,
+            start_pos,
+            heading,
+            goal_pos,
+            allowed_nodes=allowed_nodes,
+            allowed_edges=allowed_edges,
+        )
+    if not actions:
+        return None
+    sim = simulate_nav_action_sequence(
+        graph,
+        source_node,
+        actions,
+        start_heading_deg=heading,
+        start_pos=start_pos,
+        allowed_nodes=allowed_nodes,
+        allowed_edges=allowed_edges,
+    )
+    if not sim.get('ok'):
+        return None
+    if not xz_reaches_goal(sim.get('end_xz'), _xyz_tuple(goal_pos), sim['goal_tolerance']):
+        return None
+    return {
+        'actions': actions,
+        'answer_label': format_nav_actions(actions),
+        'start_heading_deg': heading,
+        'turn_count': count_direction_changes(actions),
+    }
 
 
 def _reference_nav_actions(
@@ -1920,8 +2740,10 @@ def select_landmark_candidates(
     if not candidates:
         return []
     if unique_category:
-        counts = Counter(lm.get('name') for lm in candidates)
-        candidates = [lm for lm in candidates if counts.get(lm.get('name')) == 1]
+        ids = [lm['obj_id'] for lm in candidates if lm.get('obj_id')]
+        candidates = [
+            lm for lm in candidates if lm.get('obj_id') and group_is_unique(episode, lm['obj_id'], ids)
+        ]
         if not candidates:
             return []
     by_region: dict[str, list[dict]] = {}
@@ -1954,18 +2776,41 @@ def _percentile_of(values: Sequence[float], percentile: float) -> float:
     return ordered[idx]
 
 
+def _pair_component_ids(pair_graph, node_ids: Sequence[str]) -> dict[str, int]:
+    """Connected-component id on ``pair_graph`` for nodes that appear in it."""
+    component_of: dict[str, int] = {}
+    cid = 0
+    seen: set[str] = set()
+    for nid in node_ids:
+        if nid in seen or nid not in pair_graph:
+            continue
+        for member in nx.node_connected_component(pair_graph, nid):
+            if member not in component_of:
+                component_of[member] = cid
+            seen.add(member)
+        cid += 1
+    return component_of
+
+
 def _scene_pair_geodesics_and_ratios(
-    graph, node_ids: Sequence[str]
+    graph,
+    node_ids: Sequence[str],
+    *,
+    pair_graph=None,
 ) -> tuple[list[float], list[float]]:
     """Full-graph geodesic metres and geo/eucl ratios for unique node pairs.
 
     One Dijkstra per source. Pairs with no path or zero Euclidean are skipped
     (same filters ``_class4_pair_reject_reason`` applies before the ratio gate).
+    When ``pair_graph`` is set (route: the traversed_edges subgraph), a pair
+    is included only if both nodes share a connected component there. Lengths
+    stay on ``graph`` so the floor matches the full-graph pair gate.
     """
 
     uniq = [n for n in dict.fromkeys(node_ids) if n in graph]
     if len(uniq) < 2:
         return [], []
+    component_of = _pair_component_ids(pair_graph, uniq) if pair_graph is not None else None
     geos: list[float] = []
     ratios: list[float] = []
     xz: dict[str, Optional[tuple[float, float]]] = {}
@@ -1978,7 +2823,12 @@ def _scene_pair_geodesics_and_ratios(
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             continue
         p0 = xz[src]
+        src_comp = None if component_of is None else component_of.get(src)
         for dst in uniq[i + 1 :]:
+            if component_of is not None and (
+                src_comp is None or component_of.get(dst) != src_comp
+            ):
+                continue
             d = lengths.get(dst)
             if d is None or d <= 1e-9:
                 continue
@@ -1998,15 +2848,23 @@ def calibrate_scene_geodesic_floor_m(
     node_ids: Sequence[str],
     *,
     percentile: Optional[float] = None,
+    pair_graph=None,
 ) -> Optional[float]:
     """Scene-relative pair-length floor: a percentile of this scene's own spread.
 
     Same shape as ``calibrate_view_radius_m``. Computed once per episode.
     Returns None when there is no usable distribution (absolute band only).
+    ``pair_graph`` limits the pool (route passes the traversed subgraph).
     """
     if percentile is None:
         percentile = _cfg().class4.scene_geodesic_percentile
-    return _scene_class4_floors(graph, node_ids, ratio_cap=math.inf, percentile=percentile)[0]
+    return _scene_class4_floors(
+        graph,
+        node_ids,
+        ratio_cap=math.inf,
+        percentile=percentile,
+        pair_graph=pair_graph,
+    )[0]
 
 
 def calibrate_scene_ratio_floor(
@@ -2015,18 +2873,26 @@ def calibrate_scene_ratio_floor(
     *,
     percentile: Optional[float] = None,
     cap: Optional[float] = None,
+    pair_graph=None,
 ) -> float:
     """Scene-relative geo/eucl floor, never above ``cap``.
 
     Same pairs and percentile as ``calibrate_scene_geodesic_floor_m``. An
     open-plan scene whose median detour sits below the Habitat 1.1 cap gets
-    that lower, achievable bar instead of zero items.
+    that lower, achievable bar instead of zero items. ``pair_graph`` limits
+    the pool the same way as the geodesic floor.
     """
     if percentile is None:
         percentile = _cfg().class4.scene_geodesic_percentile
     if cap is None:
         cap = _cfg().class4.route.max_ratio_floor
-    return _scene_class4_floors(graph, node_ids, ratio_cap=cap, percentile=percentile)[1]
+    return _scene_class4_floors(
+        graph,
+        node_ids,
+        ratio_cap=cap,
+        percentile=percentile,
+        pair_graph=pair_graph,
+    )[1]
 
 
 def _scene_class4_floors(
@@ -2035,15 +2901,20 @@ def _scene_class4_floors(
     *,
     ratio_cap: float,
     percentile: Optional[float] = None,
+    pair_graph=None,
 ) -> tuple[Optional[float], float]:
     """Both scene-relative class-4 floors from one Dijkstra pass.
 
     Returns ``(geodesic floor or None, min(ratio_cap, ratio percentile))``;
     the ratio floor is ``ratio_cap`` when the scene has no usable pair.
+    ``pair_graph`` restricts both floors to the same pair list (route:
+    walked landmark pairs). Survey leaves it unset and keeps every pair.
     """
     if percentile is None:
         percentile = _cfg().class4.scene_geodesic_percentile
-    geos, ratios = _scene_pair_geodesics_and_ratios(graph, node_ids)
+    geos, ratios = _scene_pair_geodesics_and_ratios(
+        graph, node_ids, pair_graph=pair_graph
+    )
     geo_floor = _percentile_of(geos, percentile) if geos else None
     if not ratios:
         return geo_floor, float(ratio_cap)
@@ -2165,15 +3036,14 @@ def _build_landmark_node_map(
 
 
 def _load_nav_graph_or_none(episode: dict):
+    """The ``episode_start`` nav graph, or None if missing or unparsable.
 
-    """The ``episode_start`` nav graph, or None if missing or unparsable."""
-    raw = episode.get('nav_graph')
-    if not raw:
-        return None
-    try:
-        return build_nav_graph(raw, snapshot='episode_start')
-    except Exception:
-        return None
+    Fat episodes may still embed ``nav_graph``. Slim episodes store
+    ``nav_graph_path`` and the graph is read from that SPOC file.
+    """
+    from cm_benchmark.generation.nav_graph import load_episode_nav_graph
+
+    return load_episode_nav_graph(episode)
 
 
 def _episode_traversed_subgraph(episode: dict, graph):
@@ -2184,6 +3054,30 @@ def _episode_traversed_subgraph(episode: dict, graph):
     edges = traversed_edges_from_snapped(snapped)
     sub = subgraph_from_traversed_edges(graph, edges)
     return snapped, traversed, edges, sub
+
+
+def _episode_confusable_pool(episode: dict, extra_ids: Sequence[str]) -> list[str]:
+    """Catalog ids plus the endpoints being named (episode-wide confusable pool)."""
+    ids = {oid for oid in extra_ids if oid}
+    ids.update(oid for oid in (episode.get('object_catalog') or {}) if oid)
+    return list(ids)
+
+
+def _unique_endpoint_ids(episode: dict, obj_ids: Sequence[str]) -> set[str]:
+    """Endpoints with no confusable sibling in the episode pool."""
+    pool = _episode_confusable_pool(episode, obj_ids)
+    return {oid for oid in obj_ids if oid and group_is_unique(episode, oid, pool)}
+
+
+def _class4_emit_key(
+    unique_pair: bool, turn_count: int, geodesic_m: float, hops: int
+) -> tuple:
+    """Unique endpoint pairs sort ahead of confusable ones, then harder routes.
+
+    Colour marks stay the naming fallback when a confusable landmark is needed
+    to fill the item. A unique pair that passed the other gates is emitted first.
+    """
+    return (1 if unique_pair else 0, int(turn_count), float(geodesic_m), int(hops))
 
 
 def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]:
@@ -2225,7 +3119,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
 
-    rot = _rotation_deg(episode)
     min_hops = _cfg().class4.route.min_hop_count
     traversed_edge_list = _serialize_traversed_edges(edges)
     rejects: Counter = Counter()
@@ -2244,9 +3137,15 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             oid,
         ),
     )
+    unique_ids = _unique_endpoint_ids(episode, ordered_ids)
     route_nodes = [id_to_node[oid] for oid in ordered_ids]
+    # Length and detour floors use walked landmark pairs only. Survey keeps
+    # the full-scene pool (it does not pass the traversed subgraph).
     scene_geodesic_floor, scene_ratio_floor = _scene_class4_floors(
-        graph, route_nodes, ratio_cap=_cfg().class4.route.max_ratio_floor
+        graph,
+        route_nodes,
+        ratio_cap=_cfg().class4.route.max_ratio_floor,
+        pair_graph=walked,
     )
     # Walk order enumerates pairs; the emitted subset is ranked by difficulty
     # below. Taking the first passing pairs in walk order yields the walk's
@@ -2311,16 +3210,36 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     rejects['no_real_move'] += 1
                     continue
 
-            ref = _reference_nav_actions(
-                walked,
-                path,
-                rot,
-                start_heading_deg=_agent_yaw_at_step(
-                    episode, int(meta[src_id]['first_seen_step'])
-                ),
-                verify_edges=edges,
+            t_src = int(meta[src_id]['first_seen_step'])
+            t_goal = int(meta[goal_id]['first_seen_step'])
+            if t_goal <= t_src:
+                rejects['goal_not_after_source'] += 1
+                continue
+            start_pos, start_heading = _start_pose_at_step(episode, t_src)
+            ref = _recorded_route_reference(
+                episode,
+                graph,
+                t0=t_src,
+                t1=t_goal,
+                source_node=n0,
+                goal_pos=meta[goal_id]['position'],
+                start_pos=start_pos,
+                start_heading_deg=start_heading,
             )
             if ref is None:
+                rejects['actions_unusable'] += 1
+                continue
+            scored = score_route_action_sequence(
+                graph,
+                n0,
+                n1,
+                ref['actions'],
+                edges,
+                start_heading_deg=ref['start_heading_deg'],
+                start_pos=start_pos,
+                goal_pos=meta[goal_id]['position'],
+            )
+            if scored.get('outcome') != 'valid_success':
                 rejects['actions_unusable'] += 1
                 continue
             turn_count = int(ref['turn_count'])
@@ -2332,10 +3251,6 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 rejects[f'turns_gt_{_cfg().class4.route.max_turns}'] += 1
                 continue
 
-            t0 = int(meta[src_id]['first_seen_step'])
-            t1 = int(meta[goal_id]['first_seen_step'])
-            if t1 < t0:
-                t0, t1 = t1, t0
             images, image_roles = merge_role_images(
                 [
                     (
@@ -2353,12 +3268,12 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 PlannedFact(
                     construct='route_knowledge',
                     status='ok',
-                    query_step=t1,
-                    encoding_step=t0,
+                    query_step=t_goal,
+                    encoding_step=t_src,
                     answer_label=ref['answer_label'],
                     answer_source=[
-                        f'nav_graph.traversed_edges.shortest_path[{n0}→{n1}]',
-                        'follow_path_actions(traversed_subgraph)',
+                        f'agent_actions[{t_src}<step<={t_goal}]',
+                        f'agent_trajectory[{t_src}→{t_goal}]',
                     ],
                     image_paths=images,
                     extra={
@@ -2387,6 +3302,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'geodesic_m': round(geodesic_m, 3),
                         'action_sequence': ref['actions'],
                         'start_heading_deg': ref['start_heading_deg'],
+                        'start_pos': start_pos,
+                        'goal_pos': list(_xyz_tuple(meta[goal_id]['position']) or []),
                         'traversed_edges': traversed_edge_list,
                         'answer_format': 'action_sequence',
                         'scoring': 'success_validity_efficiency',
@@ -2400,8 +3317,18 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     },
                 )
             )
-            # Harder first: more real turns, then longer geodesic.
-            candidates.append(((turn_count, geodesic_m, hops), fact))
+            # Unique names first, then harder: more real turns, then longer geodesic.
+            candidates.append(
+                (
+                    _class4_emit_key(
+                        src_id in unique_ids and goal_id in unique_ids,
+                        turn_count,
+                        geodesic_m,
+                        hops,
+                    ),
+                    fact,
+                )
+            )
 
     if not candidates:
         return [
@@ -2416,6 +3343,230 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
         ]
     candidates.sort(key=lambda item: item[0], reverse=True)
     return [fact for _rank, fact in candidates[:max_items]]
+
+
+_ROUTE_PAIR_GATES = (
+    'landmark_pairs_on_walked_nodes',
+    'same_node',
+    'geodesic_scene_floor',
+    'detour_ratio',
+    'names',
+    'walked_path',
+    'hops',
+    'real_move',
+    'recorded_actions_replay',
+    'turn_band',
+)
+
+
+def route_pair_funnel(episode: dict) -> dict:
+    """Pairs left after each ``plan_route_knowledge`` gate, plus percentile pools.
+
+    Route's length percentile uses walked landmark pairs only
+    (``pair_graph`` = traversed subgraph). Survey's floor, reported alongside,
+    uses the full-scene landmark pool and does not pass ``pair_graph``.
+    """
+    zeros = [(name, 0) for name in _ROUTE_PAIR_GATES]
+    info = {
+        'gates': zeros,
+        'walked_pair_count': 0,
+        'full_scene_pair_count': 0,
+        'survey_pair_count': 0,
+        'route_geodesic_floor': None,
+        'full_scene_geodesic_floor': None,
+        'survey_geodesic_floor': None,
+        'route_percentile_pair_graph': 'traversed',
+        'survey_percentile_pair_graph': 'full',
+    }
+    graph = _load_nav_graph_or_none(episode)
+    if graph is None:
+        return info
+    _snapped, traversed, edges, walked = _episode_traversed_subgraph(episode, graph)
+    landmarks = select_landmark_candidates(episode, unique_category=False)
+    id_to_node, _names, meta = _build_landmark_node_map(
+        graph,
+        landmarks,
+        candidate_nodes=traversed,
+        max_distance_m=_cfg().class4.landmark_snap_m,
+    )
+    ordered_ids = sorted(
+        [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node],
+        key=lambda oid: (
+            traversed.index(id_to_node[oid]) if id_to_node[oid] in traversed else 1_000_000_000,
+            int(meta[oid].get('first_seen_step') or 0),
+            oid,
+        ),
+    )
+    route_nodes = [id_to_node[oid] for oid in ordered_ids]
+    percentile = _cfg().class4.scene_geodesic_percentile
+    walked_geos, _walked_ratios = _scene_pair_geodesics_and_ratios(
+        graph, route_nodes, pair_graph=walked
+    )
+    full_geos, _full_ratios = _scene_pair_geodesics_and_ratios(graph, route_nodes)
+    route_floor, _route_ratio = _scene_class4_floors(
+        graph,
+        route_nodes,
+        ratio_cap=_cfg().class4.route.max_ratio_floor,
+        pair_graph=walked,
+    )
+    full_floor, _full_ratio_floor = _scene_class4_floors(
+        graph, route_nodes, ratio_cap=_cfg().class4.route.max_ratio_floor
+    )
+    if walked_geos:
+        assert route_floor == _percentile_of(walked_geos, percentile)
+    assert len(walked_geos) <= len(full_geos)
+    survey_map, _survey_names, _survey_meta = _build_landmark_node_map(
+        graph, landmarks, max_distance_m=_cfg().class4.landmark_snap_m
+    )
+    survey_ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in survey_map]
+    survey_nodes = [survey_map[oid] for oid in survey_ids]
+    survey_geos, _survey_ratios = _scene_pair_geodesics_and_ratios(graph, survey_nodes)
+    survey_floor, _survey_ratio_floor = _scene_class4_floors(
+        graph, survey_nodes, ratio_cap=_cfg().class4.survey.max_ratio_floor
+    )
+    info.update(
+        {
+            'walked_pair_count': len(walked_geos),
+            'full_scene_pair_count': len(full_geos),
+            'survey_pair_count': len(survey_geos),
+            'route_geodesic_floor': route_floor,
+            'full_scene_geodesic_floor': full_floor,
+            'survey_geodesic_floor': survey_floor,
+        }
+    )
+    print(
+        f"route percentile pairs: walked={len(walked_geos)} "
+        f"same_walked_nodes_without_component_filter={len(full_geos)} "
+        f"floor_walked={route_floor} floor_same_nodes={full_floor}"
+    )
+    print(
+        f"survey percentile pairs: full_scene={len(survey_geos)} "
+        f"floor={survey_floor} (no traversed filter)"
+    )
+    if survey_geos:
+        assert survey_floor == _percentile_of(survey_geos, percentile)
+    if len(traversed) < 3 or walked.number_of_edges() < 1 or len(ordered_ids) < 2:
+        return info
+
+    min_hops = _cfg().class4.route.min_hop_count
+    max_nodes = _cfg().class4.route.max_subpath_nodes
+    min_turns = _cfg().class4.route.min_turns
+    max_turns = _cfg().class4.route.max_turns
+    pairs = [(src, goal) for i, src in enumerate(ordered_ids) for goal in ordered_ids[i + 1 :]]
+    gates: list[tuple[str, int]] = [('landmark_pairs_on_walked_nodes', len(pairs))]
+
+    pairs = [(s, g) for s, g in pairs if id_to_node[s] != id_to_node[g]]
+    gates.append(('same_node', len(pairs)))
+
+    kept = []
+    for src, goal in pairs:
+        reason = _class4_pair_reject_reason(
+            graph,
+            meta[src]['position'],
+            meta[goal]['position'],
+            id_to_node[src],
+            id_to_node[goal],
+            min_scene_geodesic_m=route_floor,
+        )
+        if reason is None:
+            kept.append((src, goal))
+    pairs = kept
+    gates.append(('geodesic_scene_floor', len(pairs)))
+
+    kept = []
+    for src, goal in pairs:
+        reason = _class4_pair_reject_reason(
+            graph,
+            meta[src]['position'],
+            meta[goal]['position'],
+            id_to_node[src],
+            id_to_node[goal],
+            min_ratio=_route_ratio,
+            min_scene_geodesic_m=route_floor,
+        )
+        if reason is None:
+            kept.append((src, goal))
+    pairs = kept
+    gates.append(('detour_ratio', len(pairs)))
+
+    kept = []
+    for src, goal in pairs:
+        source = _referring_display_name(episode, int(meta[src]['first_seen_step']), src)
+        goal_name = _referring_display_name(episode, int(meta[goal]['first_seen_step']), goal)
+        if source and goal_name and source != goal_name:
+            kept.append((src, goal))
+    pairs = kept
+    gates.append(('names', len(pairs)))
+
+    kept_paths = []
+    for src, goal in pairs:
+        n0, n1 = id_to_node[src], id_to_node[goal]
+        try:
+            path = shortest_path(walked, n0, n1)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+        if len(path) < 2:
+            continue
+        kept_paths.append((src, goal, path))
+    gates.append(('walked_path', len(kept_paths)))
+
+    kept_paths = [
+        row
+        for row in kept_paths
+        if (len(row[2]) - 1) >= min_hops and len(row[2]) <= max_nodes
+    ]
+    gates.append(('hops', len(kept_paths)))
+
+    moved = []
+    for src, goal, path in kept_paths:
+        t_src = int(meta[src]['first_seen_step'])
+        t_goal = int(meta[goal]['first_seen_step'])
+        if not _has_real_move_between(episode, t_src, max(t_goal, t_src + 1)) and len(path) < 3:
+            continue
+        moved.append((src, goal, path, t_src, t_goal))
+    gates.append(('real_move', len(moved)))
+
+    replayed = []
+    for src, goal, path, t_src, t_goal in moved:
+        if t_goal <= t_src:
+            continue
+        n0, n1 = id_to_node[src], id_to_node[goal]
+        start_pos, start_heading = _start_pose_at_step(episode, t_src)
+        ref = _recorded_route_reference(
+            episode,
+            graph,
+            t0=t_src,
+            t1=t_goal,
+            source_node=n0,
+            goal_pos=meta[goal]['position'],
+            start_pos=start_pos,
+            start_heading_deg=start_heading,
+        )
+        if ref is None:
+            continue
+        scored = score_route_action_sequence(
+            graph,
+            n0,
+            n1,
+            ref['actions'],
+            edges,
+            start_heading_deg=ref['start_heading_deg'],
+            start_pos=start_pos,
+            goal_pos=meta[goal]['position'],
+        )
+        if scored.get('outcome') != 'valid_success':
+            continue
+        replayed.append((src, goal, ref))
+    gates.append(('recorded_actions_replay', len(replayed)))
+
+    turned = [
+        row
+        for row in replayed
+        if min_turns <= int(row[2]['turn_count']) <= max_turns
+    ]
+    gates.append(('turn_band', len(turned)))
+    info['gates'] = gates
+    return info
 
 
 def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[PlannedFact]:
@@ -2445,6 +3596,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         graph, landmarks, max_distance_m=_cfg().class4.landmark_snap_m
     )
     ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
+    unique_ids = _unique_endpoint_ids(episode, ids)
     if len(ids) < 2:
         return [
             PlannedFact(
@@ -2454,7 +3606,6 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         ]
 
-    rot = _rotation_deg(episode)
     view_radius = calibrate_view_radius_m(
         graph, _scene_spacing_positions(episode, [meta[oid] for oid in ids])
     )
@@ -2476,9 +3627,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     )
     # Same as route: collect every valid pair, then emit the hardest. Returning
     # at the first max_items hits takes them in `ids` order, which is salience,
-    # not difficulty.
+    # not difficulty. Continuous search runs only after the geodesic gate, and
+    # one flood covers every goal that shares a source pose.
     candidates: list[tuple[tuple, PlannedFact]] = []
     rejects: Counter = Counter()
+    pending: list[dict] = []
+    allowed_nodes = set(viewed_sub.nodes)
+    allowed_edges = {(a, b) if a <= b else (b, a) for a, b in viewed_edges}
 
     for i, src_id in enumerate(ids):
         for goal_id in ids[i + 1 :]:
@@ -2524,82 +3679,166 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 continue
             t0 = int(meta[src_id]['first_seen_step'])
             t1 = int(meta[goal_id]['first_seen_step'])
-            ref = _reference_nav_actions(
-                viewed_sub,
-                path,
-                rot,
-                start_heading_deg=_agent_yaw_at_step(episode, t0),
-                verify_edges=viewed_edges,
+            start_pos, start_heading = _start_pose_at_step(episode, t0)
+            pending.append(
+                {
+                    'src_id': src_id,
+                    'goal_id': goal_id,
+                    'n0': n0,
+                    'n1': n1,
+                    'source': source,
+                    'goal': goal,
+                    'path': path,
+                    't0': t0,
+                    't1': t1,
+                    'start_pos': start_pos,
+                    'start_heading': start_heading,
+                    'goal_pos': meta[goal_id]['position'],
+                    'src_pos': meta[src_id]['position'],
+                }
             )
-            if ref is None:
-                rejects['actions_unusable'] += 1
-                continue
-            if _agent_near_landmark(episode, meta[src_id]['position'], [t0]):
-                rejects['agent_near_source'] += 1
-                continue
-            images, image_roles = merge_role_images(
-                [
-                    (
-                        _img(step_by_index(episode, t0)),
-                        f'source sighted · {source}',
+
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for job in pending:
+        start_pos = job['start_pos']
+        heading = job['start_heading']
+        if start_pos is None:
+            pose_key = (None, None)
+        else:
+            pose_key = (
+                tuple(float(v) for v in start_pos),
+                None if heading is None else float(heading),
+            )
+        groups[pose_key].append(job)
+    for pose_key, group in groups.items():
+        start_tuple, heading = pose_key
+        actions_for = continuous_bfs_to_goals(
+            graph,
+            None if start_tuple is None else list(start_tuple),
+            0.0 if heading is None else heading,
+            [job['goal_pos'] for job in group],
+            allowed_nodes=allowed_nodes,
+            allowed_edges=allowed_edges,
+        )
+        for job, actions in zip(group, actions_for):
+            job['actions'] = actions
+
+    for job in pending:
+        src_id = job['src_id']
+        goal_id = job['goal_id']
+        n0 = job['n0']
+        n1 = job['n1']
+        source = job['source']
+        goal = job['goal']
+        path = job['path']
+        t0 = job['t0']
+        t1 = job['t1']
+        start_pos = job['start_pos']
+        ref = _survey_bfs_reference(
+            graph,
+            source_node=n0,
+            start_pos=start_pos,
+            start_heading_deg=job['start_heading'],
+            goal_pos=job['goal_pos'],
+            allowed_nodes=allowed_nodes,
+            allowed_edges=allowed_edges,
+            actions=job.get('actions'),
+        )
+        if ref is None:
+            rejects['actions_unusable'] += 1
+            continue
+        scored = score_survey_action_sequence(
+            graph,
+            n0,
+            n1,
+            ref['actions'],
+            viewed_edges,
+            edges,
+            start_heading_deg=ref['start_heading_deg'],
+            start_pos=start_pos,
+            goal_pos=meta[goal_id]['position'],
+        )
+        if scored.get('outcome') != 'valid_success':
+            rejects['actions_unusable'] += 1
+            continue
+        if _agent_near_landmark(episode, meta[src_id]['position'], [t0]):
+            rejects['agent_near_source'] += 1
+            continue
+        images, image_roles = merge_role_images(
+            [
+                (
+                    _img(step_by_index(episode, t0)),
+                    f'source sighted · {source}',
+                ),
+                (
+                    _img(step_by_index(episode, t1)),
+                    f'goal sighted · {goal}',
+                ),
+            ]
+        )
+        hops = len(path) - 1
+        turn_count = int(ref['turn_count'])
+        geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
+        fact = (
+            PlannedFact(
+                construct='survey_based_route_planning',
+                status='ok',
+                query_step=max(t0, t1),
+                encoding_step=min(t0, t1),
+                answer_label=ref['answer_label'],
+                answer_source=[
+                    f'nav_graph.viewed_edges.continuous_bfs[{n0}→{n1}]',
+                    'continuous_bfs_actions(source_pose)',
+                    f'nav_graph.traversed_edges.no_path[{n0}→{n1}]',
+                    f'nav_graph.viewed_edges.radius={view_radius:.3f}',
+                ],
+                image_paths=images,
+                extra={
+                    'source': source,
+                    'goal': goal,
+                    'A': source,
+                    'B': goal,
+                    'template_index': pick_template_index(
+                        'survey_based_route_planning', None, src_id, goal_id
                     ),
-                    (
-                        _img(step_by_index(episode, t1)),
-                        f'goal sighted · {goal}',
-                    ),
-                ]
+                    'source_landmark_id': src_id,
+                    'goal_landmark_id': goal_id,
+                    'source_mark': _object_mark_at(episode, t0, src_id),
+                    'goal_mark': _object_mark_at(episode, t1, goal_id),
+                    'source_node': n0,
+                    'goal_node': n1,
+                    'path_nodes': path,
+                    'hop_count': hops,
+                    'turn_count': turn_count,
+                    'geodesic_m': round(geodesic_m, 3),
+                    'action_sequence': ref['actions'],
+                    'start_heading_deg': ref['start_heading_deg'],
+                    'start_pos': start_pos,
+                    'goal_pos': list(_xyz_tuple(meta[goal_id]['position']) or []),
+                    'traversed_edges': traversed_edge_list,
+                    'viewed_edges': viewed_edge_list,
+                    'view_radius_m': view_radius,
+                    'answer_format': 'action_sequence',
+                    'scoring': 'success_validity_efficiency',
+                    'graph_scope': 'viewed',
+                    'object_type': goal,
+                    'frame_of_reference': 'allocentric',
+                    'image_roles': image_roles,
+                },
             )
-            hops = len(path) - 1
-            turn_count = int(ref['turn_count'])
-            geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
-            fact = (
-                PlannedFact(
-                    construct='survey_based_route_planning',
-                    status='ok',
-                    query_step=max(t0, t1),
-                    encoding_step=min(t0, t1),
-                    answer_label=ref['answer_label'],
-                    answer_source=[
-                        f'nav_graph.viewed_edges.shortest_path[{n0}→{n1}]',
-                        'follow_path_actions(viewed_subgraph)',
-                        f'nav_graph.traversed_edges.no_path[{n0}→{n1}]',
-                        f'nav_graph.viewed_edges.radius={view_radius:.3f}',
-                    ],
-                    image_paths=images,
-                    extra={
-                        'source': source,
-                        'goal': goal,
-                        'A': source,
-                        'B': goal,
-                        'template_index': pick_template_index(
-                            'survey_based_route_planning', None, src_id, goal_id
-                        ),
-                        'source_landmark_id': src_id,
-                        'goal_landmark_id': goal_id,
-                        'source_mark': _object_mark_at(episode, t0, src_id),
-                        'goal_mark': _object_mark_at(episode, t1, goal_id),
-                        'source_node': n0,
-                        'goal_node': n1,
-                        'path_nodes': path,
-                        'hop_count': hops,
-                        'turn_count': turn_count,
-                        'geodesic_m': round(geodesic_m, 3),
-                        'action_sequence': ref['actions'],
-                        'start_heading_deg': ref['start_heading_deg'],
-                        'traversed_edges': traversed_edge_list,
-                        'viewed_edges': viewed_edge_list,
-                        'view_radius_m': view_radius,
-                        'answer_format': 'action_sequence',
-                        'scoring': 'success_validity_efficiency',
-                        'graph_scope': 'viewed',
-                        'object_type': goal,
-                        'frame_of_reference': 'allocentric',
-                        'image_roles': image_roles,
-                    },
-                )
+        )
+        # Unique names first, then harder: more real turns, then longer geodesic.
+        candidates.append(
+            (
+                _class4_emit_key(
+                    src_id in unique_ids and goal_id in unique_ids,
+                    turn_count,
+                    geodesic_m,
+                    hops,
+                ),
+                fact,
             )
-            # Harder first: more real turns, then longer geodesic.
-            candidates.append(((turn_count, geodesic_m, hops), fact))
+        )
 
     if not candidates:
         return [
@@ -2863,6 +4102,9 @@ def plan_episode(
         if su_max_delay is None:
             su_max_delay = active.spatial_updating.max_delay
         model_path = visibility_model_path or active.visibility.model_path
+        from cm_benchmark.generation.step_derived import prepare_episode
+
+        episode = prepare_episode(episode)
         episode = apply_question_visibility_to_episode(
             episode,
             inplace=False,

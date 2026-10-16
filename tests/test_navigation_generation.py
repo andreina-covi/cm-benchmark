@@ -79,10 +79,30 @@ def test_route_turns_and_landmark_from_nearby_cup(episode):
 
 
 def test_exported_json_is_readable(episode):
-    _, json_path = episode
-    loaded = json.loads(json_path.read_text())
-    assert loaded['scene'] == 'TinyScene'
-    assert len(loaded['steps']) == 2
+    data, json_path = episode
+    raw = json.loads(json_path.read_text())
+    assert raw['scene'] == 'TinyScene'
+    assert len(raw['steps']) == 2
+    assert 'nav_graph' not in raw
+    assert raw.get('gt_slim') is True
+    assert 'non_visible_objects' not in raw['steps'][1]
+    assert 'edges_inferred' not in raw['steps'][1]
+    assert 'category' not in next(iter(raw['steps'][0]['visible_objects'].values()))
+
+    from cm_benchmark.generation.episode_io import load_episode_from_json
+
+    loaded = load_episode_from_json(json_path)
+    assert 'Cup|1' in loaded['steps'][1]['non_visible_objects']
+    assert loaded['steps'][1]['non_visible_objects']['Cup|1']['last_seen_step'] == 0
+    inferred = [e['target'] for e in loaded['steps'][1]['edges_inferred']]
+    assert 'Cup|1' in inferred
+    ego = [e['target'] for e in loaded['steps'][0]['edges_egocentric']]
+    assert ego == [e['target'] for e in data['steps'][0]['edges_egocentric']]
+    fat_edge = next(e for e in data['steps'][0]['edges_egocentric'] if e['target'] == 'Cup|1')
+    slim_edge = next(e for e in loaded['steps'][0]['edges_egocentric'] if e['target'] == 'Cup|1')
+    assert slim_edge['angle_relation'] == fat_edge['angle_relation']
+    assert slim_edge['distance_metric'] == fat_edge['distance_metric']
+    assert slim_edge['distance_label'] == fat_edge['distance_label']
 
 
 def test_resolve_episode_paths_from_folder():
@@ -143,6 +163,13 @@ def test_folder_loads_displacement_and_survey_fields(folder_episode):
     )
     assert data.get('nav_graph') is not None
     assert data['nav_graph']['scene_id'] == 'house_tiny'
+    assert data.get('nav_graph_path')
+    from cm_benchmark.generation.nav_graph import episode_start_positions, load_episode_nav_graph
+
+    slim = {k: v for k, v in data.items() if k != 'nav_graph'}
+    positions = episode_start_positions(slim)
+    assert positions and {'node_id', 'x', 'z'} <= positions[0].keys()
+    assert load_episode_nav_graph(slim) is not None
     assert data['region_trajectory'][0]['region_id'] == 'room|1'
     # Sparse: fixture has same room on steps 0 and 1 → only first kept
     assert len(data['region_trajectory']) == 1

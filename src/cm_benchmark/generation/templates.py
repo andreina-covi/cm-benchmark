@@ -471,8 +471,9 @@ def _window_actions(episode: dict, fact: PlannedFact) -> list:
 def _slide_context(fact: PlannedFact) -> dict:
     """Compact construct-specific fields for slides, review, and class-4 scoring.
 
-    Source/goal/path text is for display. ``traversed_edges`` / ``viewed_edges``
-    are the [CODE] scorer inputs (not MCQ labels).
+    Source, goal, start pose, and the reference action sequence are stored on
+    the item. Traversed / viewed edge dumps and path-node lists are not: the
+    scorer reloads reachable positions and edges from the SPOC nav-graph file.
     """
     extra = fact.extra or {}
     keys = (
@@ -500,15 +501,14 @@ def _slide_context(fact: PlannedFact) -> dict:
         'graph_scope',
         'action_sequence',
         'start_heading_deg',
+        'start_pos',
+        'goal_pos',
         'source_landmark_id',
         'goal_landmark_id',
         'source_mark',
         'goal_mark',
         'source_node',
         'goal_node',
-        'path_nodes',
-        'traversed_edges',
-        'viewed_edges',
         'view_radius_m',
         'disambiguation',
         'disambiguation_landmark',
@@ -516,6 +516,18 @@ def _slide_context(fact: PlannedFact) -> dict:
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
     return ctx
+
+
+def _item_context(episode: dict, fact: PlannedFact) -> Optional[dict]:
+    """Stored item context. Class-4 keeps the reference, not edge dumps."""
+    ctx = _slide_context(fact)
+    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS:
+        seq = list(ctx.get('action_sequence') or [])
+        ctx['reference_length'] = len(seq)
+        path = episode.get('nav_graph_path')
+        if path:
+            ctx['nav_graph_path'] = str(path)
+    return ctx or None
 
 
 def infer_image_roles(fact: PlannedFact) -> list[str]:
@@ -719,7 +731,7 @@ def fact_to_items(
             displacement_event=fact.displacement_event,
             difficulty=extra.get('k'),
             image_roles=infer_image_roles(fact) or None,
-            context=_slide_context(fact) or None,
+            context=_item_context(episode, fact),
             disambiguation=extra.get('disambiguation') or 'none',
             disambiguation_landmark=extra.get('disambiguation_landmark'),
             marks=dict(extra.get('marks') or {}),
