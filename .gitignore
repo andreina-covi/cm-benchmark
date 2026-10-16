@@ -64,6 +64,11 @@ src/cm_benchmark/storage/ai2thor/output/
 !/analysis/dt_tune/
 /analysis/dt_tune/*
 !/analysis/dt_tune/visibility_filter.joblib
+# Three-scene example set (items, marked frames, slides).
+!/analysis/pilot_1016/
+/analysis/pilot_1016/*
+!/analysis/pilot_1016/examples_items/
+!/analysis/pilot_1016/examples.pptx
 
 # --- Regenerable labeling / calibration artifacts (root) ---
 /labeling_tool.html
