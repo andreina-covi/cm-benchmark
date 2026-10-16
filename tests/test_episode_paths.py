@@ -70,6 +70,22 @@ def test_resolve_episode_paths_from_root(tmp_path: Path):
     assert paths['navigation'].name.startswith('navigation-')
 
 
+def test_resolve_episode_paths_finds_placement_trials(tmp_path: Path):
+    root = tmp_path / '10_16_run'
+    ann = root / 'annotations'
+    trials = tmp_path / 'placement_trials'
+    ann.mkdir(parents=True)
+    (root / 'images').mkdir()
+    trials.mkdir()
+    (ann / 'navigation-house_001030.csv').write_text('timestep\n0\n')
+    (ann / 'objects-house_001030.csv').write_text('obj-id\nCup|1\n')
+    (ann / 'episode_meta-house_001030.json').write_text('{"scene_id":"house_001030"}')
+    dest = trials / 'placement_candidates-house_001030-val-radius_1.2.csv'
+    dest.write_text('obj-id,success\nCup|1,1\n')
+    paths = resolve_episode_paths(root)
+    assert paths['placement_candidates'] == dest.resolve()
+
+
 def test_resolve_image_path_relative_and_basename(tmp_path: Path):
     imgs = tmp_path / 'images'
     imgs.mkdir()

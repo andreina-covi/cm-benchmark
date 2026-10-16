@@ -14,7 +14,7 @@ Collection CSVs may be **dense** (one row per timestep). Downstream cm-benchmark
 
 Navigation FOV rows are **non-structural** only (no Wall/Floor/Ceiling/Room). Agent–room membership uses `current-room` / `region_trajectory`, not floor mesh ids.
 
-Prefer real semantic `obj-type` / category strings when the simulator provides them. Placeholder labels such as `Undefined` force downstream questions to fall back to the object-id stem, with the SPOC Objaverse prefix stripped (e.g. `ObjaScooter|4|5` → `Scooter`).
+Prefer real semantic `obj-type` / category strings when the simulator provides them. Placeholder labels such as `Undefined` force downstream questions to fall back to the object-id stem, with the SPOC Objaverse prefix stripped (e.g. `ObjaScooter|4|5` → `Scooter`). Also export `obj-synset`, `assetId`, `room-id`, and AABB `aabb-min-*` / `aabb-max-*` on the objects CSV. Navigation rows include `action_success`. `episode_meta` includes `fov_stride` (and `config.fov_stride`); when `fov_stride > 1`, only `step % fov_stride == 0` rows carry object detections. `world_layout.regions[]` include `polygon` and `area` (m²).
 
 **Visibility metrics on `navigation-*.csv`** (for post-process Q&A filtering in cm-benchmark):
 `obj-distance`, `visible-pixels`, `bbox-area`, `min-side`, `occupancy-ratio` (plus bbox `cmin..rmax`). Collection may export tiny/occluded blobs; the generator filters FOV objects used for questions via tunable `question_visibility` thresholds (`min_bbox_area`, `min_side`, `min_occupancy_ratio`, `min_visible_pixels`, `max_obj_distance`). Camera size / FOV / step size come from `episode_meta.camera` / `episode_meta.agent`.
@@ -83,6 +83,20 @@ Also log manipulation actions in the navigation CSV (`ag-action`, `action_succes
 
 Distractor rows are trial teleports (place → readback → restore). **Do not** export egocentric labels here — cm-benchmark computes them from agent pose at the query step. A-not-B / original location uses `from_pos-*` on the event row (not a candidate role).
 
+### `placement_candidates-{scene}*.csv` (preferred ID source)
+
+Hypothetical destinations. Objects stay static in the walk; cm-benchmark synthesizes encode / move / query windows.
+
+| Column | Required | Description |
+|--------|----------|-------------|
+| `obj-id` | yes | Object that could be moved |
+| `anchor-id` | yes | Receptacle or `Floor` |
+| `anchor-kind` | recommended | `receptacle` \| `floor` |
+| `parent-receptacle` / `parent_receptacle` | yes (receptacle) | After a successful place, the object's parent. Must equal `anchor-id` for receptacle dests. Floor dests have parent Floor; the named `anchor-id` may be a nearby landmark. |
+| `pos-x/y/z` | yes | Candidate destination |
+| `success` | yes | Keep successful trials only. If the column is missing (legacy), all rows are kept; if present, require true. |
+| `radius_m` | yes (floor) | Floor-anchor search radius; do not hard-code in config |
+
 ---
 
 ## B. Survey / layout
@@ -92,7 +106,7 @@ Trajectory covers ≥2 regions. Landmarks A and B exist. A feasible A→B path w
 
 ### `world_layout.json`
 
-- `regions[]`: `region_id`, `label`, `center`, `landmark_obj_ids[]`
+- `regions[]`: `region_id`, `label`, `center`, `polygon`, `area`, `landmark_obj_ids[]`
 - `landmarks[]`: `landmark_id`, `obj-type`, `position`, `region_id`
 - `passages[]`: `passage_id`, `obj-id`, `from_region`, `to_region`, `passage_type`
 - `connectivity[]`: `from_region`, `to_region`, `passage_id`, `bidirectional`
@@ -112,7 +126,7 @@ Trajectory covers ≥2 regions. Landmarks A and B exist. A feasible A→B path w
 
 ### `episode_meta-*.json`
 
-`episode_id`, `scene_id`, `episode_kind`, `environment`, `images_dir`, `annotations_dir`, counts (e.g. `num_displacements`).
+`episode_id`, `scene_id`, `episode_kind`, `environment`, `images_dir`, `annotations_dir`, `fov_stride`, `config`, counts (e.g. `num_displacements`).
 
 ---
 
@@ -124,7 +138,8 @@ Under `<timestamp>/annotations/` (images under `<timestamp>/images/`):
 |------|:----------------------:|:------:|
 | `navigation-*.csv` + `objects-*.csv` + `images/` | ✓ | ✓ |
 | `object_state-*.csv` | ✓ | |
-| `displacement_events-*.csv` | ✓ | |
+| `displacement_events-*.csv` | legacy | |
+| `placement_candidates-*.csv` (or `placement_trials/`) | ✓ | |
 | `world_layout-*.json` | | ✓ |
 | `passage_state-*.csv` | | ✓ if doors used |
 | `region_trajectory-*.csv` | | ✓ |

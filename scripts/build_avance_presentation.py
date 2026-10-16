@@ -91,15 +91,16 @@ CONSTRUCT_DEFS = {
         "Route knowledge",
         "Retrace a walked source→goal as collected-format actions.",
         "Stills with a letter marker at each landmark's 2D bbox center. "
-        "The model writes actions; score = metric simulation on traversed edges "
-        "(success / validity / SPL), not exact-match to the stored sequence.",
+        "The model writes actions; score = continuous xz+heading replay "
+        "(ObjectNav 1.0 m success / traversed-edge validity / SPL), not "
+        "exact-match to the stored recorded walk.",
     ),
     "survey_based_route_planning": (
         "Survey-based route planning",
         "Plan a never-walked source→goal from layout (viewed, untraversed).",
         "Stills with a letter marker at each landmark's 2D bbox center. "
-        "Score uses viewed-edge validity "
-        "(must leave the walked graph) and SPL on the viewed subgraph.",
+        "Reference is a continuous BFS on viewed edges. Score uses viewed-edge "
+        "validity (must leave the walked graph) and SPL on the viewed subgraph.",
     ),
 }
 
@@ -591,14 +592,22 @@ def _slide_readout(item: dict) -> str:
             f"SOURCE ({ctx.get('source', '?')}) and GOAL ({ctx.get('goal', '?')}) "
             "carry a letter marker on the still where each was sighted. The stored "
             "walk is the panel glyph row (↑ ahead, ↓ back, ← left, → right). Scoring "
-            "is on traversed edges (success / validity / SPL), not exact string match."
+            "is continuous xz+heading replay (1.0 m ObjectNav / edge validity / SPL), "
+            "not exact string match."
         )
     if construct == "survey_based_route_planning":
         return (
             f"SOURCE ({ctx.get('source', 'source')}) and GOAL "
             f"({ctx.get('goal', 'goal')}) carry a letter marker. The panel glyph row "
-            "shows one valid never-walked plan. Validity requires viewed edges "
-            "plus at least one unwalked hop."
+            "shows one valid never-walked plan (continuous BFS). Validity requires "
+            "viewed edges plus at least one unwalked hop."
+        )
+    if construct == "invisible_displacement":
+        dest = ctx.get("new_location")
+        cue = f" onto {dest}" if dest else ""
+        return (
+            f"Encode visible → hidden move{cue} → query while still absent "
+            "(use the destination cue in the question)."
         )
     if construct == "spatial_working_memory":
         if "How many" in (item.get("question") or ""):
@@ -606,8 +615,6 @@ def _slide_readout(item: dict) -> str:
         return "Ordered stream: encode → navigate → recall earlier bearing (gone at query)."
     if construct == "spatial_updating":
         return "Ordered stream: encode → own motion → updated bearing at final pose."
-    if construct == "invisible_displacement":
-        return "Encode visible → hidden move → query while still absent (use destination cue)."
     if construct == "egocentric_encoding":
         return "Single current view: bearing in the camera/viewer frame."
     return "Raw images shown to the model (same as evaluation input)."

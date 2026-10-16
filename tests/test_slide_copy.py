@@ -42,6 +42,9 @@ def test_class4_panel_hides_node_ids():
     assert 'n12' not in panel['path']
     assert '↑' in panel['path'] and '←' in panel['path']
     assert 'bbox center' in panel['actions']
+    assert 'recorded walk' in panel['graph']
+    assert '1.0 m' in panel['scoring']
+    assert 'continuous' in panel['graph']
 
 
 def test_endpoint_glyph_uses_one_to_three_letters():

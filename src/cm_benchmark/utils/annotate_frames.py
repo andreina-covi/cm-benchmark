@@ -324,6 +324,9 @@ def annotate_episode(
     show_local_xyz: bool = False,
     navigation_csv: Optional[Path] = None,
 ) -> list[Path]:
+    from cm_benchmark.generation.step_derived import prepare_episode
+
+    episode = prepare_episode(episode)
     output_dir.mkdir(parents=True, exist_ok=True)
     nav_by_step: dict[int, dict[str, tuple[int, int, int, int]]] = {}
     if navigation_csv is not None:

@@ -54,6 +54,8 @@ the catalog axis-aligned bounding-box (AABB) centre (`bbox_center`), the 2D
 pixel box, and visibility metrics (box area, shortest side, visible pixels,
 angular width). Displaced objects use the live pose from the object-state log
 instead of the catalog pose. It then attaches the displacement events,
+successful `placement_candidates` (failed trials and receptacle rows whose
+`parent_receptacle` is not the `anchor_id` are dropped at CSV read),
 world layout, nav graph and camera size, and saves the episode to SQLite
 (and JSON with `--export_json`).
 
@@ -112,11 +114,10 @@ object's angular width straddles a sector edge.
 
 **`nav_graph.py`** is the class-4 graph toolbox: build the navigability graph
 from the exported nav graph, snap the trajectory and landmarks to nodes, derive
-walked (`traversed_edges`) and seen (`viewed_edges`) edge sets, turn a node
-path into collected-format actions (`follow_path_actions`,
-`path_to_nav_actions`), and score a model's action sequence
-(`simulate_nav_action_sequence`, `score_route_action_sequence`,
-`score_survey_action_sequence`).
+walked (`traversed_edges`) and seen (`viewed_edges`) edge sets, replay a
+continuous xz + heading walk (`simulate_nav_action_sequence`,
+`continuous_bfs_actions` — breadth-first on a per-scene cKDTree), and score a model's action sequence
+(`score_route_action_sequence`, `score_survey_action_sequence`).
 
 **`templates.py`** turns a fact into items. It fills the construct template
 (`_core_question`), optionally prefixes a verbose scene description that must
@@ -222,9 +223,9 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 1. `_load_nav_graph_or_none` → `build_nav_graph`;
 2. `_episode_traversed_subgraph` — snap the trajectory, keep walked edges;
 3. `select_landmark_candidates(unique_category=False)` and `_build_landmark_node_map` snapping each landmark to a *visited* node within `ROUTE_LANDMARK_SNAP_M`;
-4. `_scene_class4_floors` — the scene's own median pair geodesic and detour ratio (capped);
+4. `_scene_class4_floors` — median pair geodesic and detour ratio (capped) over walked `traversed_edges` landmark pairs (survey keeps the full-scene pool);
 5. for every pair in walk order: `_class4_pair_reject_reason` (1–30 m geodesic, ≥ scene median, detour ratio), `_referring_display_name` for both endpoints, `shortest_path` on walked edges, hop count, real move;
-6. `_reference_nav_actions` → `follow_path_actions` (tolerance ladder) → `simulate_nav_action_sequence` replay; must succeed on walked edges;
+6. recorded `agent_actions` between source and goal sightings, replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
 7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
 8. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
@@ -233,7 +234,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 1. graph and walked subgraph as above; landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
 2. `calibrate_view_radius_m` + `viewed_edges_from_trajectory` — edges near the trajectory count as "seen";
 3. per pair: no path on walked edges (`path_exists`), a path on viewed edges, `_class4_pair_reject_reason` with the survey ratio cap, names for both endpoints;
-4. reference = `shortest_path` on the **viewed** subgraph → `_reference_nav_actions`;
+4. reference = one `continuous_bfs_to_goals` flood per source pose (quantised visited cells, action-count order) on viewed nodes, only after the geodesic gate;
 5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame;
 6. ranked hardest-first like route.
 

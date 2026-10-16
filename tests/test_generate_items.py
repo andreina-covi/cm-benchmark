@@ -93,29 +93,55 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
             }
         }
     }
-    trajectory, steps = [], []
+    poses, action_rows = [], []
     yaw = 0.0
-    for i, (x, z) in enumerate(cells):
-        if i > 0:
-            px, pz = cells[i - 1]
-            yaw = 0.0 if z > pz else (180.0 if z < pz else 90.0)
-        pose = {'position': [x, 1.0, z], 'rotation': [0.0, yaw, 0.0]}
+    rot = 45.0
+    x0, z0 = cells[0]
+    poses.append({'position': [x0, 1.0, z0], 'rotation': [0.0, yaw, 0.0]})
+    action_rows.append({'step': 0, 'action': 'move_ahead', 'action_success': True, 'degrees': rot})
+    step = 1
+    for i in range(1, len(cells)):
+        px, pz = cells[i - 1]
+        x, z = cells[i]
+        if z > pz:
+            desired = 0.0
+        elif z < pz:
+            desired = 180.0
+        elif x > px:
+            desired = 90.0
+        else:
+            desired = 270.0
+        dyaw = (desired - yaw + 180.0) % 360.0 - 180.0
+        nrot = int(round(abs(dyaw) / rot))
+        token = 'rotate_right' if dyaw > 0 else 'rotate_left'
+        for _ in range(nrot):
+            yaw = (yaw + rot) % 360.0 if token == 'rotate_right' else (yaw - rot) % 360.0
+            poses.append({'position': [px, 1.0, pz], 'rotation': [0.0, yaw, 0.0]})
+            action_rows.append({'step': step, 'action': token, 'action_success': True, 'degrees': rot})
+            step += 1
+        poses.append({'position': [x, 1.0, z], 'rotation': [0.0, yaw, 0.0]})
+        action_rows.append({'step': step, 'action': 'move_ahead', 'action_success': True, 'degrees': rot})
+        step += 1
+    trajectory, steps = [], []
+    n = len(poses)
+    for i, pose in enumerate(poses):
         trajectory.append({'step': i, 'image_path': f'/img_{i}.png', **pose})
         visible, ego_edges = {}, []
         if i <= 1:
             first = cells[0]
             visible['Fridge|1'] = detection('Fridge', [first[0], 1.0, first[1]])
             ego_edges.append(ego('Fridge|1'))
-        if i >= len(cells) - 2:
+        if i >= n - 2:
             last = cells[-1]
             visible['Toilet|1'] = detection('Toilet', [last[0], 1.0, last[1]])
             ego_edges.append(ego('Toilet|1'))
+        act = action_rows[i]
         steps.append(
             {
                 'step': i,
                 'image_path': f'/img_{i}.png',
-                'action': 'move_ahead',
-                'degrees': 45,
+                'action': act['action'],
+                'degrees': act['degrees'],
                 'agent': pose,
                 'visible_objects': visible,
                 'non_visible_objects': {},
@@ -136,9 +162,7 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
         'nav_graph': nav_graph,
         'agent_trajectory': trajectory,
         'steps': steps,
-        'agent_actions': [
-            {'step': i, 'action': 'move_ahead', 'degrees': 45} for i in range(len(cells))
-        ],
+        'agent_actions': action_rows,
     }
 
 
@@ -500,10 +524,12 @@ def test_invisible_displacement_dual_modes(folder_episode):
         )
 
 
-def test_invisible_displacement_rejects_duplicate_ego_labels(folder_episode):
-    """If candidate poses collapse to one ego label at every query step, skip."""
+def test_invisible_displacement_replaces_duplicate_ego_labels(folder_episode):
+    """A distractor that matches the answer label is replaced, not a dropped item."""
+    from cm_benchmark.generation.constructs import EGO_DIRECTION_OPTIONS
+
     episode = folder_episode
-    # Force all candidate positions identical → duplicate ego labels
+    # Force all candidate positions identical → every distractor shares the answer label.
     for row in episode.get('displacement_candidates') or []:
         row['candidate_position'] = (0.2, 1.0, 0.5)
     for ev in episode.get('displacement_events') or []:
@@ -513,12 +539,17 @@ def test_invisible_displacement_rejects_duplicate_ego_labels(folder_episode):
         episode, constructs=['invisible_displacement'], max_per_construct=4
     )
     ok = [f for f in facts if f.status == 'ok']
-    assert not ok
-    assert any(f.status == 'unsupported' for f in facts)
+    assert ok, [f.reason for f in facts]
+    for fact in ok:
+        labels = fact.options_pool or []
+        assert fact.answer_label in EGO_DIRECTION_OPTIONS
+        assert labels.count(fact.answer_label) == 1
+        assert len(labels) == len(set(labels))
+        assert len(labels) == 4
 
 
 def test_invisible_displacement_skips_colliding_distractors(folder_episode):
-    """A distractor that shares the answer's ego label is dropped, not fatal."""
+    """Answer-colliding distractors are replaced; the option list stays unique."""
     facts = plan_episode(
         folder_episode, constructs=['invisible_displacement'], max_per_construct=4
     )
@@ -1048,6 +1079,8 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
         actions,
         [tuple(e) for e in extra['traversed_edges']],
         start_heading_deg=extra['start_heading_deg'],
+        start_pos=extra.get('start_pos'),
+        goal_pos=extra.get('goal_pos'),
         rotation_deg=_rotation_deg(u_corridor_episode),
     )
     assert score['outcome'] == 'valid_success'
@@ -1106,11 +1139,19 @@ def test_survey_emits_hardest_pairs_first(two_room_episode):
         graph, landmarks, max_distance_m=ROUTE_LANDMARK_SNAP_M
     )
     ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
-    position = {oid.split('|')[0]: i for i, oid in enumerate(ids)}
+    from cm_benchmark.generation.constructs import words_from_obj_type
+
+    position = {words_from_obj_type(oid.split('|')[0]): i for i, oid in enumerate(ids)}
 
     def enumeration_key(fact):
-        a = position[fact.extra['source'].split()[0]]
-        b = position[fact.extra['goal'].split()[0]]
+        def _key(name: str) -> int:
+            for typ, idx in position.items():
+                if name == typ or name.startswith(typ + ' '):
+                    return idx
+            raise KeyError(name)
+
+        a = _key(fact.extra['source'])
+        b = _key(fact.extra['goal'])
         return (min(a, b), max(a, b))
 
     first_in_enumeration = sorted(every, key=enumeration_key)[0]
@@ -1147,6 +1188,8 @@ def test_survey_reference_scores_valid_success(two_room_episode):
             [tuple(e) for e in extra['viewed_edges']],
             [tuple(e) for e in extra['traversed_edges']],
             start_heading_deg=extra['start_heading_deg'],
+            start_pos=extra.get('start_pos'),
+            goal_pos=extra.get('goal_pos'),
             rotation_deg=_rotation_deg(two_room_episode),
         )
         assert score['outcome'] == 'valid_success'
@@ -1211,6 +1254,50 @@ def test_scene_geodesic_floor_is_per_scene_and_adds_to_absolute_band():
     # Undefined distribution leaves only the absolute band in force.
     assert calibrate_scene_geodesic_floor_m(g, ['n0']) is None
     assert calibrate_scene_geodesic_floor_m(g, []) is None
+
+
+def test_unique_endpoint_pair_ranks_ahead_of_a_harder_confusable_pair():
+    from cm_benchmark.generation.planner import _class4_emit_key
+
+    unique = _class4_emit_key(True, 2, 1.0, 2)
+    confusable = _class4_emit_key(False, 12, 30.0, 10)
+    assert unique > confusable
+
+
+def test_route_pair_funnel_names_gates_and_walked_pool():
+    from cm_benchmark.generation.planner import _ROUTE_PAIR_GATES, route_pair_funnel
+
+    info = route_pair_funnel({'steps': [], 'agent_trajectory': []})
+    assert [name for name, _count in info['gates']] == list(_ROUTE_PAIR_GATES)
+    assert info['walked_pair_count'] <= info['full_scene_pair_count']
+    assert info['route_percentile_pair_graph'] == 'traversed'
+    assert info['survey_percentile_pair_graph'] == 'full'
+
+
+def test_route_geodesic_floor_uses_walked_pairs_only():
+    """Route's length and ratio floors ignore landmark pairs off traversed_edges."""
+    import networkx as nx
+    from cm_benchmark.generation.planner import _scene_class4_floors
+
+    g = nx.Graph()
+    for i, x in enumerate((0.0, 2.0, 4.0, 24.0)):
+        g.add_node(f'n{i}', pos=(x, 1.0, 0.0))
+    g.add_edge('n0', 'n1', weight=2.0)
+    g.add_edge('n1', 'n2', weight=2.0)
+    g.add_edge('n2', 'n3', weight=20.0)
+    walked = nx.Graph()
+    walked.add_nodes_from(['n0', 'n1', 'n2'])
+    walked.add_edge('n0', 'n1', weight=2.0)
+    walked.add_edge('n1', 'n2', weight=2.0)
+    nodes = ['n0', 'n1', 'n2', 'n3']
+    full_geo, _full_ratio = _scene_class4_floors(g, nodes, ratio_cap=1.1)
+    walked_geo, walked_ratio = _scene_class4_floors(
+        g, nodes, ratio_cap=1.1, pair_graph=walked
+    )
+    # Walked pairs are 2, 2, 4 m. The 20 m spur is a full-scene pair only.
+    assert walked_geo == 2.0
+    assert full_geo is not None and full_geo > walked_geo
+    assert walked_ratio == 1.0
 
 
 def test_scene_ratio_floor_is_capped_and_falls_back_on_open_plan():
@@ -1766,7 +1853,7 @@ def test_object_type_skips_undefined_category():
     )
     assert (
         object_type_from_id('FloorLamp|4|2', {'FloorLamp|4|2': {'category': 'FloorLamp'}})
-        == 'FloorLamp'
+        == 'Floor Lamp'
     )
     assert object_type_from_id('Cup|1') == 'Cup'
 
@@ -2015,7 +2102,7 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     # More instances than palette colours → skip
     overflow = {
         'visible_objects': {
-            f'Chair|{i}': _vis('Chair', [float(i), 0.0, 1.0]) for i in range(1, 6)
+            f'Chair|{i}': _vis('Chair', [float(i), 0.0, 1.0]) for i in range(1, 9)
         }
     }
     assert resolve_referring_disambiguator(overflow, 'Chair|1') is None

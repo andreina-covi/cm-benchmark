@@ -65,8 +65,8 @@ class CandidateItem:
     agent_trajectory: Optional[list[dict]] = None
     agent_actions: Optional[list] = None
     displacement_event: Optional[dict] = None
-    # Slide / review captions, plus class-4 scorer fields (traversed/viewed
-    # edges, source/goal nodes, pixel marks for review overlays) in ``context``.
+    # Class-4 reference (source, goal, start pose, actions, length) lives in
+    # ``context``. Scoring reloads the SPOC nav graph; edge dumps are not stored.
     image_roles: Optional[list[str]] = None
     context: Optional[dict[str, Any]] = None
     disambiguation: str = 'none'  # none | proximity | mark

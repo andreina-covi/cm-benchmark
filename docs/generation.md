@@ -20,9 +20,24 @@ SPOC collection folder:
   images/img_<t>.png
   annotations/
     navigation-*.csv, objects-*.csv, object_state-*.csv,
-    displacement_events-*.csv, passage_state-*.csv, region_trajectory-*.csv
+    displacement_events-*.csv, placement_candidates-*.csv,
+    passage_state-*.csv, region_trajectory-*.csv
     episode_meta-*.json, world_layout-*.json, nav_graph-*.json
 ```
+
+`placement_candidates-{scene}*.csv` may also live in a sibling `placement_trials/`
+folder. Objects CSV now includes `obj-synset`, `assetId`, `room-id`, and AABB
+min/max. Navigation has `action_success`. `episode_meta.fov_stride` (or
+`config.fov_stride`) > 1 means only steps with `step % fov_stride == 0` have
+object rows; those are the only shown frames and visibility evidence.
+`world_layout.regions[].area` is the VSI room-area input. Invisible
+displacement prefers successful placement candidates over `displacement_events`.
+The nav generator keeps only `success==true` placement rows (if the `success`
+column is absent, every row is kept — legacy CSVs). Receptacle dests also
+require `parent_receptacle == anchor_id` (missing parent is dropped); floor
+dests (`anchor-kind==floor` or Floor/Wall/Ceiling/Room `anchor-id`) skip that
+parent check. Failed and rejected rows are not written to episode GT / nav JSON.
+A per-scene kept / dropped count prints on stdout during ingest.
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
@@ -120,10 +135,19 @@ database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
   VSI always uses 0.30 m.
 
 Class 4 is not MCQ. The action vocabulary is stated once in
-`cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`. Route scores a predicted
-walk on `traversed_edges`; survey on `viewed_edges` (must stay viewed and use
-at least one unwalked edge). Stored `answer` is a reference sequence for
-analysis, not exclusive gold.
+`cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`. Scoring replays
+continuous xz + heading (`x += m·sin(h)`, `z += m·cos(h)` from
+`episode_meta.motion`); a move whose landing point is farther than a
+calibrated radius from every nav-graph node is a no-op. Success is ObjectNav
+1.0 m. Route's stored reference is the recorded actions between source and
+goal; survey's is one breadth-first flood per source pose under the same
+kinematics, nearest node from a per-scene cKDTree, and only for pairs that
+already pass the geodesic gates. Visited cells are quantised
+(`class4.search_state_quant_m`); expansions stay in action-count order so the
+stored sequence is the same one a solo search would return.
+Validity: route stays on `traversed_edges`; survey stays on `viewed_edges`
+and uses at least one unwalked edge. SPL is unchanged. Stored `answer` is a
+reference sequence for analysis, not exclusive gold.
 
 Pair selection (both class-4 constructs): geodesic in 1–30 m **and** at least
 the scene’s own typical landmark-pair length; a detour ratio of at least this

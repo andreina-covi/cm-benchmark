@@ -47,6 +47,67 @@ def _as_bool(val):
     return s in ('true', '1', 'yes')
 
 
+# Same stems as planner._is_floor_receptacle (do not import planner here).
+_FLOOR_ANCHOR_STEMS = frozenset({'floor', 'wall', 'ceiling', 'room'})
+
+
+def _is_floor_placement_dest(anchor_id, anchor_kind) -> bool:
+    """True for floor dests: ``anchor-kind==floor``, or Floor/Wall/Ceiling/Room id.
+
+    ``anchor-kind==floor`` wins even when ``anchor-id`` is a nearby landmark
+    (parent is Floor; the named anchor is not the receptacle). With kind
+    missing, the id uses the planner stem rule (missing or floor/wall/ceiling/room).
+    Explicit ``anchor-kind==receptacle`` is never treated as floor.
+    """
+    kind = str(anchor_kind).strip().lower() if anchor_kind is not None else ''
+    if kind == 'floor':
+        return True
+    if kind == 'receptacle':
+        return False
+    if not anchor_id:
+        return True
+    return str(anchor_id).split('|')[0].strip().lower() in _FLOOR_ANCHOR_STEMS
+
+
+def _receptacle_parent_ok(anchor_id, anchor_kind, parent_receptacle) -> bool:
+    """Receptacle rows require ``parent_receptacle == anchor_id``; floor dests pass.
+
+    Missing parent on a receptacle row is a reject (stricter than the planner
+    safety check, which still treats ``parent is None`` as pass).
+    """
+    if _is_floor_placement_dest(anchor_id, anchor_kind):
+        return True
+    if not anchor_id or parent_receptacle is None:
+        return False
+    return str(parent_receptacle) == str(anchor_id)
+
+
+def _row_xyz(row, prefix: str):
+    """Read ``{prefix}-x/y/z`` (or ``{prefix}_x``) from a CSV row as a 3-tuple."""
+    keys = (
+        (f'{prefix}-x', f'{prefix}-y', f'{prefix}-z'),
+        (f'{prefix}_x', f'{prefix}_y', f'{prefix}_z'),
+    )
+    for xk, yk, zk in keys:
+        if xk in row.index and yk in row.index and zk in row.index:
+            return _finite_xyz((row.get(xk), row.get(yk), row.get(zk)))
+    return None
+
+
+def _fov_stride_from_meta(meta) -> int:
+    """``episode_meta.fov_stride`` / ``config.fov_stride``; default 1."""
+    if not isinstance(meta, dict):
+        return 1
+    raw = meta.get('fov_stride')
+    if raw is None:
+        raw = (meta.get('config') or {}).get('fov_stride')
+    try:
+        stride = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return stride if stride > 1 else 1
+
+
 def _finite_xyz(values):
     """Three finite floats, or None if the catalog cell is missing / NaN."""
     try:
@@ -147,6 +208,7 @@ def _file_overrides_from_args(args):
         'object_state': getattr(args, 'file_object_state', None),
         'displacement_events': getattr(args, 'file_displacement_events', None),
         'displacement_candidates': getattr(args, 'file_displacement_candidates', None),
+        'placement_candidates': getattr(args, 'file_placement_candidates', None),
     }
     return {k: v for k, v in mapping.items() if v}
 
@@ -169,6 +231,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         self.episode_meta = {}
         self.displacement_events = []
         self.displacement_candidates = []
+        self.placement_candidates = []
+        self.placement_obj_ids = set()
         self.world_layout = None
         self.nav_graph = None
         self.passage_state = []
@@ -247,9 +311,18 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 paths['displacement_candidates']
             )
 
-        if 'object_state' in paths and self.displaced_obj_ids:
+        if 'placement_candidates' in paths:
+            self.placement_candidates = self._read_placement_candidates(
+                paths['placement_candidates']
+            )
+            self.placement_obj_ids = {
+                r['obj_id'] for r in self.placement_candidates if r.get('obj_id')
+            }
+
+        track_ids = set(self.displaced_obj_ids) | set(self.placement_obj_ids)
+        if 'object_state' in paths and track_ids:
             self.state_lookup = self._read_object_state(
-                paths['object_state'], self.displaced_obj_ids
+                paths['object_state'], track_ids
             )
 
         if 'world_layout' in paths:
@@ -329,6 +402,85 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 ),
                 'is_persisted': _as_bool(row.get('is_persisted')),
             })
+        return rows
+
+    def _read_placement_candidates(self, path):
+        """Successful placement trials only: dest pose, anchor, CSV floor radius.
+
+        Keep a row when:
+
+        - ``success`` is true, **or** the column is absent (legacy CSVs keep
+          every row; if the column is present, require true);
+        - floor dests (``anchor-kind==floor`` or Floor/Wall/Ceiling/Room
+          ``anchor-id``) skip the parent check;
+        - receptacle dests require ``parent_receptacle == anchor_id``
+          (missing parent is rejected).
+
+        Failed and rejected rows are not written to episode GT / nav JSON.
+        Prints per-scene kept / dropped counts (visible on stdout).
+        """
+        df = pd.read_csv(path)
+        rows = []
+        n_fail = 0
+        n_parent = 0
+        has_success_col = 'success' in df.columns
+        for _, row in df.iterrows():
+            oid = row.get('obj-id')
+            if not _is_valid_obj_id(oid):
+                continue
+            success = True
+            if has_success_col:
+                success = _as_bool(row.get('success'))
+                if not success:
+                    n_fail += 1
+                    continue
+            pos = _row_xyz(row, 'pos') or _row_xyz(row, 'candidate_pos')
+            radius = None
+            if 'radius_m' in row.index and pd.notna(row.get('radius_m')):
+                radius = float(row.get('radius_m'))
+            anchor_id = (
+                row.get('anchor-id')
+                if 'anchor-id' in row.index and pd.notna(row.get('anchor-id'))
+                else (
+                    row.get('candidate_receptacle')
+                    if 'candidate_receptacle' in row.index
+                    and pd.notna(row.get('candidate_receptacle'))
+                    else None
+                )
+            )
+            anchor_kind = (
+                row.get('anchor-kind')
+                if 'anchor-kind' in row.index and pd.notna(row.get('anchor-kind'))
+                else None
+            )
+            parent_receptacle = (
+                row.get('parent-receptacle')
+                if 'parent-receptacle' in row.index and pd.notna(row.get('parent-receptacle'))
+                else (
+                    row.get('parent_receptacle')
+                    if 'parent_receptacle' in row.index and pd.notna(row.get('parent_receptacle'))
+                    else None
+                )
+            )
+            if not _receptacle_parent_ok(anchor_id, anchor_kind, parent_receptacle):
+                n_parent += 1
+                continue
+            rows.append({
+                'obj_id': oid,
+                'anchor_id': anchor_id,
+                'anchor_kind': anchor_kind,
+                'parent_receptacle': parent_receptacle,
+                'position': pos,
+                'success': success,
+                'radius_m': radius,
+            })
+        scene = self.scene_id or 'unknown'
+        n_dropped = n_fail + n_parent
+        print(
+            f'placement_candidates {scene}: kept {len(rows)}, '
+            f'dropped {n_dropped} '
+            f'(success!=true: {n_fail}, receptacle parent!=anchor: {n_parent})'
+        )
         return rows
 
     def _read_object_state(self, path, obj_ids):
@@ -436,6 +588,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         model = self.visibility_model
         filter_on = model is not None or question_visibility_active(thr)
         self._raw_fov_detections = []
+        stride = _fov_stride_from_meta(self.episode_meta)
 
         dict_navigation = {}
         for _, row in df.iterrows():
@@ -489,6 +642,12 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     'visibility_metrics': [],
                 }
             if not _is_valid_obj_id(obj) or is_structural_object(object_id=obj):
+                continue
+            try:
+                tid = int(timestep)
+            except (TypeError, ValueError):
+                tid = None
+            if tid is not None and stride > 1 and tid % stride != 0:
                 continue
 
             metrics = metrics_from_nav_row(row, frame_w=frame_w, frame_h=frame_h)
@@ -569,6 +728,21 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
 
             entry = {
                 'obj-type': obj_type,
+                'obj-synset': (
+                    row.get('obj-synset')
+                    if 'obj-synset' in row.index and pd.notna(row.get('obj-synset'))
+                    else None
+                ),
+                'assetId': (
+                    row.get('assetId')
+                    if 'assetId' in row.index and pd.notna(row.get('assetId'))
+                    else None
+                ),
+                'room-id': (
+                    row.get('room-id')
+                    if 'room-id' in row.index and pd.notna(row.get('room-id'))
+                    else None
+                ),
                 'obj-pos': (
                     row.get('obj-pos-x'),
                     row.get('obj-pos-y'),
@@ -590,6 +764,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     row.get('size-y'),
                     row.get('size-z'),
                 ),
+                'aabb-min': _row_xyz(row, 'aabb-min'),
+                'aabb-max': _row_xyz(row, 'aabb-max'),
             }
             if 'obj-color' in row.index and pd.notna(row.get('obj-color')):
                 entry['obj-color'] = row.get('obj-color')
@@ -666,6 +842,16 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             size = _finite_xyz(catalog.get('size'))
             if size is not None:
                 visible_objs[obj]['size'] = size
+            if catalog.get('obj-synset'):
+                visible_objs[obj]['synset'] = catalog['obj-synset']
+            amin = _finite_xyz(catalog.get('aabb-min'))
+            amax = _finite_xyz(catalog.get('aabb-max'))
+            if amin is not None:
+                visible_objs[obj]['aabb_min'] = amin
+            if amax is not None:
+                visible_objs[obj]['aabb_max'] = amax
+            if catalog.get('room-id'):
+                visible_objs[obj]['room_id'] = catalog['room-id']
             # Static catalog AABB center. Displaced objects keep the live
             # object_state pivot — the catalog center would be the pre-move pose.
             if state is None:
@@ -710,9 +896,10 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         visibility, in_camera_fov, or receptacle fields change. At query step t,
         use state_at_step(entries, t) to carry forward the latest prior state.
         """
-        if not self.displaced_obj_ids:
+        track_ids = set(self.displaced_obj_ids) | set(self.placement_obj_ids)
+        if not track_ids:
             return None
-        by_obj = {oid: [] for oid in self.displaced_obj_ids}
+        by_obj = {oid: [] for oid in track_ids}
         for (tid, oid), state in sorted(self.state_lookup.items()):
             by_obj[oid].append({
                 'step': tid,
@@ -749,8 +936,13 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         episode_dict['object_state_track'] = self.build_object_state_track()
         episode_dict['displacement_events'] = self.displacement_events
         episode_dict['displacement_candidates'] = self.displacement_candidates
+        episode_dict['placement_candidates'] = self.placement_candidates
         episode_dict['world_layout'] = self.world_layout
+        # In-memory graph for this process. JSON/SQLite store the path only.
         episode_dict['nav_graph'] = self.nav_graph
+        nav_path = (getattr(self, '_paths', None) or {}).get('nav_graph')
+        if nav_path:
+            episode_dict['nav_graph_path'] = str(Path(nav_path).resolve())
         episode_dict['passage_state'] = self.passage_state
         episode_dict['region_trajectory'] = self.region_trajectory
         episode_dict['episode_meta'] = self.episode_meta
@@ -775,12 +967,33 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         catalog = {}
         for oid, entry in (self.dict_objects or {}).items():
             rec = {'category': entry.get('obj-type')}
+            position = _finite_xyz(entry.get('obj-pos'))
+            rotation = _finite_xyz(entry.get('obj-rot'))
+            if position is not None:
+                rec['position'] = position
+            if rotation is not None:
+                rec['rotation'] = rotation
+            if entry.get('obj-synset'):
+                rec['synset'] = entry['obj-synset']
+            if entry.get('assetId'):
+                rec['asset_id'] = entry['assetId']
+            if entry.get('room-id'):
+                rec['room_id'] = entry['room-id']
             center = _finite_xyz(entry.get('bbox-c'))
             size = _finite_xyz(entry.get('size'))
+            amin = _finite_xyz(entry.get('aabb-min'))
+            amax = _finite_xyz(entry.get('aabb-max'))
             if center is not None:
                 rec['bbox_center'] = center
             if size is not None:
                 rec['size'] = size
+            if amin is not None:
+                rec['aabb_min'] = amin
+            if amax is not None:
+                rec['aabb_max'] = amax
+            recs = entry.get('receptacleObjectIds') or []
+            if recs:
+                rec['parent_receptacle'] = recs[0]
             catalog[oid] = rec
         episode_dict['object_catalog'] = catalog
         return episode_dict
