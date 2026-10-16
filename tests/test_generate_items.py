@@ -1038,6 +1038,54 @@ def test_survey_rejects_when_agent_near_source_landmark():
     assert SURVEY_MIN_AGENT_SOURCE_DIST_M == 1.0
 
 
+def test_option_shuffle_depends_on_item_not_only_on_label():
+    """The same answer text can land on different letters for different items."""
+    from cm_benchmark.generation.templates import _shuffle_options
+
+    labels = ['ahead of you', 'to your right', 'behind you', 'to your left']
+    first, _, key_a = _shuffle_options(
+        'ahead of you', labels, [], shuffle_key='house|ego|0'
+    )
+    again, _, key_b = _shuffle_options(
+        'ahead of you', labels, [], shuffle_key='house|ego|0'
+    )
+    other, _, key_c = _shuffle_options(
+        'ahead of you', labels, [], shuffle_key='house|ego|9'
+    )
+    assert first == again and key_a == key_b
+    assert key_a in 'ABCD' and key_c in 'ABCD'
+    assert list(first.values()) != list(other.values()) or key_a != key_c
+
+
+def test_floor_standing_endpoints_drop_passages_and_non_layout_objects():
+    from cm_benchmark.generation.planner import _salient_floor_landmark_ids
+
+    episode = {
+        'world_layout': {
+            'landmarks': [
+                {'landmark_id': 'Sofa|1', 'obj-type': 'Sofa'},
+                {'landmark_id': 'door|1|2', 'obj-type': 'Doorway'},
+            ]
+        }
+    }
+    assert _salient_floor_landmark_ids(episode) == {'Sofa|1'}
+    assert _salient_floor_landmark_ids({'world_layout': {'landmarks': []}}) is None
+
+
+def test_confusable_named_pair_is_rejected():
+    from cm_benchmark.generation.planner import _named_ids_confusable
+
+    episode = {
+        'object_catalog': {
+            'Chair|1': {'category': 'Chair'},
+            'Chair|2': {'category': 'Chair'},
+            'Sofa|1': {'category': 'Sofa'},
+        }
+    }
+    assert _named_ids_confusable(episode, ['Chair|1', 'Chair|2'])
+    assert not _named_ids_confusable(episode, ['Chair|1', 'Sofa|1'])
+
+
 def test_route_min_hop_count_is_two_not_r2r():
     """Route hop minimum is 2 (one edge), not R2R's 4–6."""
     from cm_benchmark.generation.planner import ROUTE_MIN_HOP_COUNT
@@ -1365,7 +1413,7 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
     )
     import networkx as nx
 
-    assert MIN_PAIR_GEODESIC_M == 1.0
+    assert MIN_PAIR_GEODESIC_M == 2.0
     assert MAX_PAIR_GEODESIC_M == 30.0
     assert SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO == 1.05
     assert ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP == 1.1
@@ -1404,7 +1452,7 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
             'n_close',
             min_ratio=None,
         )
-        == 'geodesic_lt_1m'
+        == 'geodesic_below_min'
     )
     g.add_node('n2', pos=(0.0, 1.0, 3.0))
     g.add_edge('n1', 'n2', weight=5.0)

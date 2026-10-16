@@ -90,7 +90,10 @@ def test_default_config_loads_and_matches_phase0_values():
     assert cfg.visibility.query.min_bbox_area == 1200.0
     assert cfg.visibility.id_encode.min_bbox_area == 100.0
     assert cfg.disambiguation.active_proximity().margin_m == 0.6
-    assert cfg.class4.min_pair_geodesic_m == 1.0
+    assert cfg.class4.min_pair_geodesic_m == 2.0
+    assert cfg.class4.route.min_turns == 1
+    assert cfg.class4.survey.min_turns == 1
+    assert cfg.options.shuffle_seed == 0
     assert cfg.class4.max_pair_geodesic_m == 30.0
     assert cfg.class4.route.max_ratio_floor == 1.1
     assert cfg.class4.survey.max_ratio_floor == 1.05
@@ -119,7 +122,8 @@ def test_legacy_constant_names_read_the_config():
 
     assert constructs.AHEAD_HALF_WIDTH_FOV == 20.0
     assert planner.ROUTE_MIN_HOP_COUNT == 2
-    assert planner.MIN_PAIR_GEODESIC_M == 1.0
+    assert planner.MIN_PAIR_GEODESIC_M == 2.0
+    assert planner.ROUTE_MIN_TURN_COUNT == 1
 
 
 @pytest.mark.parametrize('path', list(_iter_scan_files()), ids=lambda p: p.name)

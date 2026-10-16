@@ -36,6 +36,7 @@ directions:
 
 options:
   n_options: 4  # derived: four ego labels
+  shuffle_seed: 0  # none found; one seed, a different permutation per item
 
 disambiguation:
   proximity_setting: current  # none found; ablation: sr3d / vsi / current / strict
@@ -99,7 +100,7 @@ templates:
   verbose_max_nonvisible_names: 4  # none found (b418bda)
 
 class4:
-  min_pair_geodesic_m: 1.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
+  min_pair_geodesic_m: 2.0  # none found; source–goal path at least 2 m (literature band was 1–30 m)
   max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
   scene_geodesic_percentile: 0.5  # none found (7a2ee6a); route percentile is over walked traversed_edges pairs, survey over full-scene pairs
   landmark_snap_m: 2.5  # none found (5c7eb3c)
@@ -112,12 +113,13 @@ class4:
     max_ratio_floor: 1.1  # literature: Habitat PointNav rejects geo/eucl < 1.1
     min_hop_count: 2  # none found (5b4cb02; at least one real edge)
     max_subpath_nodes: 512  # none found (274e5ff)
-    min_turns: 2  # none found (274e5ff; analogy to Habitat episode_min_steps=11)
+    min_turns: 1  # none found; at least one real turn
     max_turns: 12  # none found (274e5ff)
   survey:
     max_ratio_floor: 1.05  # literature: HSSD-200 (CVPR 2024) geo/eucl < 1.05 is nearly straight
     min_agent_source_dist_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m
     view_radius_percentile: 0.5  # none found (5b4cb02)
+    min_turns: 1  # none found; at least one real turn
   follower:
     ladder_multipliers: [1.5, 1.0, 1.0, 0.5]  # derived: multiples of max(grid, move) / grid
     arrive_fraction: 0.75  # none found (274e5ff)

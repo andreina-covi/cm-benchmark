@@ -122,8 +122,9 @@ continuous xz + heading walk (`simulate_nav_action_sequence`,
 **`templates.py`** turns a fact into items. It fills the construct template
 (`_core_question`), optionally prefixes a verbose scene description that must
 not leak the answer (`build_verbose_preamble`), shuffles the options
-deterministically and records why each wrong option is there
-(`_shuffle_options`), and copies frame poses / actions / displacement events
+with `options.shuffle_seed` (one permutation per item) and records why each
+wrong option is there (`_shuffle_options`), and copies frame poses / actions /
+displacement events
 onto the item. One item is written per question style (concise, verbose); the
 pair shares the answer and points at each other with `paired_item_id`.
 
@@ -222,20 +223,20 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 
 1. `_load_nav_graph_or_none` → `build_nav_graph`;
 2. `_episode_traversed_subgraph` — snap the trajectory, keep walked edges;
-3. `select_landmark_candidates(unique_category=False)` and `_build_landmark_node_map` snapping each landmark to a *visited* node within `ROUTE_LANDMARK_SNAP_M`;
+3. `select_landmark_candidates(unique_category=False, floor_standing=True)` — endpoints are SPOC floor-standing landmarks, passages excluded — and `_build_landmark_node_map` snapping each landmark to a *visited* node within `ROUTE_LANDMARK_SNAP_M`;
 4. `_scene_class4_floors` — median pair geodesic and detour ratio (capped) over walked `traversed_edges` landmark pairs (survey keeps the full-scene pool);
-5. for every pair in walk order: `_class4_pair_reject_reason` (1–30 m geodesic, ≥ scene median, detour ratio), `_referring_display_name` for both endpoints, `shortest_path` on walked edges, hop count, real move;
+5. for every pair in walk order: `_class4_pair_reject_reason` (at least 2 m geodesic, ≤ 30 m, ≥ scene median, detour ratio), names for both endpoints, reject confusable endpoint pairs, `shortest_path` on walked edges, hop count, real move;
 6. recorded `agent_actions` between source and goal sightings, replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
 7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
 8. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
 ### survey_based_route_planning (class 4) — "List the actions from S to G" over a never-walked path
 
-1. graph and walked subgraph as above; landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
+1. graph and walked subgraph as above; floor-standing landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
 2. `calibrate_view_radius_m` + `viewed_edges_from_trajectory` — edges near the trajectory count as "seen";
 3. per pair: no path on walked edges (`path_exists`), a path on viewed edges, `_class4_pair_reject_reason` with the survey ratio cap, names for both endpoints;
 4. reference = one `continuous_bfs_to_goals` flood per source pose (quantised visited cells, action-count order) on viewed nodes, only after the geodesic gate;
-5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame;
+5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame; the reference must contain at least `class4.survey.min_turns` real turns;
 6. ranked hardest-first like route.
 
 ## Where an item's fields come from
