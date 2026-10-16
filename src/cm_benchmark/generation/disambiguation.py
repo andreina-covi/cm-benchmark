@@ -161,13 +161,17 @@ def passing_objects_in_frames(
 
 
 def episode_mark_colours(
-    episode: dict, frame_steps: Optional[list[int]] = None
+    episode: dict,
+    frame_steps: Optional[list[int]] = None,
+    also_ids: Optional[list[str]] = None,
 ) -> dict[str, str]:
     """Stable ``objectId → colour`` for duplicated types in the item's frames.
 
-    Only instances that appear in ``frame_steps`` are coloured. When frames
-    are omitted, every FOV step is used. Two items may reuse a palette colour
-    for different objects. Objects outside the shown frames are not marked.
+    Instances in ``frame_steps`` are coloured, plus ``also_ids`` (confusable
+    endpoints that are not in those frames). When frames are omitted, every
+    FOV step is used. Two items may reuse a palette colour
+    for different objects. A sibling passed in ``also_ids`` is coloured even
+    when it is outside the shown frames, so the shown endpoint can be marked.
     Types with more in-frame instances than palette colours get no assignment.
     Assignment is sorted by objectId so it is deterministic.
     """
@@ -188,6 +192,9 @@ def episode_mark_colours(
     for step in steps:
         for oid in (step.get('visible_objects') or {}):
             seen.add(oid)
+    for oid in also_ids or []:
+        if oid:
+            seen.add(oid)
     colours: dict[str, str] = {}
     for group in confusable_components(episode, seen):
         ordered = sorted(group)
@@ -204,6 +211,7 @@ def resolve_named_objects(
     object_ids: list[str],
     *,
     model: Any = None,
+    also_ids: Optional[list[str]] = None,
 ) -> Optional[dict[str, NameResult]]:
     """Name every ``object_id`` across ``frame_steps``, or None to skip.
 
@@ -215,9 +223,11 @@ def resolve_named_objects(
         return {}
     frames = passing_objects_in_frames(episode, frame_steps)
     pool = _oids_in_frames(frames)
+    extra = [oid for oid in (also_ids or []) if oid]
+    pool.update(extra)
     if model is None:
         model = visibility_model_from_episode(episode)
-    colours = episode_mark_colours(episode, frame_steps)
+    colours = episode_mark_colours(episode, frame_steps, also_ids=extra)
     cfg = get_generation_config().disambiguation
     out: dict[str, NameResult] = {}
     for oid in ids:
@@ -469,7 +479,9 @@ def _try_proximity(
                     s_data = vis[sib]
                     break
             if s_data is None:
-                continue
+                # A sibling outside the shown frames cannot be checked, so
+                # proximity is not a safe name. The caller falls through to a mark.
+                return None
             g = object_aabb_gap_m(episode, sib, s_data, lid, l_data)
             if g is not None:
                 sib_gaps.append(g)

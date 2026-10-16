@@ -37,7 +37,7 @@ directions:
 options:
   n_options: 4  # derived: four ego labels
   shuffle_seed: 0  # none found; one seed, a different permutation per item
-  max_label_share: 0.4  # none found; at most this share of one construct's items may share an answer label
+  max_label_share: 0.4  # none found; at most this share of one construct's items, over the whole set, may share an answer label
 
 disambiguation:
   proximity_setting: current  # none found; ablation: sr3d / vsi / current / strict
@@ -119,7 +119,7 @@ class4:
     min_hop_count: 2  # none found (5b4cb02; at least one real edge)
     max_subpath_nodes: 512  # none found (274e5ff)
     min_turns: 1  # none found; at least one real turn
-    max_turns: 12  # none found (274e5ff)
+    max_turns: 20  # none found; raised from 12 so a recorded walk is not dropped for turn count alone
   survey:
     max_ratio_floor: 1.05  # literature: HSSD-200 (CVPR 2024) geo/eucl < 1.05 is nearly straight
     min_agent_source_dist_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m

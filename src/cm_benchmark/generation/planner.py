@@ -19,6 +19,7 @@ from cm_benchmark.generation.disambiguation import (
 )
 from cm_benchmark.generation.synsets import (
     confusable_components,
+    confusable_group_of,
     group_is_unique,
     objects_are_confusable,
     type_of,
@@ -304,11 +305,18 @@ def _relabel_fact(episode: dict, fact: PlannedFact) -> Optional[PlannedFact]:
         extra.setdefault('disambiguation_landmark', None)
         extra.setdefault('marks', {})
         return fact
-    names = resolve_named_objects(episode, frames or [0], ids)
+    names = resolve_named_objects(
+        episode, frames or [0], ids, also_ids=_endpoint_sibling_ids(episode, fact)
+    )
     if names is None:
         return None
     extra.update(aggregate_disambiguation(names))
     _rewrite_fact_names(fact, names)
+    if fact.construct in ('route_knowledge', 'survey_based_route_planning'):
+        src_name = extra.get('source')
+        goal_name = extra.get('goal')
+        if src_name and goal_name and src_name == goal_name:
+            return None
     return fact
 
 
@@ -334,7 +342,12 @@ def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[Pla
             had_ok = True
             frames = [int(s) for s in ((fact.extra or {}).get('shown_frame_steps') or [])]
             named_ids = _named_ids_for_fact(episode, fact, frames)
-            if _named_ids_confusable(episode, named_ids):
+            # Route and survey endpoints are named by proximity or a mark,
+            # including two instances of the same type.
+            if fact.construct not in (
+                'route_knowledge',
+                'survey_based_route_planning',
+            ) and _named_ids_confusable(episode, named_ids):
                 dropped_confusable = True
                 continue
             updated = _relabel_fact(episode, fact)
@@ -540,6 +553,53 @@ def _display_name_parts(
         return None
     step = step_by_index(episode, int(step_idx))
     return object_type_from_id(obj_id, (step or {}).get('visible_objects') or {}), phrase
+
+
+def _episode_name_pool(episode: dict) -> list[str]:
+    """Catalog ids plus layout landmarks, for endpoint disambiguation."""
+    ids = {oid for oid in (episode.get('object_catalog') or {}) if oid}
+    for lm in (episode.get('world_layout') or {}).get('landmarks') or []:
+        if not isinstance(lm, dict):
+            continue
+        oid = lm.get('landmark_id') or lm.get('obj_id')
+        if oid:
+            ids.add(str(oid))
+    return list(ids)
+
+
+def _endpoint_sibling_ids(episode: dict, fact: PlannedFact) -> list[str]:
+    """Confusable instances of a route or survey source/goal, anywhere in the episode.
+
+    The two shown frames often contain only one of a duplicated type, so a
+    frame-local pool would leave both items named ``Dining Table``.
+    """
+    if fact.construct not in ('route_knowledge', 'survey_based_route_planning'):
+        return []
+    extra = fact.extra or {}
+    pool = _episode_name_pool(episode)
+    out: list[str] = []
+    for key in ('source_landmark_id', 'goal_landmark_id'):
+        oid = extra.get(key)
+        if not oid:
+            continue
+        for sib in confusable_group_of(episode, str(oid), pool):
+            if sib != oid and sib not in out:
+                out.append(sib)
+    return out
+
+
+def _endpoint_display_name(episode: dict, step_idx: int, obj_id: str) -> Optional[str]:
+    """Type name at a distinguishable sighting. Proximity or a mark is applied later."""
+    named = _referring_display_name(episode, step_idx, obj_id)
+    if named:
+        return named
+    if not _distinguishable_encoding_sighting(episode, step_idx, obj_id):
+        return None
+    step = step_by_index(episode, step_idx)
+    vis = (step or {}).get('visible_objects') or {}
+    return object_type_from_id(obj_id, {obj_id: vis.get(obj_id) or {}}) or _landmark_display_name(
+        obj_id, episode
+    )
 
 
 def _referring_display_name(
@@ -3324,20 +3384,14 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             if pair_reason:
                 rejects[pair_reason] += 1
                 continue
-            source = _referring_display_name(
+            source = _endpoint_display_name(
                 episode, int(meta[src_id]['first_seen_step']), src_id
             )
-            goal = _referring_display_name(
+            goal = _endpoint_display_name(
                 episode, int(meta[goal_id]['first_seen_step']), goal_id
             )
             if not source or not goal:
                 rejects['unnamed_endpoint'] += 1
-                continue
-            if source == goal:
-                rejects['source_name_eq_goal'] += 1
-                continue
-            if _named_ids_confusable(episode, [src_id, goal_id]):
-                rejects['confusable_endpoints'] += 1
                 continue
             try:
                 path = shortest_path(walked, n0, n1)
@@ -3435,6 +3489,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'B': goal,
                         'source_landmark_id': src_id,
                         'goal_landmark_id': goal_id,
+                        'shown_frame_steps': [t_src, t_goal],
                         'source_mark': _object_mark_at(
                             episode,
                             int(meta[src_id]['first_seen_step']),
@@ -3643,9 +3698,9 @@ def route_pair_funnel(episode: dict) -> dict:
 
     kept = []
     for src, goal in pairs:
-        source = _referring_display_name(episode, int(meta[src]['first_seen_step']), src)
-        goal_name = _referring_display_name(episode, int(meta[goal]['first_seen_step']), goal)
-        if source and goal_name and source != goal_name:
+        source = _endpoint_display_name(episode, int(meta[src]['first_seen_step']), src)
+        goal_name = _endpoint_display_name(episode, int(meta[goal]['first_seen_step']), goal)
+        if source and goal_name:
             kept.append((src, goal))
     pairs = kept
     gates.append(('names', len(pairs)))
@@ -3810,24 +3865,19 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             if len(path) < 2:
                 rejects['empty_path'] += 1
                 continue
-            source = _referring_display_name(
+            source = _endpoint_display_name(
                 episode, int(meta[src_id]['first_seen_step']), src_id
             )
-            goal = _referring_display_name(
+            goal = _endpoint_display_name(
                 episode, int(meta[goal_id]['first_seen_step']), goal_id
             )
             if not source or not goal:
                 rejects['unnamed_endpoint'] += 1
                 continue
-            if source == goal:
-                rejects['source_name_eq_goal'] += 1
-                continue
-            if _named_ids_confusable(episode, [src_id, goal_id]):
-                rejects['confusable_endpoints'] += 1
-                continue
             t0 = int(meta[src_id]['first_seen_step'])
             t1 = int(meta[goal_id]['first_seen_step'])
             start_pos, start_heading = _start_pose_at_step(episode, t0)
+            arrival_pos, _arrival_heading = _start_pose_at_step(episode, t1)
             pending.append(
                 {
                     'src_id': src_id,
@@ -3841,7 +3891,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     't1': t1,
                     'start_pos': start_pos,
                     'start_heading': start_heading,
-                    'goal_pos': meta[goal_id]['position'],
+                    'goal_pos': arrival_pos
+                    if arrival_pos is not None
+                    else meta[goal_id]['position'],
                     'src_pos': meta[src_id]['position'],
                 }
             )
@@ -3904,7 +3956,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             edges,
             start_heading_deg=ref['start_heading_deg'],
             start_pos=start_pos,
-            goal_pos=meta[goal_id]['position'],
+            goal_pos=job['goal_pos'],
         )
         if scored.get('outcome') != 'valid_success':
             rejects['actions_unusable'] += 1
@@ -3954,6 +4006,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     ),
                     'source_landmark_id': src_id,
                     'goal_landmark_id': goal_id,
+                    'shown_frame_steps': [t0, t1],
                     'source_mark': _object_mark_at(episode, t0, src_id),
                     'goal_mark': _object_mark_at(episode, t1, goal_id),
                     'source_node': n0,
@@ -3965,7 +4018,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'action_sequence': ref['actions'],
                     'start_heading_deg': ref['start_heading_deg'],
                     'start_pos': start_pos,
-                    'goal_pos': list(_xyz_tuple(meta[goal_id]['position']) or []),
+                    'goal_pos': list(_xyz_tuple(job['goal_pos']) or []),
                     'traversed_edges': traversed_edge_list,
                     'viewed_edges': viewed_edge_list,
                     'view_radius_m': view_radius,
@@ -4220,93 +4273,6 @@ PLANNERS = {
 }
 
 
-def _answer_letter(fact: PlannedFact, base_id: str) -> Optional[str]:
-    """MC letter this fact will receive, or None for a free-form action item."""
-    if fact.status != 'ok' or not fact.answer_label:
-        return None
-    if fact.construct in ('route_knowledge', 'survey_based_route_planning'):
-        return None
-    from cm_benchmark.generation.templates import _option_shuffle_key, _shuffle_options
-
-    _options, _rationale, letter = _shuffle_options(
-        fact.answer_label,
-        list(fact.options_pool or []),
-        list(fact.distractor_seeds or []),
-        shuffle_key=_option_shuffle_key(base_id, fact),
-    )
-    return letter
-
-
-def select_balanced_facts(
-    facts: list[PlannedFact],
-    max_items: int,
-    base_id: str,
-) -> list[PlannedFact]:
-    """Per construct, cap each answer label and prefer a uniform letter spread.
-
-    Unsupported constructs keep a single placeholder. Class-4 items have no
-    letter; their existing difficulty order is the tie break.
-    """
-    share = float(_cfg().options.max_label_share)
-    cap = max(1, int(share * max_items))
-    order: list[str] = []
-    grouped: dict[str, list[PlannedFact]] = {}
-    for fact in facts:
-        if fact.construct not in grouped:
-            order.append(fact.construct)
-            grouped[fact.construct] = []
-        grouped[fact.construct].append(fact)
-    chosen: list[PlannedFact] = []
-    for construct in order:
-        group = grouped[construct]
-        ok = [fact for fact in group if fact.status == 'ok']
-        if not ok:
-            chosen.extend(group[:1])
-            continue
-        counts = [
-            fact
-            for fact in ok
-            if (fact.extra or {}).get('template_mode') == 'recall_count'
-        ]
-        rest = [fact for fact in ok if fact not in counts]
-        count_slots = 0
-        if construct == 'spatial_working_memory' and max_items >= 2 and counts:
-            count_slots = max(1, max_items // _cfg().spatial_working_memory.count_divisor)
-        selected: list[PlannedFact] = []
-        labels: Counter = Counter()
-        letters: Counter = Counter()
-
-        def _take(pool: list[PlannedFact], slots: int) -> None:
-            pending = list(pool)
-            while len(selected) < max_items and slots > 0 and pending:
-                eligible = [
-                    fact
-                    for fact in pending
-                    if labels[fact.answer_label or ''] < cap
-                ]
-                if not eligible:
-                    break
-                best = min(
-                    eligible,
-                    key=lambda fact: (
-                        letters[_answer_letter(fact, base_id) or ''],
-                        pending.index(fact),
-                    ),
-                )
-                selected.append(best)
-                pending.remove(best)
-                labels[best.answer_label or ''] += 1
-                letter = _answer_letter(best, base_id)
-                if letter:
-                    letters[letter] += 1
-                slots -= 1
-
-        _take(counts, count_slots)
-        _take(rest, max_items - len(selected))
-        chosen.extend(selected)
-    return chosen
-
-
 def plan_episode(
     episode: dict,
     constructs: Optional[list[str]] = None,
@@ -4356,15 +4322,14 @@ def plan_episode(
             'spatial_working_memory': {'min_delay': swm_min_delay, 'max_delay': swm_max_delay},
             'spatial_updating': {'min_delay': su_min_delay, 'max_delay': su_max_delay},
         }
-        pool_n = max(max_per_construct, active.budget.candidate_pool)
         facts: list[PlannedFact] = []
         for key in constructs or list(PLANNERS):
             fn = PLANNERS.get(key)
             if fn is not None:
-                facts.extend(fn(episode, max_items=pool_n, **delay_kwargs.get(key, {})))
-        base_id = str(episode.get('scene') or episode.get('scene_id') or 'ep')
-        named = _apply_whole_item_names(episode, facts)
-        return select_balanced_facts(named, max_per_construct, base_id)
+                facts.extend(
+                    fn(episode, max_items=max_per_construct, **delay_kwargs.get(key, {}))
+                )
+        return _apply_whole_item_names(episode, facts)
     finally:
         if token is not None:
             reset_generation_config(token)

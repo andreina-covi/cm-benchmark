@@ -240,20 +240,21 @@ class_4:
       answer_type: >
         ordered sequence of collected navigation actions
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] replays the sequence continuously; success is the final
-        position within goal_success_m of the goal, then validity and SPL.
+        [CODE] replays the sequence continuously from the source-sighting
+        pose; success is the final position within goal_success_m of the
+        goal-sighting pose, then validity and SPL.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
-        List, in order, the navigation actions you took to travel from the
-        {source} to the {goal}.
+        List the actions you took from where you saw the {source} to where
+        you saw the {goal}.
       ground_truth_method: >
         Source and goal are floor-standing landmarks on the walked trajectory.
         The stored reference is the agent's recorded actions between those
-        sightings. Scoring replays that sequence with continuous xz+heading;
-        a move that lands farther than the calibrated block tolerance from
-        every reachable node is a no-op. Success is the final position
-        within goal_success_m of the agent's pose at the goal sighting
-        (the recorded arrival). The landmark centroid is not that pose.
+        sightings. Replay starts at the source-sighting pose. A move that
+        lands farther than the calibrated block tolerance from every
+        reachable node is a no-op. Success is the final position within
+        goal_success_m of the goal-sighting pose. The landmark centroid
+        is not that pose.
         Keep only non-trivial walks (at least 2 m, detour, and at least
         one real turn). There is no scene-percentile length gate. A scene
         with no such walk is unsupported.
@@ -275,25 +276,28 @@ class_4:
       answer_type: >
         ordered sequence of collected navigation actions
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] replays the sequence continuously; success is the final
-        position within goal_success_m of the goal. Validity requires the
-        walk to use at least one unwalked viewed edge, then SPL.
+        [CODE] replays the sequence continuously from the source-sighting
+        pose; success is the final position within goal_success_m of the
+        goal-sighting pose. Validity requires the walk to use at least one
+        unwalked viewed edge, then SPL.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template:
         - >-
           Using your knowledge of the environment's layout, list the
-          navigation actions that take you from the {source} to the {goal}.
+          actions that take you from where you saw the {source} to where
+          you saw the {goal}.
         - >-
-          Based on what you've seen of this space, list the navigation
-          actions, in order, that go from the {source} to the {goal}.
+          Based on what you've seen of this space, list the actions, in
+          order, that go from where you saw the {source} to where you saw
+          the {goal}.
       ground_truth_method: >
         Source and goal are floor-standing landmarks with no path on
         traversed_edges and a path on viewed_edges. The stored reference is
-        a continuous BFS from the source pose over those viewed moves, not
-        the agent's recorded actions. Scoring is the same continuous replay
-        as route_knowledge (goal_success_m). Keep only non-trivial pairs
-        (at least 2 m and at least one real turn); emit the hardest
-        surviving ones.
+        a continuous BFS from the source-sighting pose over those viewed
+        moves, not the agent's recorded actions. Success is the final
+        position within goal_success_m of the goal-sighting pose, the same
+        target as route_knowledge. Keep only non-trivial pairs (at least
+        2 m and at least one real turn); emit the hardest surviving ones.
       distractor_pattern: []
       discriminators:
         - queried path was never walked (absent from traversed_edges)
