@@ -1907,6 +1907,41 @@ def test_object_type_skips_undefined_category():
     assert object_type_from_id('Cup|1') == 'Cup'
 
 
+def test_verbose_preamble_uses_object_room_not_agent():
+    from cm_benchmark.generation.planner import PlannedFact
+
+    episode = {
+        'object_catalog': {},
+        'steps': [
+            {
+                'step': 0,
+                'current_room_type': 'Kitchen',
+                'current_room': 'room|2',
+                'visible_objects': {
+                    'Chair|1': {
+                        'category': 'Chair',
+                        'position': [0.0, 0.0, 1.0],
+                        'room_type': 'LivingRoom',
+                        'room_id': 'room|4',
+                    }
+                },
+            }
+        ],
+    }
+    fact = PlannedFact(
+        construct='egocentric_encoding',
+        status='ok',
+        query_step=0,
+        encoding_step=0,
+        queried_object_id='Chair|1',
+        answer_label='ahead of you',
+        extra={'object_type': 'Chair'},
+    )
+    preamble = build_verbose_preamble(episode, fact)
+    assert 'LivingRoom' in preamble
+    assert 'Kitchen' not in preamble
+
+
 def test_verbose_preamble_does_not_leak_answer(tiny_episode):
     facts = plan_episode(tiny_episode, constructs=['egocentric_encoding'], max_per_construct=1)
     fact = facts[0]
@@ -2083,14 +2118,17 @@ def test_core_question_includes_disambiguator_only_when_set():
 def test_resolve_referring_disambiguator_unique_and_duplicate():
     from cm_benchmark.generation.constructs import resolve_referring_disambiguator
 
-    def _vis(cat, pos, *, area=2000, side=40, pix=500):
-        return {
+    def _vis(cat, pos, *, area=2000, side=40, pix=500, mark_xy=(40, 30)):
+        row = {
             'category': cat,
             'position': pos,
             'bbox_area': area,
             'min_side': side,
             'visible_pixels': pix,
         }
+        if mark_xy is not None:
+            row['mark_xy'] = list(mark_xy)
+        return row
 
     unique_step = {
         'visible_objects': {
@@ -2147,6 +2185,14 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     assert resolve_referring_disambiguator(bare_dups, 'Chair|1') == (
         ' marked with a magenta dot'
     )
+
+    no_point = {
+        'visible_objects': {
+            'Chair|1': _vis('Chair', [0.0, 0.0, 1.0], mark_xy=None),
+            'Chair|2': _vis('Chair', [2.0, 0.0, 1.0], mark_xy=None),
+        }
+    }
+    assert resolve_referring_disambiguator(no_point, 'Chair|1') is None
 
     # More instances than palette colours → skip
     overflow = {
@@ -2285,6 +2331,120 @@ def test_list_item_jsons_scene_folder_or_file(tmp_path):
     dest = _write_fake_items(tmp_path / 'items', 'house_007514')
     assert list_item_jsons(dest.parent) == [dest]
     assert list_item_jsons(dest) == [dest]
+
+
+def test_balance_round_robin_three_scenes():
+    """Per-scene cap, then a seeded round-robin, then the label cap."""
+    from cm_benchmark.generation.generate_items import balance_scene_items
+
+    def _pair(scene: str, index: int, label: str, letter: str) -> list[dict]:
+        item_id = f'{scene}_{index}'
+        base = {
+            'construct': 'egocentric_encoding',
+            'status': 'ok',
+            'scene_id': scene,
+            'options': {letter: label},
+            'answer': letter,
+            'context': {},
+        }
+        return [
+            {**base, 'item_id': item_id, 'question_style': 'concise', 'paired_item_id': item_id + '_v'},
+            {**base, 'item_id': item_id + '_v', 'question_style': 'verbose', 'paired_item_id': item_id},
+        ]
+
+    def _scenes(label_of) -> list[tuple[str, list[dict]]]:
+        built = []
+        for scene in ('scene_a', 'scene_b', 'scene_c'):
+            items = []
+            for index in range(5):
+                label, letter = label_of(scene, index)
+                items.extend(_pair(scene, index, label, letter))
+            items.append(
+                {
+                    'item_id': f'{scene}_alloc',
+                    'construct': 'allocentric_encoding',
+                    'status': 'unsupported',
+                    'question_style': 'concise',
+                    'scene_id': scene,
+                    'options': {},
+                    'answer': None,
+                }
+            )
+            built.append((scene, items))
+        return built
+
+    def _concise(result, construct='egocentric_encoding'):
+        return {
+            name: [
+                item
+                for item in items
+                if item['construct'] == construct
+                and item.get('question_style') != 'verbose'
+                and item['status'] == 'ok'
+            ]
+            for name, items in result
+        }
+
+    varied = _scenes(lambda scene, index: (f'{scene}-{index}', 'ABCD'[index % 4]))
+    spread = balance_scene_items(
+        varied,
+        max_per_construct=1,
+        max_per_scene=2,
+        max_label_share=0.4,
+        seed=0,
+    )
+    assert {name: len(rows) for name, rows in _concise(spread).items()} == {
+        'scene_a': 1,
+        'scene_b': 1,
+        'scene_c': 1,
+    }
+    for _name, items in spread:
+        ids = {item['item_id'] for item in items}
+        for item in items:
+            if item.get('question_style') == 'concise' and item['status'] == 'ok':
+                assert item['paired_item_id'] in ids
+        alloc = [item for item in items if item['construct'] == 'allocentric_encoding']
+        assert len(alloc) == 1 and alloc[0]['status'] == 'unsupported'
+    again = balance_scene_items(
+        varied,
+        max_per_construct=1,
+        max_per_scene=2,
+        max_label_share=0.4,
+        seed=0,
+    )
+    assert [[item['item_id'] for item in items] for _name, items in again] == [
+        [item['item_id'] for item in items] for _name, items in spread
+    ]
+
+    capped = balance_scene_items(
+        varied,
+        max_per_construct=10,
+        max_per_scene=2,
+        max_label_share=0.4,
+        seed=1,
+    )
+    assert {name: len(rows) for name, rows in _concise(capped).items()} == {
+        'scene_a': 2,
+        'scene_b': 2,
+        'scene_c': 2,
+    }
+
+    mono = _scenes(lambda _scene, _index: ('left', 'A'))
+    trimmed = balance_scene_items(
+        mono,
+        max_per_construct=4,
+        max_per_scene=2,
+        max_label_share=0.4,
+        seed=0,
+    )
+    kept = [
+        item
+        for _name, items in trimmed
+        for item in items
+        if item['status'] == 'ok' and item.get('question_style') != 'verbose'
+    ]
+    assert len(kept) == 1
+    assert kept[0]['options'][kept[0]['answer']] == 'left'
 
 
 def test_list_item_jsons_missing(tmp_path):

@@ -26,8 +26,11 @@ SPOC collection folder:
 ```
 
 `placement_candidates-{scene}*.csv` may also live in a sibling `placement_trials/`
-folder. Objects CSV now includes `obj-synset`, `assetId`, `room-id`, and AABB
-min/max. Navigation has `action_success`. `episode_meta.fov_stride` (or
+folder. Objects CSV now includes `obj-synset`, `assetId`, `room-id`, `room-type`,
+and AABB min/max. Navigation has `action_success` and per-object
+`obj-room` / `obj-room-type` (the object's room at that sighting).
+Verbose questions name that object room, not the agent's
+`current-room-type`. `episode_meta.fov_stride` (or
 `config.fov_stride`) > 1 means only steps with `step % fov_stride == 0` have
 object rows; those are the only shown frames and visibility evidence.
 `world_layout.regions[].area` is the VSI room-area input. Invisible
@@ -42,7 +45,6 @@ A per-scene kept / dropped count prints on stdout during ingest.
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /path/to/generated/navigation \
-  --db_path         src/cm_benchmark/storage/ai2thor/episodes \
   --export_json \
   --output_path     src/cm_benchmark/storage/ai2thor/nav_data
 ```
@@ -52,15 +54,17 @@ root whose children are those episode folders. `scene_id` is read from
 filenames such as `navigation-house_007514.csv` (and from `episode_meta` when
 that file is present). One `visibility_model_path` applies to every episode.
 
-`--db_path` and `--output_path` are roots. One subfolder per scene:
+`--output_path` is a root. One subfolder per scene. SQLite is off unless
+you pass `--export_db` (then `--db_path`, default
+`src/cm_benchmark/storage/ai2thor/episodes`):
 
 ```text
-episodes/house_007514/episodes.db
 nav_data/house_007514/nav_house_007514.json
+episodes/house_007514/episodes.db   # only with --export_db
 ```
 
-SQLite (`EpisodeStore`) is the system of record. JSON is optional, for
-inspection.
+Question generation reads the JSON. `--export_db` writes the same episode
+through `EpisodeStore`.
 
 Sparse tracks (`object_state_track`, `region_trajectory`, `passage_state`)
 store the first observation plus later change points. At step `t`, take the
@@ -125,8 +129,9 @@ database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 - Same-type objects are named across **every shown frame** (not only the
   encode step). Unique type → no extra phrase. Else proximity
   (`the Chair close to the Bread`) when the floor-plane AABB gap and the
-  2D pixel-bbox gap are obvious, else a colour-dot mark
-  (`the Chair marked with a magenta dot`). Questions never contain
+  2D pixel-bbox gap are obvious, else a colour-dot mark on the exported
+  mask point (`mark-x` / `mark-y`; `the Chair marked with a magenta dot`).
+  A required mark with no point drops the item. Questions never contain
   landmark-relative directions. When marks are used, `image_paths` point
   at copies under `<output_path>/<scene>/marked/<item_id>/` — evaluate
   those frames, not the unmarked originals. `item_id` is stable across

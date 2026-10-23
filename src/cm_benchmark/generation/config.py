@@ -117,6 +117,7 @@ class DisambiguationConfig:
 @dataclass(frozen=True)
 class BudgetConfig:
     max_per_construct: int
+    max_per_scene: int
     candidate_pool: int
 
 
@@ -384,6 +385,7 @@ def generation_config_from_mapping(
         ),
         budget=BudgetConfig(
             max_per_construct=int(raw['budget']['max_per_construct']),
+            max_per_scene=int(raw['budget']['max_per_scene']),
             candidate_pool=int(raw['budget']['candidate_pool']),
         ),
         spatial_working_memory=SpatialWorkingMemoryConfig(

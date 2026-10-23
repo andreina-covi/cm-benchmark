@@ -25,6 +25,9 @@ FRAME_KEYS = (
     'visible_pixels',
     'obj_distance',
     'ang_width_deg',
+    'mark_xy',
+    'room_id',
+    'room_type',
 )
 
 _STEP_KEEP = (
@@ -279,8 +282,10 @@ def hydrate_visible_object(
         obj['aabb_min'] = amin
     if amax is not None:
         obj['aabb_max'] = amax
-    if catalog.get('room_id'):
+    if catalog.get('room_id') and not obj.get('room_id'):
         obj['room_id'] = catalog['room_id']
+    if catalog.get('room_type') and not obj.get('room_type'):
+        obj['room_type'] = catalog['room_type']
     if use_center:
         center = _xyz_list(catalog.get('bbox_center'))
         if center is not None:

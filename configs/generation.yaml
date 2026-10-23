@@ -63,6 +63,7 @@ disambiguation:
 
 budget:
   max_per_construct: 3  # none found
+  max_per_scene: 2  # none found; concise facts taken from one scene before the cross-scene round-robin
   candidate_pool: 24  # none found; facts gathered before the label/letter cut
 
 spatial_working_memory:

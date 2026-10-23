@@ -123,12 +123,11 @@ To label scenes and refit the tree, see [`docs/generation.md`](docs/generation.m
 
 ## Common commands
 
-Episode GT (SQLite is the system of record; JSON is optional):
+Episode GT (JSON for question generation; SQLite only with `--export_db`):
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder /path/to/generated/navigation \
-  --db_path         src/cm_benchmark/storage/ai2thor/episodes \
   --export_json \
   --output_path     src/cm_benchmark/storage/ai2thor/nav_data \
   --visibility_model_path analysis/dt_tune/visibility_filter.joblib
@@ -141,12 +140,13 @@ read from filenames such as `navigation-house_007514.csv`. One
 flag to use the shipped `analysis/dt_tune/visibility_filter.joblib` when it
 exists.
 
-`--db_path` and `--output_path` are roots. Each scene is written to its own
-subfolder:
+`--output_path` is a root. Each scene is written to its own subfolder.
+Add `--export_db` to also write SQLite under `--db_path` (default
+`src/cm_benchmark/storage/ai2thor/episodes`):
 
 ```text
-episodes/house_007514/episodes.db
 nav_data/house_007514/nav_house_007514.json
+episodes/house_007514/episodes.db   # only with --export_db
 ```
 
 Generate items from that nav JSON root. One `--visibility_model_path` applies

@@ -2,7 +2,9 @@
 
 Duplicate detection uses every shown frame. Proximity uses 3D AABB gap on the
 floor plane, then a 2D pixel-bbox check. Marks are the fallback (and the
-``all_marks`` ablation). Questions never contain landmark-relative directions.
+``all_marks`` ablation) and sit on the exported mask point. A required mark
+with no point drops the item. Questions never contain landmark-relative
+directions.
 """
 
 from __future__ import annotations
@@ -245,6 +247,9 @@ def resolve_named_objects(
             )
         if result is None:
             result = _try_mark(oid, typ, siblings, colours)
+        if result is not None and result.mode == 'mark':
+            if not _shown_marks_have_points(frames, result.marks, oid):
+                result = None
         if result is None:
             return None
         out[oid] = result
@@ -303,12 +308,12 @@ def draw_marked_frames(
         w, h = im.size
         for oid, colour in marks.items():
             odata = vis.get(oid)
-            if odata is None:
+            if not isinstance(odata, dict):
                 continue
-            box = _box4(odata.get('bbox'))
-            if box is None:
+            pt = _mark_xy(odata)
+            if pt is None:
                 continue
-            xy = _dot_xy(box, image_wh or (w, h), (w, h))
+            xy = _scale_px(pt, image_wh or (w, h), (w, h))
             _draw_dot(draw, xy, MARK_RGB.get(colour, (255, 0, 200)), w)
         im.save(dst)
         out.append(str(dst))
@@ -568,24 +573,51 @@ def _try_mark(
     )
 
 
-def _dot_xy(
-    box: tuple[float, float, float, float],
+def _mark_xy(odata: dict) -> Optional[tuple[float, float]]:
+    """Exported mask point (``mark-x`` / ``mark-y``), stored as ``mark_xy``."""
+    pt = odata.get('mark_xy')
+    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+        return None
+    try:
+        x, y = float(pt[0]), float(pt[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return x, y
+
+
+def _scale_px(
+    pt: tuple[float, float],
     frame_wh: tuple[int, int],
     image_wh: tuple[int, int],
 ) -> tuple[int, int]:
-    cmin, rmin, cmax, rmax = box
-    x = (cmin + cmax) / 2.0
-    # Inside the bbox, near the top-centre. Clipped at the top → visible centre.
-    if rmin <= 1:
-        y = (rmin + rmax) / 2.0
-    else:
-        y = rmin + 0.18 * max(rmax - rmin, 1.0)
+    """Scale a detection-frame pixel onto the opened image."""
+    x, y = pt
     fw, fh = float(frame_wh[0]), float(frame_wh[1])
     w, h = image_wh
     if fw > 1 and fh > 1 and (abs(fw - w) > 0.5 or abs(fh - h) > 0.5):
         x = x * w / fw
         y = y * h / fh
-    return int(round(x)), int(round(y))
+    return int(round(x)), int(round(min(y, h - 1)))
+
+
+def _shown_marks_have_points(
+    frames: dict[int, dict[str, dict]],
+    marks: dict[str, str],
+    target_id: str,
+) -> bool:
+    """The target, and every marked sibling on screen, has a mask point."""
+    saw_target = False
+    for vis in frames.values():
+        for mid in marks:
+            if mid not in vis:
+                continue
+            if _mark_xy(vis[mid]) is None:
+                return False
+            if mid == target_id:
+                saw_target = True
+    return saw_target
 
 
 def _draw_dot(draw, xy: tuple[int, int], rgb: tuple[int, int, int], image_w: int) -> None:

@@ -409,12 +409,20 @@ def parse_args():
         help="Override the JSON filename. Default is nav_<scene_id>.json",
     )
     parser.add_argument(
+        "--export_db",
+        action="store_true",
+        help=(
+            "Write SQLite under --db_path. Off by default; "
+            "question generation reads the JSON from --output_path."
+        ),
+    )
+    parser.add_argument(
         "--db_path",
         type=str,
         default="src/cm_benchmark/storage/ai2thor/episodes",
         help=(
-            "Root directory for SQLite. Each scene is written to "
-            "<db_path>/<scene_id>/episodes.db."
+            "Root directory for SQLite when --export_db is set. Each scene "
+            "is written to <db_path>/<scene_id>/episodes.db."
         ),
     )
     parser.add_argument(

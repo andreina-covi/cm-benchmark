@@ -249,6 +249,7 @@ class_4:
         you saw the {goal}.
       ground_truth_method: >
         Source and goal are floor-standing landmarks on the walked trajectory.
+        They are not confusable with each other.
         The stored reference is the agent's recorded actions between those
         sightings. Replay starts at the source-sighting pose. A move that
         lands farther than the calibrated block tolerance from every
@@ -292,7 +293,8 @@ class_4:
           the {goal}.
       ground_truth_method: >
         Source and goal are floor-standing landmarks with no path on
-        traversed_edges and a path on viewed_edges. The stored reference is
+        traversed_edges and a path on viewed_edges. They are not confusable
+        with each other. The stored reference is
         a continuous BFS from the source-sighting pose over those viewed
         moves, not the agent's recorded actions. Success is the final
         position within goal_success_m of the goal-sighting pose, the same
