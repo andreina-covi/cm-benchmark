@@ -1,234 +1,29 @@
 ---
-description: Spatial-cognition VLM benchmark — architecture and invariants
+description: cm-benchmark core rules
 alwaysApply: true
 ---
+# cm-benchmark — core rules
 
-# Project Rules — Spatial-Cognition QA Benchmark for VLMs
+Spatial-cognition QA benchmark for VLMs. Items = frames from SPOC/AI2-THOR
+exports + question. 8 constructs, 4 classes (configs/taxonomy.yaml).
 
-You are reviewing and helping write code for a research benchmark. Read
-this file fully before answering any request in this repo. When I ask for
-a review, first read the actual files, map them against the architecture
-and invariants below, then report deviations by severity and propose
-concrete diffs. Do not invent modules, fields, or features that aren't
-described here; if something is missing or ambiguous, say so and ask
-before making large changes.
+## Sources of truth (read only when the task needs them)
+- Construct definitions: configs/taxonomy.yaml
+- Every quality-affecting value: configs/generation.yaml (never hardcode)
+- Pipeline and modules: docs/architecture.md
+- Parameter justifications: docs/parameters_report.md
 
-## Fill in before first use
-- Language / runtime: Python 3.12
-- Key libs: pydantic (schema + invariant enforcement), pyyaml (construct
-  configs), pytest (invariant tests), Pillow (multi-image frames),
-  litellm or provider SDK (agent + VLM calls), pandas + seaborn
-  (reporting), scikit-learn + matplotlib (visibility threshold
-  calibration), sqlite/sqlalchemy/json (Item Store)
-- Dev tools (not runtime deps): Cursor (editor)
-- Data source(s): AI2-THOR (collected), Matterport3D (planned)
+## Invariants (never break)
+1. Answers come only from exported metadata; every item has answer_source.
+2. Generation, validation and scoring are deterministic code; no LLM judges answers.
+3. FREEZE is one-way: evaluation never edits or regenerates items.
+4. Questions never state the answer, a direction or a move.
+5. Confusable objects (obj-synset rule) are disambiguated by proximity or mark;
+   never by a direction.
 
-## What this project is
-A question-answering benchmark that probes spatial cognition in
-vision-language models (VLMs). Items are multi-image (frame sequences
-from 3D simulators) + a multiple-choice question. The benchmark must
-measure genuine visual-spatial reasoning, NOT language priors.
-
-## Taxonomy (the capability axis)
-Four classes, eight constructs, treated as a **partially-ordered
-pipeline** (later stages subsume earlier ones — not fully independent):
-1. Spatial encoding — egocentric; allocentric (object-to-object)
-2. Spatial memory — spatial working memory; invisible displacement
-3. Operation on the cognitive map — spatial updating; perspective-taking
-4. Navigation / wayfinding — route knowledge; survey knowledge
-Cross-cutting axis on every item: `frame_of_reference` ∈ {egocentric, allocentric}.
-Headline analyses are per-construct and per-(construct × frame_of_reference).
-
-## Architecture (respect this structure)
-Two pipelines under one Orchestrator, separated by an immutable FREEZE.
-Tag each node [AGENT] = LLM call, [CODE] = deterministic, no model.
-
-- Benchmark Orchestrator [CODE] — owns run order, versioning
-  - Config Registry — 8 construct configs (static YAML, single source of truth)
-  - Item Store / DB — shared state; what gets frozen
-  - Item Generation Pipeline
-    - Task Planner [AGENT] — pick scene + construct + FoR, apply episode filter
-    - Question Generator [AGENT] — write question + answer FROM metadata
-    - Distractor Generator [AGENT] — plausible, diagnostic options
-    - Ground-truth Validator [CODE] — recompute answer from CSV; must match
-    - Vision-necessity Verifier [CODE + model calls] — blind-LLM & caption baselines
-    - Judge / Filter [AGENT + CODE] — well-formed, FoR stated, dedup
-    - Set Balancer [CODE] — equalize counts per construct × ego/allo
-  - === FREEZE / version tag === (the wall; frozen set is immutable)
-  - Model Evaluation Pipeline (consumes frozen set ONLY)
-    - Model Runner [CODE] — fixed protocol, identical for every VLM
-    - Response Parser [CODE; AGENT only to map prose→option label]
-    - Deterministic Scorer [CODE] — exact-match; per-construct/FoR breakdown
-    - Error Analysis Agent [AGENT] — failure modes from structured logs
-    - Evaluation Reporter [CODE] — tables, baselines, gaps
-
-## Invariants — never violate; flag any code that does
-1. Generators never invent spatial facts. Every question/answer is
-   composed from CSV metadata only.
-2. Every item has a non-null `answer_source` pointing at the metadata
-   field(s) the answer derives from. No answer without traceability.
-3. Ground-truth Validator, Model Runner, and Deterministic Scorer are
-   pure [CODE]. An LLM must never judge answer correctness — results
-   must be reproducible.
-4. `vision_necessary == true` is required for an item to enter the
-   frozen set (both blind-LLM and caption→LLM baselines must FAIL it).
-5. The FREEZE wall is one-directional: nothing observed during
-   evaluation may edit, filter, or regenerate items. No tuning to models.
-6. Generator and Validator use different models/prompts, so the checker
-   isn't just agreeing with the writer.
-7. Distractors are spatially plausible AND diagnostic (each wrong option
-   maps to a specific failure mode, e.g. the pre-move bearing = the
-   non-updating error). All options must be real locations/directions
-   present in the scene.
-8. Construct isolation lives in each config's `must_hold` block — treat
-   those as hard rejects, enforced in code, not suggestions.
-
-## Item schema (fields on a finished item)
-Core: item_id, construct, class, frame_of_reference, environment,
-scene_id, image_paths[], question, options{}, answer, answer_source.
-Recommended: agent_trajectory (pose per frame), agent_actions (ordered),
-queried_object_id, distractor_rationale{}, difficulty.
-Temporal (required only for object-moves / observer-moves constructs):
-object_state_track[], displacement_event{}.
-Verification (set by pipeline, NOT the generator; start null):
-blind_llm_correct, caption_llm_correct, vision_necessary.
-
-## Episode GT notes (pre-item ledger)
-- Built from SPOC collection via `--csv_path_folder` (episode root or
-  `annotations/`; see README). Sibling `images/` holds RGB frames.
-- System of record: SQLite EpisodeStore; JSON export is optional.
-- Sparse fields: object_state_track (displaced objects only),
-  region_trajectory, passage_state — carry-forward at query step t.
-- Nav FOV / edges exclude structural meshes (Wall/Floor/Ceiling/Room/…).
-- Camera size / FOV / step size come from episode_meta when present.
-- Q&A FOV may further drop tiny or barely-shown detections via a trained
-  DecisionTree (`visibility_filter.joblib`, preferred) or static
-  `question_visibility` floors as fallback (optional labeled multi-scene
-  calibration; do not invent objects). Catalog / displacement logs stay
-  unfiltered.
-- distance_label (how far) ≠ angle_relation front/behind (local +Z).
-  "beyond" + "front" means ahead of the agent but far.
-- Do not invent object facing from obj-rot unless a trusted source exists.
-  `perspective_taking` does **not** need intrinsic facing: it uses relational
-  A→B heading from landmark positions (`imagined_perspective_label` signed
-  left/right/behind bins with boundary margin).
-  `allocentric_encoding` still needs trusted object-frame edges when enabled.
-- Collector field brief: prompts/ai2thor_collection_extension.md.
-
-## Item generation notes (`src/cm_benchmark/generation/`)
-- Answers and answer_source are [CODE]-only from episode GT; an LLM may
-  only paraphrase question text later (never change the answer).
-- Items may use concise or verbose question styles; verbose text must not
-  leak the answer. Only SWM / invisible_displacement verbose may name other
-  static scene objects, and never with a spatial relation (naming without
-  relating — taxonomy shared_rules).
-- When multiple same-category objects are visible, the queried name may use a
-  referring disambiguator to one unique, clearly visible landmark only when
-  proximity margin is large enough to be obvious in the image (≥0.6 m and
-  ≥1.5× sibling distance); otherwise exclude the candidate. Unique categories
-  omit the phrase. Recalled / queried objects must also pass FOV size gates
-  at the encoding step (not merely appear in ``non_visible_objects`` memory),
-  including a reject for thin border-clipped bbox scrapes (e.g. a 25px-wide
-  cup strip at x=0 that clears area floors but is not human-identifiable).
-  Prefer the DecisionTree visibility bundle over bumping static
-  `QUERY_FOV_*` floors when labels exist.
-- Perspective-taking A/B/C (and other mentioned landmarks) must each be
-  QUERY-FOV distinguishable and uniquely nameable; prefer a co-visible frame.
-- Temporal SWM / spatial_updating encode at the latest *distinguishable*
-  prior sighting (FOV metrics + ego edge), not raw ``last_seen_step`` (which
-  may be a weak scrape of a large mesh).
-- Class 4 is **not MCQ**. The model writes a free sequence in the collected
-  action vocabulary (`move_ahead`, `rotate_left`, `rotate_right`,
-  `move_back`). State that vocabulary **once** in the eval harness
-  (`evaluation.protocol.SYSTEM_INSTRUCTION`); do not repeat it in item
-  templates or verbose preambles. [CODE] `route_knowledge` scoring
-  metric-simulates actions (`agent_move_m` / `agent_rotation_deg`), snaps
-  each pose, filters traversed_edges to exported graph edges, and returns
-  success, validity, SPL efficiency (`S * ℓ / max(p, ℓ)` given success),
-  and `route_efficiency` (same SPL given success and validity). Illegal
-  edges and the 2×2 `outcome` cell are always logged. `survey_based_route_planning`
-  uses the same metric simulator; `viewed_edges` is a radius proxy around the
-  trajectory (scene-calibrated spacing, not raycasting) and a superset of
-  `traversed_edges`. Validity = path ⊆ viewed_edges and at least one edge is
-  not traversed. Efficiency is SPL on the viewed_edges subgraph. Stored
-  `answer` is a `follow_path_actions` reference for analysis only.
-- Class-4 references come from `follow_path_actions` (greedy follower,
-  continuous pose, heading quantized to `agent_rotation_deg`), **not** one
-  `move_ahead` per lattice hop. Exported grids are axis-aligned while the agent
-  walks 15°-offset headings, so a per-hop conversion staircases and inflates the
-  turn count ~10×. Seed the follower with the agent's real yaw at the source
-  step: reachable headings are `start + 45k`, and a lattice bearing puts that
-  set off the walked corridors so the follower oscillates. Every reference is
-  replayed through the scorer (`simulate_nav_action_sequence` + goal tolerance +
-  edge membership) and dropped unless it is a valid success; smoothing that
-  leaves the walked edge set falls back down a tolerance ladder to the exact
-  per-hop path.
-- `route_knowledge` enumerates pairs in **walk order** on the snapped trajectory
-  but **emits the hardest** ones (real turns, then geodesic) — the first passing
-  pairs in walk order are the walk's nearest neighbours, i.e. the easiest in the
-  scene. Path = shortest_path on traversed_edges; min hops =
-  `ROUTE_MIN_HOP_COUNT` (2, not a fixed R2R 4–6); class-4 pair length is
-  full-nav_graph geodesic in `[MIN_PAIR_GEODESIC_M, MAX_PAIR_GEODESIC_M]`
-  (1–30 m; HM3D-OVON / GOAT-Bench / HSSD-200) **and** at or above
-  `calibrate_scene_geodesic_floor_m` — the `SCENE_PAIR_GEODESIC_PERCENTILE`
-  (0.5) point of that scene's own landmark-pair geodesic spread, computed once
-  per episode with the same nearest-rank convention as
-  `calibrate_scene_geodesic_floor_m`. Route's detour gate is
-  `calibrate_scene_ratio_floor` capped at `ROUTE_MAX_GEODESIC_EUCLIDEAN_RATIO_CAP`
-  (1.1): `min(1.1, scene p50)` so open-plan scenes still emit items. Route also applies
-  a real-turn
-  band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` (2–12), counting
-  contiguous rotations once (`count_direction_changes`) — raw rotation tokens
-  overcount. Straight single-room scenes therefore report `unsupported` with
-  per-reason skip counts; that is the correct outcome, not a bug to tune away.
-  Duplicate categories are allowed when `_referring_display_name` uniquely
-  names them (`unique_category=False`). Trajectory poses snap within one
-  8-neighbor step of `max(grid_size, agent_move_m)` (exports are
-  `snap_to_grid=False`; half `grid_size` is too tight at 0.15 m); landmarks
-  snap to visited nodes within `ROUTE_LANDMARK_SNAP_M` (2.5 m).
-- `survey_based_route_planning` requires: no path on traversed_edges; a path
-  on `viewed_edges` (the same subgraph scoring uses); agent ≥ `SURVEY_MIN_AGENT_SOURCE_DIST_M` (1.0 m, ObjectNav/GOAT
-  success zone) from source at the source sighting frame; geodesic 1–30 m
-  plus `SURVEY_MIN_GEODESIC_EUCLIDEAN_RATIO` (1.05; HSSD nearly-straight) on
-  the **full** nav_graph; `viewed_edges` radius proxy around the trajectory
-  (scene-calibrated); frame captions "source sighted" / "goal sighted". The
-  reference path is `shortest_path` on the **viewed** subgraph, not the full
-  graph — validity is scored on `viewed_edges`, so a full-graph path would be
-  stored as an answer the scorer marks invalid. Survey ranks and emits pairs
-  hardest-first on the same `(turn_count, geodesic_m, hop_count)` key as route;
-  returning the first `max_items` hits walks `ids` in salience order, which is
-  uncorrelated with difficulty.
-- Floor destinations in invisible_displacement need a distinguishable anchor
-  within FLOOR_ANCHOR_RADIUS ("the floor near the {landmark}"); bare Floor is
-  rejected per-candidate.
-- Invisible-displacement **displaced** objects (and swap partners): distinguishable
-  at encode (DecisionTree if attached, else soft `ID_ENCODE_FOV_*`); **invisible**
-  from the move through query. Ego MC options: diagnostic candidate bearings
-  first, then pad to four from the ego bank (opposite / orthogonal / fillers).
-- Egocentric MC labels use ``angle_to_ego_label(ahead_half_width=…)``:
-  FOV-constrained constructs (egocentric_encoding, disambiguator, SWM encode)
-  use 20°; full-circle pose updates (spatial_updating, ID query) use 45°.
-  Perspective-taking uses signed A→B vs A→C bins (left / right / behind) with
-  a configurable margin around 0° / ±135° — not the ahead wedge.
-  For current-frame-visible constructs, GT "behind you" is impossible (FOV) —
-  only a distractor. Distractor maps keep the same four string labels.
-- Constructs that lack required metadata (e.g. object facing for
-  allocentric_encoding) stay unsupported rather than inventing facts.
-
-## How to review / suggest
-- Start by mapping files → architecture nodes; name any node with no
-  code, or code that belongs to no node.
-- Check each invariant explicitly and cite the file/line that breaks it.
-- Prioritize: (1) invariant violations, (2) reproducibility risks in the
-  eval pipeline, (3) separation-of-concerns leaks between the two
-  pipelines, (4) correctness, (5) style.
-- Prefer small, reviewable diffs. Explain the "why" in one line each.
-- Reuse, don't duplicate: the Vision-necessity Verifier and Model Runner
-  share baseline-calling machinery — build it once and call from both.
-- Suggest tests that assert the invariants (e.g. a test that fails if any
-  frozen item has null answer_source or vision_necessary != true).
-- If a request would blur the FREEZE wall or make an [CODE] node call an
-  LLM for scoring, refuse and explain.
-- Flag class-4 items that ask for full-episode turn recall, or temporal items
-  whose question never situates “now” / “{k} steps ago” in the navigation stream
-  (online sequential protocol — no bundled multi-image “time order” cue).
+## How to work
+- Make the smallest change that does the task. Do not refactor unrelated code.
+- Read only the files the task touches. Don't explore the repo unless asked.
+- Run only the relevant tests; rerun pilots only when the prompt asks.
+- Keep reports short: a table or a few lines, no restating the prompt.
+- If a request conflicts with these rules or the docs, ask before acting.

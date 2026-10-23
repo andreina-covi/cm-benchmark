@@ -90,6 +90,7 @@ def test_resolve_named_objects_uses_confusable_not_type_string():
                         'bbox_area': 2000,
                         'min_side': 40,
                         'visible_pixels': 500,
+                        'mark_xy': [40, 30],
                     },
                     'Armchair|1': {
                         'category': 'Armchair',
@@ -97,6 +98,7 @@ def test_resolve_named_objects_uses_confusable_not_type_string():
                         'bbox_area': 2000,
                         'min_side': 40,
                         'visible_pixels': 500,
+                        'mark_xy': [80, 30],
                     },
                 },
             }

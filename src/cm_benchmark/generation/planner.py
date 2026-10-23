@@ -342,12 +342,7 @@ def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[Pla
             had_ok = True
             frames = [int(s) for s in ((fact.extra or {}).get('shown_frame_steps') or [])]
             named_ids = _named_ids_for_fact(episode, fact, frames)
-            # Route and survey endpoints are named by proximity or a mark,
-            # including two instances of the same type.
-            if fact.construct not in (
-                'route_knowledge',
-                'survey_based_route_planning',
-            ) and _named_ids_confusable(episode, named_ids):
+            if _named_ids_confusable(episode, named_ids):
                 dropped_confusable = True
                 continue
             updated = _relabel_fact(episode, fact)
@@ -3393,6 +3388,9 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             if not source or not goal:
                 rejects['unnamed_endpoint'] += 1
                 continue
+            if _named_ids_confusable(episode, [src_id, goal_id]):
+                rejects['confusable_endpoints'] += 1
+                continue
             try:
                 path = shortest_path(walked, n0, n1)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
@@ -3700,7 +3698,11 @@ def route_pair_funnel(episode: dict) -> dict:
     for src, goal in pairs:
         source = _endpoint_display_name(episode, int(meta[src]['first_seen_step']), src)
         goal_name = _endpoint_display_name(episode, int(meta[goal]['first_seen_step']), goal)
-        if source and goal_name:
+        if (
+            source
+            and goal_name
+            and not _named_ids_confusable(episode, [src, goal])
+        ):
             kept.append((src, goal))
     pairs = kept
     gates.append(('names', len(pairs)))
@@ -3873,6 +3875,9 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
             if not source or not goal:
                 rejects['unnamed_endpoint'] += 1
+                continue
+            if _named_ids_confusable(episode, [src_id, goal_id]):
+                rejects['confusable_endpoints'] += 1
                 continue
             t0 = int(meta[src_id]['first_seen_step'])
             t1 = int(meta[goal_id]['first_seen_step'])

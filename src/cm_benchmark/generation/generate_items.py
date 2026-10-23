@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 from collections import Counter
 from pathlib import Path
 from typing import Optional, Union
@@ -52,24 +53,89 @@ def _is_selection_unit(item: dict, scene_ids: set[str]) -> bool:
     return item.get('paired_item_id') not in scene_ids
 
 
+def _trim_label_share(chosen: list[tuple[str, dict]], share: float) -> None:
+    """Drop extra copies so no label exceeds ``share`` of the final set.
+
+    A label that appears once is always kept, so a free-form action
+    sequence is not removed for being unique.
+    """
+    while len(chosen) > 1:
+        labels = Counter(_answer_label_and_letter(item)[0] for _name, item in chosen)
+        n = len(chosen)
+        limit = max(1, int(float(share) * n))
+        over = [label for label, count in labels.items() if count > limit]
+        if not over:
+            break
+        worst = max(over, key=lambda label: (labels[label], label))
+        letters = Counter(
+            _answer_label_and_letter(item)[1] or ''
+            for _name, item in chosen
+            if _answer_label_and_letter(item)[0] == worst
+        )
+        drop_at = max(
+            (
+                index
+                for index, (_name, item) in enumerate(chosen)
+                if _answer_label_and_letter(item)[0] == worst
+            ),
+            key=lambda index: (
+                letters[_answer_label_and_letter(chosen[index][1])[1] or ''],
+                index,
+            ),
+        )
+        chosen.pop(drop_at)
+
+
+def _round_robin(
+    pool: list[tuple[str, dict]],
+    *,
+    per_scene: int,
+    slots: int,
+    rng: random.Random,
+) -> list[tuple[str, dict]]:
+    """Keep at most ``per_scene`` items from each scene, then alternate scenes."""
+    by_scene: dict[str, list[dict]] = {}
+    scene_order: list[str] = []
+    for name, item in pool:
+        if name not in by_scene:
+            by_scene[name] = []
+            scene_order.append(name)
+        by_scene[name].append(item)
+    queues: dict[str, list[dict]] = {}
+    for name in scene_order:
+        items = list(by_scene[name])
+        rng.shuffle(items)
+        queues[name] = items[:per_scene]
+    order = list(scene_order)
+    rng.shuffle(order)
+    chosen: list[tuple[str, dict]] = []
+    while len(chosen) < slots and any(queues.values()):
+        for name in order:
+            if len(chosen) >= slots or not queues[name]:
+                continue
+            chosen.append((name, queues[name].pop(0)))
+    return chosen
+
+
 def balance_scene_items(
     scenes: list[tuple[str, list[dict]]],
     *,
     max_per_construct: int,
+    max_per_scene: int,
     max_label_share: float,
-    count_divisor: int,
+    seed: int,
 ) -> list[tuple[str, list[dict]]]:
-    """Cap each answer label over the whole set and spread letters.
+    """Pick a whole-set sample, then cap answer labels.
 
-    Target size is ``max_per_construct`` times the number of scenes. A label
-    may be at most ``max_label_share`` of that target. Verbose partners of a
-    kept concise item are kept. A scene that produced no ok fact for a
-    construct keeps its unsupported placeholder.
+    Each scene contributes at most ``max_per_scene`` concise facts per
+    construct. Those lists are shuffled with ``seed`` and drawn round-robin
+    up to ``max_per_construct`` times the number of scenes. The label cap
+    runs after that draw. Verbose partners of a kept concise item are kept.
+    A scene that produced no ok fact for a construct keeps its placeholder.
     """
     scenes = [(name, _dedupe_items(items)) for name, items in scenes]
     n_scenes = max(1, len(scenes))
     target = max(1, max_per_construct * n_scenes)
-    cap = max(1, int(float(max_label_share) * target))
     by_id = {
         item['item_id']: item
         for _name, items in scenes
@@ -94,92 +160,15 @@ def balance_scene_items(
             if _is_selection_unit(item, scene_ids):
                 units[construct].append((name, item))
 
-    def _take(
-        pool: list[tuple[str, dict]],
-        slots: int,
-        chosen: list[tuple[str, dict]],
-        labels: Counter,
-        letters: Counter,
-    ) -> None:
-        pending = list(enumerate(pool))
-        while slots > 0 and pending and len(chosen) < target:
-            eligible = [
-                (index, pair)
-                for index, pair in pending
-                if labels[_answer_label_and_letter(pair[1])[0]] < cap
-            ]
-            if not eligible:
-                break
-            index, pair = min(
-                eligible,
-                key=lambda rec: (
-                    letters[_answer_label_and_letter(rec[1][1])[1] or ''],
-                    rec[0],
-                ),
-            )
-            chosen.append(pair)
-            label, letter = _answer_label_and_letter(pair[1])
-            labels[label] += 1
-            if letter:
-                letters[letter] += 1
-            pending = [(i, pair_) for i, pair_ in pending if i != index]
-            slots -= 1
-
-    def _trim_label_share(chosen: list[tuple[str, dict]], share: float) -> None:
-        """Drop extra copies so no label exceeds ``share`` of the final set.
-
-        A label that appears once is always kept, so a free-form action
-        sequence is not removed for being unique.
-        """
-        while len(chosen) > 1:
-            labels = Counter(_answer_label_and_letter(item)[0] for _name, item in chosen)
-            n = len(chosen)
-            limit = max(1, int(float(share) * n))
-            over = [label for label, count in labels.items() if count > limit]
-            if not over:
-                break
-            worst = max(over, key=lambda label: (labels[label], label))
-            letters = Counter(
-                _answer_label_and_letter(item)[1] or ''
-                for _name, item in chosen
-                if _answer_label_and_letter(item)[0] == worst
-            )
-            drop_at = max(
-                (
-                    index
-                    for index, (_name, item) in enumerate(chosen)
-                    if _answer_label_and_letter(item)[0] == worst
-                ),
-                key=lambda index: (
-                    letters[_answer_label_and_letter(chosen[index][1])[1] or ''],
-                    index,
-                ),
-            )
-            chosen.pop(drop_at)
-
+    rng = random.Random(seed)
     keep: dict[str, set[str]] = {name: set() for name, _items in scenes}
     for construct in order:
-        pool = units.get(construct) or []
-        count_ids = {
-            id(item)
-            for _name, item in pool
-            if (item.get('context') or {}).get('template_mode') == 'recall_count'
-        }
-        counts = [pair for pair in pool if id(pair[1]) in count_ids]
-        rest = [pair for pair in pool if id(pair[1]) not in count_ids]
-        chosen: list[tuple[str, dict]] = []
-        count_slots = 0
-        if construct == 'spatial_working_memory' and target >= 2 and counts:
-            count_slots = max(1, target // count_divisor)
-        _take(counts, count_slots, chosen, Counter(), Counter())
-        # Continue letter and label counts from the reserved count items.
-        labels: Counter = Counter(_answer_label_and_letter(item)[0] for _n, item in chosen)
-        letters: Counter = Counter(
-            letter
-            for _n, item in chosen
-            if (letter := _answer_label_and_letter(item)[1])
+        chosen = _round_robin(
+            units.get(construct) or [],
+            per_scene=max_per_scene,
+            slots=target,
+            rng=rng,
         )
-        _take(rest, target - len(chosen), chosen, labels, letters)
         _trim_label_share(chosen, max_label_share)
         for name, item in chosen:
             keep[name].add(item['item_id'])
@@ -201,14 +190,15 @@ def balance_scene_items(
 def _balance_generated(
     scenes: list[tuple[str, list[dict]]], cfg
 ) -> list[tuple[str, list[dict]]]:
-    """Apply the whole-set label cap after every scene has been planned."""
+    """Balance every scene together, then write."""
     if not scenes:
         return []
     return balance_scene_items(
         scenes,
         max_per_construct=cfg.budget.max_per_construct,
+        max_per_scene=cfg.budget.max_per_scene,
         max_label_share=cfg.options.max_label_share,
-        count_divisor=cfg.spatial_working_memory.count_divisor,
+        seed=cfg.options.shuffle_seed,
     )
 
 

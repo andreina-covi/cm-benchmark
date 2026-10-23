@@ -56,8 +56,8 @@ angular width). Displaced objects use the live pose from the object-state log
 instead of the catalog pose. It then attaches the displacement events,
 successful `placement_candidates` (failed trials and receptacle rows whose
 `parent_receptacle` is not the `anchor_id` are dropped at CSV read),
-world layout, nav graph and camera size, and saves the episode to SQLite
-(and JSON with `--export_json`).
+world layout, nav graph and camera size. JSON is written with
+`--export_json`. SQLite is written only with `--export_db`.
 
 **`visibility_filters.py`** holds both visibility filters: the static
 thresholds (`DEFAULT_QUESTION_VISIBILITY_THRESHOLDS`) and the DecisionTree

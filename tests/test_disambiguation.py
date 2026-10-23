@@ -21,14 +21,17 @@ from cm_benchmark.generation.disambiguation import (
 from cm_benchmark.generation.pipeline import generate_items_for_episode
 
 
-def _vis(cat, pos, *, bbox=None, area=2000, side=40, pix=500, size=None):
+def _vis(cat, pos, *, bbox=None, area=2000, side=40, pix=500, size=None, mark_xy=(40, 30)):
     row = {
         'category': cat,
         'position': pos,
         'bbox_area': area,
         'min_side': side,
         'visible_pixels': pix,
+        'mark_xy': list(mark_xy) if mark_xy is not None else None,
     }
+    if row['mark_xy'] is None:
+        del row['mark_xy']
     if bbox is not None:
         row['bbox'] = bbox
     if size is not None:
@@ -264,7 +267,11 @@ def test_no_mark_on_failed_visibility_frame(tmp_path):
         'steps': [
             _step(
                 0,
-                {'Chair|1': _vis('Chair', [0.0, 0.0, 1.0], bbox=bbox)},
+                {
+                    'Chair|1': _vis(
+                        'Chair', [0.0, 0.0, 1.0], bbox=bbox, mark_xy=(50, 55)
+                    )
+                },
                 image=str(p0),
             ),
             {
@@ -279,11 +286,27 @@ def test_no_mark_on_failed_visibility_frame(tmp_path):
     )
     marked = Image.open(copies[0]).convert('RGB')
     hidden = Image.open(copies[1]).convert('RGB')
-    # Top-centre of the bbox should be a magenta-ish filled dot.
-    px = marked.getpixel((60, 29))
+    # Exported mask point. The old bbox top-centre (60, 29) stays background.
+    px = marked.getpixel((50, 55))
     assert px[0] > 200 and px[1] < 80
+    assert marked.getpixel((60, 29)) == bg
     # Hidden frame: visibility filter failed, so the copy stays the background.
     assert hidden.getpixel((60, 29)) == bg
+
+
+def test_missing_mark_point_drops_the_item():
+    episode = {
+        'steps': [
+            _step(
+                0,
+                {
+                    'Chair|1': _vis('Chair', [0.0, 0.0, 1.0], mark_xy=None),
+                    'Chair|2': _vis('Chair', [2.0, 0.0, 1.0], bbox=[10, 10, 40, 40], mark_xy=None),
+                },
+            )
+        ]
+    }
+    assert resolve_named_objects(episode, [0], ['Chair|1']) is None
 
 
 def test_all_marks_skips_proximity():

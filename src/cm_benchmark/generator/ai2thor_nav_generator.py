@@ -94,6 +94,42 @@ def _row_xyz(row, prefix: str):
     return None
 
 
+def _row_mark_xy(row):
+    """Pixel of the object mask (``mark-x`` / ``mark-y``), or None if absent."""
+    if 'mark-x' not in row.index or 'mark-y' not in row.index:
+        return None
+    x, y = row.get('mark-x'), row.get('mark-y')
+    if pd.isna(x) or pd.isna(y):
+        return None
+    try:
+        xf, yf = float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(xf) or not math.isfinite(yf):
+        return None
+    return [int(round(xf)), int(round(yf))]
+
+
+def _row_text(row, *keys):
+    """First non-empty string among ``keys``, or None."""
+    for key in keys:
+        if key not in row.index or pd.isna(row.get(key)):
+            continue
+        text = str(row.get(key)).strip()
+        if text:
+            return text
+    return None
+
+
+def _row_obj_room(row):
+    """Object room id/type from ``obj-room`` / ``obj-room-type``."""
+    room_id = _row_text(row, 'obj-room')
+    room_type = _row_text(row, 'obj-room-type')
+    if room_id is None and room_type is None:
+        return None
+    return {'room_id': room_id, 'room_type': room_type}
+
+
 def _fov_stride_from_meta(meta) -> int:
     """``episode_meta.fov_stride`` / ``config.fov_stride``; default 1."""
     if not isinstance(meta, dict):
@@ -639,6 +675,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     ),
                     'objects': [],
                     'bboxes': [],
+                    'marks': [],
+                    'rooms': [],
                     'visibility_metrics': [],
                 }
             if not _is_valid_obj_id(obj) or is_structural_object(object_id=obj):
@@ -676,6 +714,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
 
             dict_navigation[timestep]['objects'].append(obj)
             dict_navigation[timestep]['bboxes'].append(bbox)
+            dict_navigation[timestep]['marks'].append(_row_mark_xy(row))
+            dict_navigation[timestep]['rooms'].append(_row_obj_room(row))
             dict_navigation[timestep]['visibility_metrics'].append(metrics)
         return dict_navigation
 
@@ -743,6 +783,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     if 'room-id' in row.index and pd.notna(row.get('room-id'))
                     else None
                 ),
+                'room-type': (
+                    row.get('room-type')
+                    if 'room-type' in row.index and pd.notna(row.get('room-type'))
+                    else None
+                ),
                 'obj-pos': (
                     row.get('obj-pos-x'),
                     row.get('obj-pos-y'),
@@ -789,6 +834,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
         ag_rot = data['ag_rot']
         timestep = data.get('timestep')
         bboxes = data.get('bboxes') or []
+        marks = data.get('marks') or []
+        rooms = data.get('rooms') or []
         for idx, obj in enumerate(data['objects']):
             obj_pos, obj_rot, state = self._pose_for_object(obj, timestep)
             if obj_pos is None:
@@ -831,6 +878,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 ),
                 'angles': (float(np.round(alpha, 3)), float(np.round(betha, 3))),
             }
+            mark = marks[idx] if idx < len(marks) else None
+            if mark is not None:
+                visible_objs[obj]['mark_xy'] = mark
             if vis_m is not None:
                 visible_objs[obj]['bbox_area'] = vis_m.get('bbox_area')
                 visible_objs[obj]['min_side'] = vis_m.get('min_side')
@@ -852,6 +902,14 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 visible_objs[obj]['aabb_max'] = amax
             if catalog.get('room-id'):
                 visible_objs[obj]['room_id'] = catalog['room-id']
+            if catalog.get('room-type'):
+                visible_objs[obj]['room_type'] = catalog['room-type']
+            room = rooms[idx] if idx < len(rooms) else None
+            if isinstance(room, dict):
+                if room.get('room_id'):
+                    visible_objs[obj]['room_id'] = room['room_id']
+                if room.get('room_type'):
+                    visible_objs[obj]['room_type'] = room['room_type']
             # Static catalog AABB center. Displaced objects keep the live
             # object_state pivot — the catalog center would be the pre-move pose.
             if state is None:
@@ -979,6 +1037,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 rec['asset_id'] = entry['assetId']
             if entry.get('room-id'):
                 rec['room_id'] = entry['room-id']
+            if entry.get('room-type'):
+                rec['room_type'] = entry['room-type']
             center = _finite_xyz(entry.get('bbox-c'))
             size = _finite_xyz(entry.get('size'))
             amin = _finite_xyz(entry.get('aabb-min'))
@@ -1032,23 +1092,23 @@ def _export_one_episode(args, folder, *, scene_id, episode_id_override):
     json_name = scene_json_name(scene_name, getattr(args, 'output_filename', None))
     generator.output_path = str(scene_output_dir(args.output_path, scene_name))
     generator.output_filename = json_name
-    db_file = scene_db_file(args.db_path, scene_name)
     print(f'Building episode GT for {scene_name} from {folder}')
     episode_dict = generator.collect_episode_data(extra_data={'scene': scene_name})
 
-    meta = generator.episode_meta or {}
-    episode_id = (
-        episode_id_override
-        or meta.get('episode_id')
-        or f"{args.environment}_{scene_name}"
-    )
-    environment = meta.get('environment') or args.environment
-    generator.export_to_db(
-        episode_dict,
-        db_path=str(db_file),
-        episode_id=episode_id,
-        environment=environment,
-    )
+    if getattr(args, 'export_db', False):
+        meta = generator.episode_meta or {}
+        episode_id = (
+            episode_id_override
+            or meta.get('episode_id')
+            or f"{args.environment}_{scene_name}"
+        )
+        environment = meta.get('environment') or args.environment
+        generator.export_to_db(
+            episode_dict,
+            db_path=str(scene_db_file(args.db_path, scene_name)),
+            episode_id=episode_id,
+            environment=environment,
+        )
     if args.export_json:
         generator.export_to_json(episode_dict, json_name)
     return scene_name
@@ -1061,10 +1121,10 @@ def main(args):
     walked one child at a time. Each ``scene_id`` comes from that child's
     filenames (``navigation-house_007514.csv`` → ``house_007514``).
     ``visibility_model_path`` is the same bundle for every scene.
-    ``db_path`` and ``output_path`` are roots: each scene is written to
-    ``<db_path>/<scene_id>/episodes.db`` and
-    ``<output_path>/<scene_id>/nav_<scene_id>.json``
-    (for example ``nav_house_007514.json``).
+    ``output_path`` is a root: each scene is written to
+    ``<output_path>/<scene_id>/nav_<scene_id>.json`` when ``--export_json``
+    is set (for example ``nav_house_007514.json``). SQLite is written only
+    with ``--export_db``, to ``<db_path>/<scene_id>/episodes.db``.
     """
     from cm_benchmark.generation.config import load_generation_config, use_generation_config
 

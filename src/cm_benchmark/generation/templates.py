@@ -225,6 +225,52 @@ def _core_question(fact: PlannedFact) -> str:
     return body
 
 
+def _named_object_ids(fact: PlannedFact) -> list[str]:
+    """Queried object first, then source/goal/perspective ids from extra."""
+    ids: list[str] = []
+    extra = fact.extra or {}
+    for val in (
+        fact.queried_object_id,
+        extra.get('source_landmark_id'),
+        extra.get('goal_landmark_id'),
+        extra.get('A_id'),
+        extra.get('B_id'),
+        extra.get('C_id'),
+    ):
+        if val and val not in ids:
+            ids.append(str(val))
+    return ids
+
+
+def _object_room_label(
+    episode: dict, fact: PlannedFact, step: Optional[dict]
+) -> Optional[str]:
+    """Room type of the named object, never the agent's containing region."""
+    steps: list[dict] = []
+    for s in (fact.encoding_step, fact.query_step):
+        if s is None:
+            continue
+        st = step_by_index(episode, int(s))
+        if st is not None:
+            steps.append(st)
+    if not steps and step is not None:
+        steps = [step]
+    catalog = episode.get('object_catalog') or {}
+    for oid in _named_object_ids(fact):
+        for st in steps:
+            vis = (st.get('visible_objects') or {}).get(oid)
+            if isinstance(vis, dict):
+                room = vis.get('room_type') or vis.get('room_id')
+                if room:
+                    return str(room)
+        rec = catalog.get(oid) if isinstance(catalog, dict) else None
+        if isinstance(rec, dict):
+            room = rec.get('room_type') or rec.get('room_id')
+            if room:
+                return str(room)
+    return None
+
+
 def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
     """GT-grounded scene description that must not leak the answer label.
 
@@ -274,9 +320,7 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
             f"{extra.get('C', 'landmark C')}."
         )
 
-    room = None
-    if step:
-        room = step.get('current_room_type') or step.get('current_room')
+    room = _object_room_label(episode, fact, step)
     if room:
         parts.append(f'You are looking around a space identified as {room}.')
 

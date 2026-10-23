@@ -38,6 +38,52 @@ def test_episode_has_taxonomy_level_fields(episode):
     assert 'turns' in data['route']
 
 
+def test_mark_xy_is_kept_from_navigation_and_dropped_when_blank(tmp_path):
+    lines = NAV_CSV.read_text().strip().splitlines()
+    nav = tmp_path / 'navigation.csv'
+    nav.write_text(
+        lines[0] + ',mark-x,mark-y\n' + lines[1] + ',33,17\n' + lines[2] + ',,\n'
+    )
+    gen = Ai2ThorNavGenerator(
+        path_navigation=str(nav),
+        path_objects=str(OBJ_CSV),
+        output_path=str(tmp_path),
+        output_filename='episode.json',
+    )
+    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene'})
+    assert data['steps'][0]['visible_objects']['Cup|1']['mark_xy'] == [33, 17]
+    assert 'mark_xy' not in data['steps'][1]['visible_objects']['Plate|1']
+    gen.export_to_json(data, 'episode.json')
+    raw = json.loads((tmp_path / 'episode.json').read_text())
+    assert raw['steps'][0]['visible_objects']['Cup|1']['mark_xy'] == [33, 17]
+    assert 'mark_xy' not in raw['steps'][1]['visible_objects']['Plate|1']
+
+
+def test_obj_room_type_is_kept_from_navigation(tmp_path):
+    lines = NAV_CSV.read_text().strip().splitlines()
+    nav = tmp_path / 'navigation.csv'
+    nav.write_text(
+        lines[0] + ',obj-room,obj-room-type\n'
+        + lines[1] + ',room|4,LivingRoom\n'
+        + lines[2] + ',,\n'
+    )
+    gen = Ai2ThorNavGenerator(
+        path_navigation=str(nav),
+        path_objects=str(OBJ_CSV),
+        output_path=str(tmp_path),
+        output_filename='episode.json',
+    )
+    data = gen.collect_episode_data(extra_data={'scene': 'TinyScene'})
+    cup = data['steps'][0]['visible_objects']['Cup|1']
+    assert cup['room_id'] == 'room|4'
+    assert cup['room_type'] == 'LivingRoom'
+    gen.export_to_json(data, 'episode.json')
+    raw = json.loads((tmp_path / 'episode.json').read_text())
+    slim = raw['steps'][0]['visible_objects']['Cup|1']
+    assert slim['room_type'] == 'LivingRoom'
+    assert slim['room_id'] == 'room|4'
+
+
 def test_step0_cup_is_visible_and_egocentric_edge_exists(episode):
     data, _ = episode
     step0 = data['steps'][0]
@@ -177,6 +223,31 @@ def test_folder_loads_displacement_and_survey_fields(folder_episode):
     assert data['episode_meta']['episode_id'] == 'house_tiny_test'
 
 
+def test_main_skips_sqlite_unless_export_db(tmp_path):
+    from argparse import Namespace
+
+    from cm_benchmark.generator.ai2thor_nav_generator import main
+
+    out = tmp_path / 'nav_data'
+    db = tmp_path / 'episodes'
+    main(
+        Namespace(
+            csv_path_folder=str(EPISODE_DIR),
+            scene_id=None,
+            episode_id=None,
+            output_path=str(out),
+            output_filename=None,
+            db_path=str(db),
+            environment='ai2thor',
+            export_json=True,
+            visibility_model_path=None,
+            config=None,
+        )
+    )
+    assert (out / 'house_tiny' / 'nav_house_tiny.json').is_file()
+    assert not db.exists()
+
+
 def test_folder_episode_exports_to_db(folder_episode, tmp_path):
     gen, data = folder_episode
     db_path = tmp_path / 'ep.db'
@@ -244,6 +315,7 @@ def test_main_builds_every_child_episode_with_one_visibility_model(tmp_path):
             output_filename=None,
             db_path=str(db),
             environment='ai2thor',
+            export_db=True,
             export_json=True,
             visibility_model_path=str(model_path),
             file_navigation=None,

@@ -15,6 +15,7 @@ cd "$REPO"
 
 "$PY" -m cm_benchmark.generator.ai2thor_nav_generator \
   --csv_path_folder "$COLLECTION" \
+  --export_db \
   --db_path "$OUT/episodes" \
   --export_json \
   --output_path "$OUT/nav_data" \
