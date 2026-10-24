@@ -165,14 +165,28 @@ items/house_007514/items_house_007514.json
 ```
 
 Quality knobs (visibility floors, direction wedges, delays, class-4 pair
-gates, …) are read from [`configs/generation.yaml`](configs/generation.yaml).
+gates, the class-4 frame budget, …) are read from
+[`configs/generation.yaml`](configs/generation.yaml).
 Pass `--config path/to/generation.yaml` to use another file (an ablation is
 a copy of that file with different values). These CLI flags override the
-loaded file when present: `--max_per_construct`, `--swm_min_delay`,
-`--swm_max_delay`, `--su_min_delay`, `--su_max_delay`,
+loaded file when present: `--max_per_construct`, `--n_frames`,
+`--swm_min_delay`, `--swm_max_delay`, `--su_min_delay`, `--su_max_delay`,
 `--visibility_model_path`. The same `--config` flag is on
 `ai2thor_nav_generator`. Each item stores `generation_config` (the file's
 `name`) and `generation_config_hash` (SHA-256 of the values that produced it).
+
+`--n_frames` is how many frames a route or survey item shows. Omit it to
+keep `class4.n_frames` (16). The frames are an even sample of the walk and
+always include the source and goal sightings; a survey also keeps one frame
+per planned-path edge. The item is dropped when those required frames do not
+fit. Pass a smaller or larger value when a model or machine needs a different
+budget, then regenerate the items.
+
+Spatial updating and spatial working memory show every field-of-view frame
+from the sighting through the query, in time order, including a turn in
+place. Perspective taking uses the one frame in which all three named
+objects are visible. An invisible-displacement destination must be clearly
+visible in a frame before the query.
 
 If a construct cannot be proven from that scene's GT, the item is
 `unsupported` — that is expected, not a bug to tune away.
@@ -181,7 +195,7 @@ If a construct cannot be proven from that scene's GT, the item is
 pytest tests/ -q
 ```
 
-More commands (visibility labeling, slides, frame annotation, CLI flags):
+More commands (visibility labeling, human review package, slides, CLI flags):
 [`docs/generation.md`](docs/generation.md).
 
 ---

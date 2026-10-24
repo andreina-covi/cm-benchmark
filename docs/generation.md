@@ -160,6 +160,52 @@ the scene’s own typical landmark-pair length; a detour ratio of at least this
 scene’s typical geo/eucl (capped at 1.1 for route, 1.05 for survey); emit the
 hardest surviving pairs. Route also requires real turns. Constants: `planner.py`.
 
+Class-4 frames: an even sample of at most `class4.n_frames` (default 16;
+`--n_frames` overrides for one run). Route = FOV walk from the source
+sighting minus `class4.route.context_margin_steps` through the goal sighting
+plus that margin. Survey = FOV walk from the start of the episode through the
+query, always including one frame per planned-path edge (both endpoints within
+the view radius of that frame). Both always keep the source and goal
+sightings. The item is dropped when the required set does not fit. Letter
+markers on source/goal still apply when those frames need them. Evaluation
+uses the item’s `image_paths`: unmarked originals when `disambiguation` is
+`none` or `proximity`, and the colour-dot copies when it is `mark`.
+
+Spatial updating and spatial working memory show every FOV frame from the
+sighting through the query, in time order (including a turn in place).
+Perspective taking shows the one frame where A, B, and C are all visible.
+Invisible displacement shows the walk from the earlier of the object encode
+and a clear destination sighting through the query.
+
+---
+
+## Human review package
+
+Build zip-ready reviewer folders from generated items. Reviewers see exactly
+the frames in each item’s `image_paths`. For route and survey they answer
+whether the route from A to B can be worked out from those frames (yes/no),
+plus optional free-text route and the usual problem flags. MCQ items use the
+options (or Can't tell). Multi-frame items hide the question until **Show the
+question**.
+
+```bash
+python scripts/build_review_package.py \
+  --items  src/cm_benchmark/storage/ai2thor/items \
+  --output /path/to/review_package \
+  --per-construct 25 \
+  --reviewers 10 \
+  --reviews-per-item 2 \
+  --seed 0
+```
+
+```bash
+python scripts/analyze_review.py \
+  --manifest /path/to/review_package/manifest.json \
+  --csv /path/to/reviewer_csvs
+```
+
+Process and checklist: [`Evaluation_process_manual.md`](../Evaluation_process_manual.md).
+
 ---
 
 ## Review slides
@@ -195,11 +241,7 @@ python scripts/ablation_report.py analysis/ablations
 the same across settings so the report can pair items for McNemar and
 Kendall's tau.
 
-Class-4 stills get a letter marker on source and goal. Evaluation uses the
-item’s `image_paths`: unmarked originals when `disambiguation` is `none`
-or `proximity`, and the colour-dot copies when it is `mark`.
-
-Annotate frames for spatial review:
+Annotate frames for visibility calibration (not the human item-review UI):
 
 ```bash
 python -m cm_benchmark.utils.annotate_frames \

@@ -48,12 +48,12 @@ Re-derive the answer independently from the episode DB and compare to the stored
 
 - `egocentric_encoding` → recompute viewer→object direction from `agent_pose@shown_step` + object position.
 - `allocentric_encoding` → recompute object→object relation using the reference object's intrinsic frame.
-- `spatial_working_memory` → recompute recalled relation/location/count at the stated `k` steps back; confirm object was static across shown frames.
-- `invisible_displacement` → confirm `displacement_event.hidden_during == true` and object is not visible from move through query; recompute ego bearing at query pose. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
-- `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers.
-- `perspective_taking` → confirm three distinguishable landmarks A/B/C; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
-- `route_knowledge` → path exists on traversed_edges; score with `score_route_action_sequence` (success / validity / SPL).
-- `survey_based_route_planning` → no path on traversed_edges; a path on viewed_edges; score with `score_survey_action_sequence` (same simulator; validity requires at least one unwalked viewed edge).
+- `spatial_working_memory` → recompute recalled relation/location/count at the stated `k` steps back; confirm object was static across shown frames. `image_paths` must be every FOV frame from encode through query in time order (turns in place stay).
+- `invisible_displacement` → confirm the destination leaves view within `invisible_displacement.max_delay`, the object / old pose / destination stay out of view until then, and a clear pre-query sighting of the destination (or swap partner / floor landmark) exists; recompute ego bearing at the query pose. Destination identity is exact `obj-id`. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
+- `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers. `image_paths` must be every FOV frame from encode through query in time order.
+- `perspective_taking` → confirm A, B, and C are distinguishable together in the one shown frame; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
+- `route_knowledge` → path exists on traversed_edges; score with `score_route_action_sequence` (success / validity / SPL). Frames are an even sample of the walk from source sighting minus `context_margin_steps` through goal sighting plus that margin, at most `class4.n_frames`, always including both sightings.
+- `survey_based_route_planning` → no path on traversed_edges; a path on viewed_edges; score with `score_survey_action_sequence` (same simulator; validity requires at least one unwalked viewed edge). Frames are an even sample of the walk through the query, at most `class4.n_frames`, always including source/goal sightings and one frame per planned-path edge.
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
@@ -79,26 +79,28 @@ If either baseline gets the item right at above-chance rate across repeated samp
 This is the part you flagged as necessary because some judgments (construct-faithfulness, image legibility, question naturalness, whether a "plausible but unwalked route" distractor is actually plausible to a human) aren't fully checkable by code, and because Layer A's baselines can be gamed by items that are accidentally easy in ways code doesn't anticipate.
 
 ### 3.1 Who reviews, and with what
-- **Annotators:** 2 independent reviewers minimum per sampled item. Reviewers should be spatial-reasoning-literate but *not* the person who wrote the generator/template for that construct (avoid confirmation bias — you already do this pattern with the visibility labeling tool being separate from generation code).
-- **Tooling:** extend the existing `build_labeling_set.py` / annotated-frame pattern. Reuse `annotate_frames.py` output (numbered circles + legend) as the visual the reviewer sees — this keeps review artifacts consistent with what you already build for visibility calibration, and means you don't need a second annotation UI.
-- **Blinding:** reviewers see item images + question + options, but **not** the stored answer or `answer_source`, until after they submit their own judgment. This makes the human review a genuine second measurement, not a rubber stamp.
+- **Annotators:** 2 independent reviewers minimum per sampled item (`--reviews-per-item`). Reviewers should be spatial-reasoning-literate but *not* the person who wrote the generator/template for that construct.
+- **Tooling:** `scripts/build_review_package.py` writes one zip-ready folder per reviewer. Each folder has `index.html` and **exactly the frames in that item's `image_paths`** (marked copies when the item uses marks). Gold stays in `manifest.json` at the package root, not in the reviewer folders. Multi-frame items hide the question until **Show the question**. After review, `scripts/analyze_review.py` merges the downloaded CSVs against the manifest (accuracy, Krippendorff's α, flags). Commands: [`docs/generation.md`](docs/generation.md).
+- **Blinding:** reviewers see the same frames the model gets, plus the question. For MCQ they pick an option (or Can't tell). For route / survey they answer only whether the route can be worked out from those frames (yes/no), with an optional free-text route. They do **not** see the stored gold until after they submit (practice items are the exception: they show the stored answer and are skipped by analysis).
 
 ### 3.2 What each reviewer judges, per item
-A checklist derived directly from the construct's `discriminators` in `taxonomy.yaml` — this is the key move: **the taxonomy already tells you the rubric**, you don't need to invent a separate one. For example, for `spatial_updating` the reviewer checklist is literally:
-- [ ] Object position is unchanged across the shown frames (only the agent moved) — confirmed via object_state
-- [ ] Net pose change (position or heading) between encode and query exceeds tolerance — action count alone is not enough
-- [ ] The queried object is not visible at the final pose
-- [ ] The question is answerable from the shown frames + geometry alone, not world knowledge
+A checklist derived from the construct's `discriminators` in `taxonomy.yaml`. The HTML flags are shared across constructs: ambiguous reference, unclear question, object not visible, more than one option looks correct.
 
-Plus three checks that apply to every construct (from `shared_rules`):
+For every construct (from `shared_rules`):
 - [ ] Question does not name the answer, a direction, or a move/event
-- [ ] Exactly one option is defensibly correct given only what's shown
 - [ ] Frame of reference is unambiguous
+- [ ] The frames shown are enough to answer (for MCQ: exactly one option is defensibly correct; for route/survey: the route from A to B can be worked out from these frames)
+
+Construct-specific checks that matter in review:
+- [ ] **spatial_updating / spatial_working_memory:** the sequence is consecutive FOV frames for the stated `k` (no missing turn in the middle)
+- [ ] **invisible_displacement:** the destination place is clearly visible in some shown frame before the query
+- [ ] **perspective_taking:** A, B, and C appear together in the one shown frame
+- [ ] **route / survey:** the shown walk is enough to work out A→B; do not grade a written action list as gold
 
 Plus one holistic item:
-- [ ] **Can you personally answer this correctly from the images alone**, and would you expect a spatially competent adult to agree? (This is the human analogue of the blind-LLM baseline — catches cases where the "vision-necessary" gate passed but the image is actually ambiguous, blurry, or the object is technically-but-not-practically visible.)
+- [ ] **Can you personally answer this from the images alone**, and would you expect a spatially competent adult to agree? (Catches cases where automated gates passed but the image is ambiguous, blurry, or the object is only technically visible.)
 
-Reviewer selects an option (their own answer to the question) *before* unblinding, then marks each checklist box, then is shown the stored answer/rationale and confirms or files a discrepancy.
+On MCQ items the reviewer selects an option *before* seeing gold. On route/survey items the scored judgment is yes/no on whether the route can be worked out; the optional written route is free text for qualitative notes, not the benchmark gold.
 
 ### 3.3 Decision rule
 - **Agree + checklist clean, both reviewers:** item promoted, `status: verified`.
@@ -106,9 +108,7 @@ Reviewer selects an option (their own answer to the question) *before* unblindin
 - **Both reviewers reject on the same discriminator:** item rejected, and the underlying template/generator gets a bug ticket referencing the specific `discriminators` line that failed. Don't just discard the item silently — a systematic discriminator failure across many items means the generator itself is broken for that construct.
 
 ### 3.4 Inter-annotator agreement (IAA)
-Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_based_route_planning` are inherently harder to adjudicate than `egocentric_encoding`). Report:
-- Percent agreement and Cohen's κ per construct, computed on the "selected option" field (this is the harder, more informative metric — checklist agreement alone can look good even when reviewers are answering the underlying question differently).
-- A construct with κ below your threshold (pick one — 0.6 is a common floor for "substantial agreement" in annotation literature, but you should set this deliberately rather than import it blindly) means the construct's items are ambiguous to humans too, and the fix is almost always in `question_template` wording or `distractor_pattern`, not in adding more reviewers.
+Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_based_route_planning` are inherently harder to adjudicate than `egocentric_encoding`). `scripts/analyze_review.py` reports human accuracy vs gold, nominal Krippendorff's α, and flag rates on study items (practice rows are ignored). For MCQ, gold is the stored letter; for route/survey, gold for the yes/no judgment is `yes` (the question is answerable from the frames). A construct with α below your threshold means the items are ambiguous to humans too, and the fix is almost always in wording, frame selection, or distractors — not in adding more reviewers.
 
 ### 3.5 Sampling
 At this stage of the project (small item sets, active template iteration), review **100% of `auto_pass` items** — you don't have volume yet where sampling saves meaningful effort, and full review gives you the richest signal for fixing templates. Once templates stabilize and volume grows, move to a stratified sample (e.g., all items from any construct/scene combo not yet seen, plus a fixed percentage of repeats) and hold out a fully-reviewed set as a periodic audit.
