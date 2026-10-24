@@ -88,7 +88,9 @@ class NavSequenceGenerator(ABC):
         }
 
         seen_objects_memory = {}
-        for timestep, data in self.dict_navigation.items():
+        for timestep, data in sorted(
+            self.dict_navigation.items(), key=lambda kv: int(kv[0])
+        ):
             data = {**data, 'timestep': timestep}
             step_dict = {
                 'step': timestep,

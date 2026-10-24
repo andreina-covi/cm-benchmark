@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Sequence
 
 import networkx as nx
@@ -159,11 +160,24 @@ def merge_role_images(
 
 
 def _step_for_image_path(episode: dict, path: str) -> Optional[int]:
-    """Step index whose ``image_path`` is ``path``, or None."""
+    """Step index whose ``image_path`` is ``path``, or None.
+
+    Full-path match first. A unique basename in this episode also matches, so
+    marked copies named ``img_12.png`` still bind to that step.
+    """
+    text = str(path or '')
+    if not text:
+        return None
     for step in episode.get('steps') or []:
-        if step.get('image_path') == path:
+        if step.get('image_path') == text:
             return int(step['step'])
-    return None
+    name = Path(text).name
+    hits = [
+        int(step['step'])
+        for step in episode.get('steps') or []
+        if step.get('image_path') and Path(str(step['image_path'])).name == name
+    ]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _named_ids_for_fact(episode: dict, fact: PlannedFact, frames: list[int]) -> list[str]:
@@ -380,6 +394,7 @@ def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
             and is_fov_step(episode, step_idx)
         ):
             window.append((step_idx, step['image_path']))
+    window.sort(key=lambda pair: pair[0])
     if not window:
         return []
 
@@ -1107,18 +1122,16 @@ def _nearest_floor_anchor(
 
 
 def _landmark_matches(visible_id: str, landmark_id: str) -> bool:
-    """Same id, or same id stem (``CounterTop|1|2`` matches ``CounterTop|9``)."""
-    return visible_id == landmark_id or (
-        str(visible_id).split('|')[0] == str(landmark_id).split('|')[0]
-    )
+    """Exact ``obj-id`` equality. Type-stem prefixes are not a match."""
+    return bool(visible_id) and visible_id == landmark_id
 
 
 def _visible_oid_matching(step: dict, landmark_id: str) -> Optional[str]:
-    """First visible id that ``_landmark_matches`` ``landmark_id``, else None."""
-    return next(
-        (oid for oid in step.get('visible_objects') or {} if _landmark_matches(oid, landmark_id)),
-        None,
-    )
+    """``landmark_id`` when that exact id is on the step, else None."""
+    if not landmark_id:
+        return None
+    vis = step.get('visible_objects') or {}
+    return landmark_id if landmark_id in vis else None
 
 
 def _object_mark_at(
@@ -1177,20 +1190,13 @@ def _rot3(rot) -> Optional[tuple[float, float, float]]:
 def _landmark_display_in_frames(
     episode: dict, landmark_id: Optional[str], frame_steps: list[int]
 ) -> Optional[str]:
-    """Referring display name for a destination landmark visible in shown frames."""
+    """Referring display name for the destination identified by exact ``obj-id``."""
     if not landmark_id or _is_floor_receptacle(landmark_id):
         return None
-    for si in frame_steps:
-        step = step_by_index(episode, si)
-        if not step:
-            continue
-        oid = _visible_oid_matching(step, landmark_id)
-        if oid is None:
-            continue
-        name = _referring_display_name(episode, si, oid)
-        if name is not None:
-            return name
-    return None
+    names = resolve_named_objects(episode, frame_steps, [landmark_id])
+    if names is None or landmark_id not in names:
+        return None
+    return names[landmark_id].display_name
 
 
 def _object_distinguishable_in_frames(
@@ -1609,19 +1615,86 @@ def _partner_event(episode: dict, ev: dict) -> Optional[dict]:
     return None
 
 
+def _last_mask_step_before(episode: dict, obj_id: Optional[str], query_step: int) -> Optional[int]:
+    """Latest FOV step before ``query_step`` where ``obj_id`` has mask pixels."""
+    if not obj_id:
+        return None
+    last = None
+    for step in episode.get('steps') or []:
+        si = int(step.get('step'))
+        if si >= int(query_step) or not is_fov_step(episode, si):
+            continue
+        if _object_mask_pixels(episode, obj_id, si) > 0:
+            last = si
+    return last
+
+
 def _build_id_frame_steps(
-    enc_idx: int, at_t: int, query_step: int, *, extra_steps: Optional[list[int]] = None
+    episode: dict,
+    enc_idx: int,
+    query_step: int,
+    *,
+    also_from: Optional[list[int]] = None,
 ) -> list[int]:
-    """Sorted ID frames: encode, the step before the hidden move, extras, query."""
-    frame_steps = [enc_idx]
-    if int(at_t) - 1 > enc_idx:
-        frame_steps.append(int(at_t) - 1)
-    for si in extra_steps or []:
-        if si not in frame_steps:
-            frame_steps.append(int(si))
-    if query_step not in frame_steps:
-        frame_steps.append(query_step)
-    return sorted({int(si) for si in frame_steps})
+    """FOV steps from the earliest sighting through the query, in time order."""
+    start = int(enc_idx)
+    for si in also_from or []:
+        if si is not None:
+            start = min(start, int(si))
+    return sorted(
+        {
+            int(step['step'])
+            for step in episode.get('steps') or []
+            if step.get('image_path')
+            and is_fov_step(episode, step.get('step'))
+            and start <= int(step['step']) <= int(query_step)
+        }
+    )
+
+
+def _id_shown_frames(
+    episode: dict,
+    enc_idx: int,
+    query_step: int,
+    *,
+    anchor_id: Optional[str] = None,
+    dest_pos=None,
+    radius_m: Optional[float] = None,
+    partner_id: Optional[str] = None,
+) -> Optional[list[int]]:
+    """Frames that show the destination cue, then the walk to the query.
+
+    The receptacle, the floor landmark, and a swap partner each need mask
+    pixels on some step before the query. None means the item cannot be
+    answered and must be dropped. ``k`` stays query minus the object encode.
+    """
+    also: list[int] = []
+    if partner_id:
+        seen = _last_mask_step_before(episode, partner_id, query_step)
+        if seen is None:
+            return None
+        also.append(seen)
+    if anchor_id and _is_floor_receptacle(anchor_id):
+        prior = [
+            int(step['step'])
+            for step in episode.get('steps') or []
+            if is_fov_step(episode, step.get('step')) and int(step['step']) < int(query_step)
+        ]
+        hit = _nearest_floor_anchor(
+            episode, dest_pos, prior, radius_m=radius_m
+        )
+        if hit is None:
+            return None
+        seen = _last_mask_step_before(episode, hit[0], query_step)
+        if seen is None:
+            return None
+        also.append(seen)
+    elif anchor_id:
+        seen = _last_mask_step_before(episode, anchor_id, query_step)
+        if seen is None:
+            return None
+        also.append(seen)
+    return _build_id_frame_steps(episode, enc_idx, query_step, also_from=also)
 
 
 def _images_for_steps(episode: dict, frame_steps: list[int]) -> list[str]:
@@ -1675,7 +1748,7 @@ def _try_ego_direction_fact(
             'object_type': object_type,
             'template_mode': template_mode,
             'frame_of_reference': 'egocentric',
-            'k': max(1, int(query_step) - int(at_t)),
+            'k': max(1, int(query_step) - int(enc_idx)),
             'disambiguator': disambiguator,
             **extra_fields,
         },
@@ -1711,15 +1784,23 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
             continue
         obj_id = ev.get('obj_id')
         to_r = ev.get('to_receptacle')
-        at_t = ev.get('at_timestep')
-        if not obj_id or at_t is None:
+        if not obj_id:
             continue
-        # Encode: last distinguishable sighting before the hidden move.
-        enc_idx = _last_distinguishable_sighting(
-            episode, obj_id, int(at_t), **enc_kw
+        from_pos = ev.get('from_position')
+        if from_pos is None:
+            enc_guess = _id_encode_step(episode, obj_id)
+            if enc_guess is not None:
+                from_pos = _id_from_position(episode, obj_id, enc_guess)
+        window = _id_earliest_query_window(
+            episode,
+            obj_id,
+            dest_pos=ev.get('to_position'),
+            from_pos=from_pos,
+            dest_anchor_id=to_r,
         )
-        if enc_idx is None:
+        if window is None:
             continue
+        enc_idx, at_t, query_step = window
         named = _id_displaced_object_name(episode, enc_idx, obj_id)
         if named is None:
             continue
@@ -1727,13 +1808,10 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
 
         candidates = _candidates_for_event(episode, ev.get('event_id'), obj_id)
         specs = _option_specs_for_event(ev, candidates)
-        # Prefer a pose where distractor bearings stay unique (latest-only often collapses).
-        query_step = _pick_best_id_query_step(episode, obj_id, int(at_t), specs)
-        if query_step is None:
-            continue
+        ev = dict(ev)
+        ev['at_timestep'] = int(at_t)
         if not _object_hidden_through(episode, obj_id, int(at_t), int(query_step)):
             continue
-        # Encoding→query must include a floor-plane translation (not rotate-only).
         if not _has_real_move_between(episode, enc_idx, int(query_step)):
             continue
 
@@ -1751,9 +1829,11 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
                 episode, partner_id, int(at_t), int(query_step)
             ):
                 continue
-            frame_steps = _build_id_frame_steps(
-                enc_idx, int(at_t), int(query_step), extra_steps=[partner_enc]
+            frame_steps = _id_shown_frames(
+                episode, enc_idx, int(query_step), partner_id=partner_id
             )
+            if not frame_steps:
+                continue
             if not _object_distinguishable_in_frames(
                 episode, partner_id, frame_steps, **enc_kw
             ):
@@ -1796,7 +1876,15 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
             continue
 
         # Direct hidden place onto a receptacle landmark (or Floor + nearby anchor)
-        frame_steps = _build_id_frame_steps(enc_idx, int(at_t), int(query_step))
+        frame_steps = _id_shown_frames(
+            episode,
+            enc_idx,
+            int(query_step),
+            anchor_id=to_r,
+            dest_pos=ev.get('to_position'),
+        )
+        if not frame_steps:
+            continue
         floor_anchor_name = None
         floor_anchor_id = None
         if _is_floor_receptacle(to_r):
@@ -1844,6 +1932,7 @@ def _plan_id_from_events(episode: dict, max_items: int = 3) -> list[PlannedFact]
                 'new_location': new_location,
                 'to_receptacle': to_r,
                 'from_receptacle': ev.get('from_receptacle'),
+                'destination_landmark_id': None if _is_floor_receptacle(to_r) else to_r,
                 'floor_anchor_id': floor_anchor_id,
                 'floor_anchor_landmark': floor_anchor_name,
                 'relation_shift_magnitude': shift,
@@ -1946,14 +2035,7 @@ def _anchor_in_frames(
         if hit is None:
             return None
         return hit[0], hit[1], True
-    oid = None
-    for vis in passing_objects_in_frames(episode, frame_steps).values():
-        for vid in vis:
-            if _landmark_matches(vid, anchor_id):
-                oid = vid
-                break
-        if oid is not None:
-            break
+    oid = anchor_id if anchor_id else None
     if oid is None:
         return None
     names = resolve_named_objects(episode, frame_steps, [oid])
@@ -2013,41 +2095,110 @@ def _id_hidden_through(episode: dict, obj_id: str, start_step: int, end_step: in
     return True
 
 
-def _id_windows_for_object(episode: dict, obj_id: str) -> list[tuple[int, int, int]]:
-    """``(encode, move, query)`` windows; move is the latest hide in ``(encode, q]``.
+def _mask_pixel_count(odata: Optional[dict]) -> float:
+    """Mask pixels on a detection. Listed without a count still counts as visible."""
+    if not isinstance(odata, dict):
+        return 0.0
+    pix = odata.get('visible_pixels')
+    if pix is None:
+        return 1.0
+    try:
+        return float(pix)
+    except (TypeError, ValueError):
+        return 0.0
 
-    Encode is the latest raw-FOV sighting that clears the soft ``id_encode``
-    floors. For each later query ``q``, ``move`` is the latest step in
-    ``(encode, q]`` at which the object is not in the raw camera. When that
-    step is ``q`` itself, the destination is checked on that query frame only.
-    The agent must translate between encode and query; a hide that lands on
-    the query does not need a further step after the hide.
+
+def _object_mask_pixels(episode: dict, obj_id: Optional[str], step_idx: int) -> float:
+    """Mask pixels of ``obj_id`` on ``step_idx`` (raw frame, then visible map)."""
+    if not obj_id or not is_fov_step(episode, step_idx):
+        return 0.0
+    step = step_by_index(episode, step_idx)
+    if step is None:
+        return 0.0
+    raw = _id_raw_frames(step)
+    if obj_id in raw:
+        return _mask_pixel_count(raw[obj_id])
+    return _mask_pixel_count((step.get('visible_objects') or {}).get(obj_id))
+
+
+def _id_encode_step(episode: dict, obj_id: str) -> Optional[int]:
+    """Latest distinguishable raw-FOV sighting of ``obj_id``."""
+    enc = None
+    for step in episode.get('steps') or []:
+        si = int(step.get('step'))
+        if is_fov_step(episode, si) and _id_encode_sighting(episode, si, obj_id):
+            enc = si
+    return enc
+
+
+def _id_earliest_query_window(
+    episode: dict,
+    obj_id: str,
+    *,
+    dest_pos=None,
+    from_pos=None,
+    dest_anchor_id: Optional[str] = None,
+) -> Optional[tuple[int, int, int]]:
+    """Earliest ``(encode, move, query)`` within ``max_delay``, or None.
+
+    Query is the first later FOV step where the destination anchor has no
+    mask pixels, while the displaced object, its old position, and the
+    destination point stay out of view from the hide through that step.
     """
     fov = [
         int(step['step'])
         for step in episode.get('steps') or []
         if is_fov_step(episode, step.get('step'))
     ]
-    enc = None
-    for si in fov:
-        if _id_encode_sighting(episode, si, obj_id):
-            enc = si
+    enc = _id_encode_step(episode, obj_id)
     if enc is None:
-        return []
-    later = [si for si in fov if si > enc]
-    windows: list[tuple[int, int, int]] = []
+        return None
+    max_delay = _cfg().invisible_displacement.max_delay
+    later = [
+        si
+        for si in fov
+        if si > enc and (max_delay is None or si - enc <= int(max_delay))
+    ]
+    if not later:
+        return None
+    first_later = later[0]
     for q in later:
-        hidden = [si for si in later if si <= q and _id_object_not_visible(episode, obj_id, si)]
-        if not hidden:
-            continue
-        move = hidden[-1]
-        if not _id_hidden_through(episode, obj_id, move, q):
+        if not _id_hidden_through(episode, obj_id, first_later, q):
             continue
         if not _has_real_move_between(episode, enc, q):
             continue
-        windows.append((enc, move, q))
-    # Latest queries only; ranking stays cheap.
-    return windows[-4:]
+        if dest_pos is not None and not _dest_outside_frustum_through(
+            episode, dest_pos, first_later, q
+        ):
+            continue
+        if from_pos is not None and not _dest_outside_frustum_through(
+            episode, from_pos, first_later, q
+        ):
+            continue
+        if dest_anchor_id and not _is_floor_receptacle(dest_anchor_id):
+            if _object_mask_pixels(episode, dest_anchor_id, q) > 0:
+                continue
+        return (enc, q, q)
+    return None
+
+
+def _id_windows_for_object(
+    episode: dict,
+    obj_id: str,
+    *,
+    dest_pos=None,
+    from_pos=None,
+    dest_anchor_id: Optional[str] = None,
+) -> list[tuple[int, int, int]]:
+    """Zero or one window: the earliest query that satisfies the dest-hide rule."""
+    window = _id_earliest_query_window(
+        episode,
+        obj_id,
+        dest_pos=dest_pos,
+        from_pos=from_pos,
+        dest_anchor_id=dest_anchor_id,
+    )
+    return [window] if window is not None else []
 
 
 def _placement_is_receptacle_or_floor(cand: dict) -> bool:
@@ -2165,9 +2316,19 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
 
     triples: list[tuple[str, dict, tuple[int, int, int]]] = []
     for obj_id, rows in by_obj.items():
-        windows = _id_windows_for_object(episode, obj_id)
+        enc = _id_encode_step(episode, obj_id)
+        if enc is None:
+            continue
+        from_pos = _id_from_position(episode, obj_id, enc)
         for cand in rows:
-            for window in windows:
+            window = _id_earliest_query_window(
+                episode,
+                obj_id,
+                dest_pos=cand.get('position'),
+                from_pos=from_pos,
+                dest_anchor_id=cand.get('anchor_id'),
+            )
+            if window is not None:
                 triples.append((obj_id, cand, window))
     counts.append(('encode_hidden_query_window', len(triples)))
 
@@ -2213,10 +2374,19 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
         radius = cand.get('radius_m')
         if radius is None:
             radius = _cfg().invisible_displacement.floor_anchor_radius_m
-        frame_steps = _build_id_frame_steps(enc, move, query)
-        anchor = _anchor_in_frames(
-            episode, cand.get('anchor_id'), cand['position'], frame_steps, radius_m=float(radius)
+        frame_steps = _id_shown_frames(
+            episode,
+            enc,
+            query,
+            anchor_id=cand.get('anchor_id'),
+            dest_pos=cand.get('position'),
+            radius_m=float(radius),
         )
+        anchor = None
+        if frame_steps:
+            anchor = _anchor_in_frames(
+                episode, cand.get('anchor_id'), cand['position'], frame_steps, radius_m=float(radius)
+            )
         if anchor is not None:
             after_anchor.append(
                 (obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius)
@@ -2262,7 +2432,19 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
             'to_position': cand['position'],
             'hidden_during': True,
         }
-        images = _images_for_steps(episode, _build_id_frame_steps(enc, move, query))
+        images = _images_for_steps(
+            episode,
+            _id_shown_frames(
+                episode,
+                enc,
+                query,
+                anchor_id=cand.get('anchor_id'),
+                dest_pos=cand.get('position'),
+                radius_m=float(radius),
+                partner_id=partner_id if decision == 'swap' else None,
+            )
+            or [],
+        )
         if not images:
             continue
         fact = _try_ego_direction_fact(
@@ -2309,111 +2491,138 @@ def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedF
 
     ranked: list[tuple[tuple, PlannedFact]] = []
     for obj_id, rows in by_obj.items():
-        named_cache: dict[int, Optional[tuple[str, str]]] = {}
-        for enc, move, query in _id_windows_for_object(episode, obj_id):
-            if enc not in named_cache:
-                named_cache[enc] = _id_displaced_object_name(episode, enc, obj_id)
-            named = named_cache[enc]
-            if named is None:
+        enc = _id_encode_step(episode, obj_id)
+        if enc is None:
+            continue
+        named = _id_displaced_object_name(episode, enc, obj_id)
+        if named is None:
+            continue
+        object_type, disambiguator = named
+        from_rec = _object_current_receptacle(episode, obj_id, enc)
+        from_pos = _id_from_position(episode, obj_id, enc)
+        for cand in rows:
+            dest = cand['position']
+            window = _id_earliest_query_window(
+                episode,
+                obj_id,
+                dest_pos=dest,
+                from_pos=from_pos,
+                dest_anchor_id=cand.get('anchor_id'),
+            )
+            if window is None:
                 continue
-            object_type, disambiguator = named
-            from_rec = _object_current_receptacle(episode, obj_id, enc)
-            from_pos = _id_from_position(episode, obj_id, enc)
-            frame_steps = _build_id_frame_steps(enc, move, query)
-            for cand in rows:
-                dest = cand['position']
-                disp = _xz_distance(from_pos, dest)
-                if disp is None or disp < min_disp:
-                    continue
-                if from_rec and cand.get('anchor_id') and _landmark_matches(
-                    cand['anchor_id'], from_rec
-                ):
-                    continue
-                if not _receptacle_parent_is_anchor(cand):
-                    continue
-                if not _dest_outside_frustum_through(episode, dest, move, query):
-                    continue
-                radius = cand.get('radius_m')
-                if radius is None:
-                    radius = _cfg().invisible_displacement.floor_anchor_radius_m
-                anchor = _anchor_in_frames(
+            enc, move, query = window
+            radius = cand.get('radius_m')
+            if radius is None:
+                radius = _cfg().invisible_displacement.floor_anchor_radius_m
+            frame_steps = _id_shown_frames(
+                episode,
+                enc,
+                query,
+                anchor_id=cand.get('anchor_id'),
+                dest_pos=dest,
+                radius_m=float(radius),
+            )
+            if not frame_steps:
+                continue
+            disp = _xz_distance(from_pos, dest)
+            if disp is None or disp < min_disp:
+                continue
+            if from_rec and cand.get('anchor_id') and _landmark_matches(
+                cand['anchor_id'], from_rec
+            ):
+                continue
+            if not _receptacle_parent_is_anchor(cand):
+                continue
+            if not _dest_outside_frustum_through(episode, dest, move, query):
+                continue
+            anchor = _anchor_in_frames(
+                episode,
+                cand.get('anchor_id'),
+                dest,
+                frame_steps,
+                radius_m=float(radius),
+            )
+            if anchor is None:
+                continue
+            anchor_id, new_location, is_floor = anchor
+            decision, partner_id, _partner_enc, partner_named = _placement_swap_decision(
+                episode, cand, obj_id, move, query
+            )
+            if decision == 'drop':
+                continue
+            extra_fields: dict = {
+                'new_location': new_location,
+                'to_receptacle': cand.get('anchor_id'),
+                'from_receptacle': from_rec,
+                'destination_landmark_id': None if is_floor else anchor_id,
+                'floor_anchor_id': anchor_id if is_floor else None,
+                'floor_anchor_landmark': new_location if is_floor else None,
+                'floor_anchor_radius_m': float(radius) if is_floor else None,
+                'relation_shift_magnitude': _relation_shift_magnitude(
+                    episode, from_pos, dest, query
+                ),
+            }
+            template_mode = 'recall_direction'
+            answer_source = [
+                f'placement_candidates[obj_id={obj_id},anchor_id={cand.get("anchor_id")}].position',
+                f'object_state_track[{obj_id}]',
+                f'agent_trajectory[{query}]',
+            ]
+            if decision == 'swap' and partner_id and partner_named is not None:
+                extra_fields['other_object_type'] = partner_named[0]
+                extra_fields['swap_partner_id'] = partner_id
+                template_mode = 'swap'
+                answer_source.append(
+                    f'placement_candidates[obj_id={obj_id}].swap_partner={partner_id}'
+                )
+            ev = {
+                'obj_id': obj_id,
+                'at_timestep': move,
+                'from_receptacle': from_rec,
+                'to_receptacle': cand.get('anchor_id'),
+                'from_position': from_pos,
+                'to_position': dest,
+                'hidden_during': True,
+                'swap_partner_id': partner_id if decision == 'swap' else None,
+                'moved_via': 'swap' if decision == 'swap' else 'place',
+                'radius_m': radius,
+            }
+            if decision == 'swap' and partner_id:
+                frame_steps = _id_shown_frames(
                     episode,
-                    cand.get('anchor_id'),
-                    dest,
-                    frame_steps,
+                    enc,
+                    query,
+                    anchor_id=cand.get('anchor_id'),
+                    dest_pos=dest,
                     radius_m=float(radius),
+                    partner_id=partner_id,
                 )
-                if anchor is None:
+                if not frame_steps:
                     continue
-                anchor_id, new_location, is_floor = anchor
-                decision, partner_id, partner_enc, partner_named = _placement_swap_decision(
-                    episode, cand, obj_id, move, query
-                )
-                if decision == 'drop':
-                    continue
-                extra_steps = []
-                extra_fields: dict = {
-                    'new_location': new_location,
-                    'to_receptacle': cand.get('anchor_id'),
-                    'from_receptacle': from_rec,
-                    'floor_anchor_id': anchor_id if is_floor else None,
-                    'floor_anchor_landmark': new_location if is_floor else None,
-                    'floor_anchor_radius_m': float(radius) if is_floor else None,
-                    'relation_shift_magnitude': _relation_shift_magnitude(
-                        episode, from_pos, dest, query
-                    ),
-                }
-                template_mode = 'recall_direction'
-                answer_source = [
-                    f'placement_candidates[obj_id={obj_id},anchor_id={cand.get("anchor_id")}].position',
-                    f'object_state_track[{obj_id}]',
-                    f'agent_trajectory[{query}]',
-                ]
-                if decision == 'swap' and partner_id and partner_named is not None:
-                    extra_steps.append(int(partner_enc))
-                    extra_fields['other_object_type'] = partner_named[0]
-                    extra_fields['swap_partner_id'] = partner_id
-                    template_mode = 'swap'
-                    answer_source.append(
-                        f'placement_candidates[obj_id={obj_id}].swap_partner={partner_id}'
-                    )
-                ev = {
-                    'obj_id': obj_id,
-                    'at_timestep': move,
-                    'from_receptacle': from_rec,
-                    'to_receptacle': cand.get('anchor_id'),
-                    'from_position': from_pos,
-                    'to_position': dest,
-                    'hidden_during': True,
-                    'swap_partner_id': partner_id if decision == 'swap' else None,
-                    'moved_via': 'swap' if decision == 'swap' else 'place',
-                    'radius_m': radius,
-                }
-                images = _images_for_steps(
-                    episode, _build_id_frame_steps(enc, move, query, extra_steps=extra_steps)
-                )
-                if not images:
-                    continue
-                specs = _specs_from_placement(cand, rows, ev)
-                fact = _try_ego_direction_fact(
-                    episode,
-                    ev,
-                    obj_id=obj_id,
-                    object_type=object_type,
-                    enc_idx=enc,
-                    query_step=query,
-                    at_t=move,
-                    images=images,
-                    specs=specs,
-                    template_mode=template_mode,
-                    answer_source=answer_source,
-                    extra_fields=extra_fields,
-                    disambiguator=disambiguator,
-                )
-                if fact is None:
-                    continue
-                n_diag = len(fact.options_pool or [])
-                ranked.append(((-int(query), -n_diag, -float(disp), obj_id), fact))
+            images = _images_for_steps(episode, frame_steps)
+            if not images:
+                continue
+            specs = _specs_from_placement(cand, rows, ev)
+            fact = _try_ego_direction_fact(
+                episode,
+                ev,
+                obj_id=obj_id,
+                object_type=object_type,
+                enc_idx=enc,
+                query_step=query,
+                at_t=move,
+                images=images,
+                specs=specs,
+                template_mode=template_mode,
+                answer_source=answer_source,
+                extra_fields=extra_fields,
+                disambiguator=disambiguator,
+            )
+            if fact is None:
+                continue
+            n_diag = len(fact.options_pool or [])
+            ranked.append(((-int(query), -n_diag, -float(disp), obj_id), fact))
 
     if not ranked:
         return [

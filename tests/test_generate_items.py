@@ -882,6 +882,7 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
         'bbox_area': 200.0,
         'min_side': 12.0,
         'visible_pixels': 80.0,
+        'mark_xy': [20, 20],
     }
     counter = {
         'category': 'CounterTop',
@@ -889,8 +890,16 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
         'bbox_area': 5000.0,
         'min_side': 60.0,
         'visible_pixels': 4000.0,
+        'mark_xy': [80, 40],
     }
+    dest = [0.0, 0.9, -3.0]
     episode = {
+        'camera': {'width': 396, 'height': 224, 'fov_vertical_deg': 59},
+        'episode_meta': {'fov_stride': 1, 'camera': {'width': 396, 'height': 224, 'fov_v': 59}},
+        'object_catalog': {
+            'Cup|1': {'category': 'Cup'},
+            'CounterTop|1': {'category': 'CounterTop'},
+        },
         'steps': [
             {
                 'step': 0,
@@ -913,34 +922,22 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
             {
                 'step': 1,
                 'image_path': '/img_1.png',
-                'agent': {'position': [1, 1, 0], 'rotation': [0, 0, 0]},
-                'visible_objects': {'CounterTop|1': counter},
-                'edges_egocentric': [
-                    {
-                        'source': 'agent',
-                        'target': 'CounterTop|1',
-                        'angle_relation': ['', '', 'front'],
-                    }
-                ],
+                'agent': {'position': [0, 1, 3], 'rotation': [0, 0, 0]},
+                'visible_objects': {},
+                'edges_egocentric': [],
             },
             {
                 'step': 2,
                 'image_path': '/img_2.png',
-                'agent': {'position': [2, 1, 0], 'rotation': [0, 90, 0]},
-                'visible_objects': {'CounterTop|1': counter},
-                'edges_egocentric': [
-                    {
-                        'source': 'agent',
-                        'target': 'CounterTop|1',
-                        'angle_relation': ['right', '', ''],
-                    }
-                ],
+                'agent': {'position': [0, 1, 4], 'rotation': [0, 0, 0]},
+                'visible_objects': {},
+                'edges_egocentric': [],
             },
         ],
         'agent_trajectory': [
             {'step': 0, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_0.png'},
-            {'step': 1, 'position': [1, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_1.png'},
-            {'step': 2, 'position': [2, 1, 0], 'rotation': [0, 90, 0], 'image_path': '/img_2.png'},
+            {'step': 1, 'position': [0, 1, 3], 'rotation': [0, 0, 0], 'image_path': '/img_1.png'},
+            {'step': 2, 'position': [0, 1, 4], 'rotation': [0, 0, 0], 'image_path': '/img_2.png'},
         ],
         'agent_actions': [
             {'step': 0, 'action': 'Pass', 'degrees': None},
@@ -958,8 +955,14 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
                         'in_camera_fov': True,
                     },
                     {
+                        'step': 1,
+                        'position': [0.5, 0.9, 0.5],
+                        'visible': False,
+                        'in_camera_fov': False,
+                    },
+                    {
                         'step': 2,
-                        'position': [3.0, 0.9, 0.5],
+                        'position': [0.5, 0.9, 0.5],
                         'visible': False,
                         'in_camera_fov': False,
                     },
@@ -973,7 +976,7 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
                 'hidden_during': True,
                 'at_timestep': 2,
                 'from_position': [0.5, 0.9, 0.5],
-                'to_position': [3.0, 0.9, 0.5],
+                'to_position': dest,
                 'from_receptacle': 'Table|1',
                 'to_receptacle': 'CounterTop|1',
                 'moved_via': 'place',
@@ -984,7 +987,7 @@ def test_id_encode_soft_distinguishable_and_pads_to_four_options():
                 'event_id': 'disp_0',
                 'obj_id': 'Cup|1',
                 'candidate_role': 'chosen',
-                'candidate_position': [3.0, 0.9, 0.5],
+                'candidate_position': dest,
                 'candidate_receptacle': 'CounterTop|1',
             },
             {

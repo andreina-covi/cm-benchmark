@@ -23,6 +23,7 @@ from cm_benchmark.generation.constructs import (
     step_by_index,
     xyz_as_dict,
 )
+from cm_benchmark.generation.step_derived import raw_visible_frames
 from cm_benchmark.generation.synsets import (
     confusable_components,
     confusable_group_of,
@@ -138,6 +139,37 @@ def active_margin_m(episode: Optional[dict] = None) -> tuple[float, Optional[flo
     return margin, ratio
 
 
+def _mask_pixel_count(odata: Optional[dict]) -> float:
+    """Mask pixels on a detection. Listed without a count still counts as visible."""
+    if not isinstance(odata, dict):
+        return 0.0
+    pix = odata.get('visible_pixels')
+    if pix is None:
+        return 1.0
+    try:
+        return float(pix)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def objects_with_mask_pixels(
+    episode: dict, frame_steps: list[int]
+) -> dict[str, dict]:
+    """Objects with mask pixels > 0 in any shown frame (raw detections)."""
+    out: dict[str, dict] = {}
+    for si in frame_steps:
+        if not is_fov_step(episode, si):
+            continue
+        step = step_by_index(episode, int(si))
+        if step is None:
+            continue
+        raw = raw_visible_frames(step) or (step.get('visible_objects') or {})
+        for oid, odata in raw.items():
+            if isinstance(odata, dict) and _mask_pixel_count(odata) > 0:
+                out.setdefault(str(oid), odata)
+    return out
+
+
 def passing_objects_in_frames(
     episode: dict, frame_steps: list[int]
 ) -> dict[int, dict[str, dict]]:
@@ -190,19 +222,28 @@ def episode_mark_colours(
             step = step_by_index(episode, int(si))
             if step is not None and is_fov_step(episode, si):
                 steps.append(step)
-    seen: set[str] = set()
+    frame_idx = [int(step['step']) for step in steps if step.get('step') is not None]
+    pixel_ids = set(objects_with_mask_pixels(episode, frame_idx))
+    passing_ids: set[str] = set()
     for step in steps:
-        for oid in (step.get('visible_objects') or {}):
-            seen.add(oid)
+        passing_ids.update(step.get('visible_objects') or {})
+    seen = set(pixel_ids)
     for oid in also_ids or []:
         if oid:
             seen.add(oid)
     colours: dict[str, str] = {}
+    extra = {oid for oid in (also_ids or []) if oid}
     for group in confusable_components(episode, seen):
-        ordered = sorted(group)
-        if len(ordered) < 2 or len(ordered) > len(palette):
+        if len(group) < 2:
             continue
-        for i, oid in enumerate(ordered):
+        drawable = sorted(
+            oid for oid in group if oid in passing_ids or oid in extra
+        )
+        if not drawable:
+            drawable = sorted(group)
+        if len(drawable) > len(palette):
+            continue
+        for i, oid in enumerate(drawable):
             colours[oid] = palette[i]
     return colours
 
@@ -224,9 +265,9 @@ def resolve_named_objects(
     if not ids:
         return {}
     frames = passing_objects_in_frames(episode, frame_steps)
-    pool = _oids_in_frames(frames)
+    pixel_pool = set(objects_with_mask_pixels(episode, frame_steps))
     extra = [oid for oid in (also_ids or []) if oid]
-    pool.update(extra)
+    pixel_pool.update(extra)
     if model is None:
         model = visibility_model_from_episode(episode)
     colours = episode_mark_colours(episode, frame_steps, also_ids=extra)
@@ -236,17 +277,22 @@ def resolve_named_objects(
         typ = _type_of(episode, oid, frames)
         if typ is None:
             return None
-        siblings = [x for x in confusable_group_of(episode, oid, pool) if x != oid]
+        siblings = [x for x in confusable_group_of(episode, oid, pixel_pool) if x != oid]
         if not siblings:
             out[oid] = NameResult(oid, typ, '', 'none')
             continue
+        drawable = [
+            sib
+            for sib in siblings
+            if any(sib in vis for vis in frames.values()) and sib in colours
+        ]
         result = None
         if not cfg.all_marks:
             result = _try_proximity(
                 episode, frames, oid, typ, siblings, model=model
             )
         if result is None:
-            result = _try_mark(oid, typ, siblings, colours)
+            result = _try_mark(oid, typ, drawable, colours)
         if result is not None and result.mode == 'mark':
             if not _shown_marks_have_points(frames, result.marks, oid):
                 result = None
@@ -295,10 +341,10 @@ def draw_marked_frames(
     frames = passing_objects_in_frames(episode, frame_steps)
     image_wh = camera_size_wh(episode)
     out: list[str] = []
-    for path, si in zip(image_paths, frame_steps):
+    for i, (path, si) in enumerate(zip(image_paths, frame_steps)):
         vis = frames.get(int(si)) or {}
         src = Path(path)
-        dst = dest_dir / src.name
+        dst = dest_dir / f'{int(si)}_{i}_{src.name or "frame.png"}'
         try:
             im = Image.open(src).convert('RGB')
         except OSError:
@@ -559,11 +605,13 @@ def _try_mark(
     siblings: list[str],
     colours: dict[str, str],
 ) -> Optional[NameResult]:
-    group = [target_id, *siblings]
-    if any(oid not in colours for oid in group):
+    if target_id not in colours:
         return None
     colour = colours[target_id]
-    marks = {oid: colours[oid] for oid in group}
+    marks = {target_id: colour}
+    for oid in siblings:
+        if oid in colours:
+            marks[oid] = colours[oid]
     return NameResult(
         target_id,
         target_type,
