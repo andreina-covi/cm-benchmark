@@ -1683,6 +1683,63 @@ def test_perspective_taking_rejects_weak_landmarks():
         assert 'Cup' not in blob
 
 
+def test_perspective_taking_requires_one_shared_frame():
+    """A, B, and C must share one frame. Split sightings are not a question."""
+    from cm_benchmark.generation.planner import plan_perspective_taking
+
+    def det(cat, pos):
+        return {
+            'category': cat,
+            'position': pos,
+            'bbox_area': 5000.0,
+            'min_side': 50.0,
+            'visible_pixels': 2000.0,
+        }
+
+    def step(idx, visible):
+        return {
+            'step': idx,
+            'image_path': f'/img_{idx}.png',
+            'agent': {'position': [0, 1, 0], 'rotation': [0, 0, 0]},
+            'visible_objects': visible,
+            'edges_egocentric': [
+                {'source': 'agent', 'target': oid, 'angle_relation': ['', '', 'front']}
+                for oid in visible
+            ],
+        }
+
+    sofa = det('Sofa', [0.0, 0.5, 0.0])
+    bed = det('Bed', [0.0, 0.5, 3.0])
+    coat = det('Coatrack', [2.0, 0.5, 0.0])
+    together = {
+        'steps': [step(0, {'Sofa|1': sofa, 'Bed|1': bed, 'Coatrack|1': coat})],
+        'agent_trajectory': [
+            {'step': 0, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': '/img_0.png'}
+        ],
+    }
+    facts = plan_perspective_taking(together, max_items=2)
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok
+    assert ok[0].image_paths == ['/img_0.png']
+    assert ok[0].extra.get('shown_frame_steps') == [0]
+    named = {ok[0].extra.get('A'), ok[0].extra.get('B'), ok[0].extra.get('C')}
+    assert named == {'Sofa', 'Bed', 'Coatrack'}
+
+    split = {
+        'steps': [
+            step(0, {'Sofa|1': sofa}),
+            step(1, {'Bed|1': bed}),
+            step(2, {'Coatrack|1': coat}),
+        ],
+        'agent_trajectory': [
+            {'step': i, 'position': [0, 1, 0], 'rotation': [0, 0, 0], 'image_path': f'/img_{i}.png'}
+            for i in range(3)
+        ],
+    }
+    facts = plan_perspective_taking(split, max_items=2)
+    assert not any(f.status == 'ok' for f in facts)
+
+
 def test_border_scrape_cup_rejected_for_egocentric():
     """Thin left-edge Cup strip must not become an egocentric query target."""
     from cm_benchmark.generation.constructs import (
@@ -1817,6 +1874,53 @@ def test_spatial_updating_delay_range_is_configurable(delayed_episode):
     assert len(item['image_paths']) == 4
     assert len(item['agent_trajectory']) == 4
     assert len(item['agent_actions']) == 3
+
+
+def test_sample_steps_keeps_required_and_drops_when_over_budget():
+    from cm_benchmark.generation.planner import _sample_steps_evenly
+
+    got = _sample_steps_evenly(list(range(30)), 5, [0, 7, 29])
+    assert got is not None
+    assert got[0] == 0 and got[-1] == 29 and 7 in got
+    assert len(got) == 5
+    assert _sample_steps_evenly(list(range(10)), 3, [1, 2, 3, 4]) is None
+
+
+def test_route_frames_include_sightings_within_budget(u_corridor_episode):
+    from cm_benchmark.generation.config import get_generation_config
+    from cm_benchmark.generation.planner import plan_route_knowledge
+
+    n_frames = get_generation_config().class4.n_frames
+    facts = [
+        f for f in plan_route_knowledge(u_corridor_episode, max_items=2) if f.status == 'ok'
+    ]
+    assert facts
+    fact = facts[0]
+    steps = fact.extra['shown_frame_steps']
+    assert fact.encoding_step in steps
+    assert fact.query_step in steps
+    assert steps == sorted(steps)
+    assert len(steps) <= n_frames
+    assert len(fact.image_paths) == len(steps)
+
+
+def test_survey_frames_include_sightings_within_budget(two_room_episode):
+    from cm_benchmark.generation.config import get_generation_config
+    from cm_benchmark.generation.planner import plan_survey_based_route_planning
+
+    n_frames = get_generation_config().class4.n_frames
+    facts = [
+        f
+        for f in plan_survey_based_route_planning(two_room_episode, max_items=2)
+        if f.status == 'ok'
+    ]
+    assert facts
+    for fact in facts:
+        steps = fact.extra['shown_frame_steps']
+        assert fact.encoding_step in steps
+        assert fact.query_step in steps
+        assert len(steps) <= n_frames
+        assert len(fact.image_paths) == len(steps)
 
 
 def test_route_knowledge_is_retrace_not_plan(folder_episode):

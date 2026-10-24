@@ -6,8 +6,9 @@ Numeric gates live in [`configs/generation.yaml`](../configs/generation.yaml)
 (see [`parameters_report.md`](parameters_report.md)). Algorithms live in
 `src/cm_benchmark/generation/planner.py` and `nav_graph.py`. Pass `--config`
 to `generate_items` or `ai2thor_nav_generator` to point at another file;
-`--swm_min_delay` / `--su_min_delay` / `--max_per_construct` override that
-file. Each item records `generation_config` and `generation_config_hash`.
+`--swm_min_delay` / `--su_min_delay` / `--max_per_construct` / `--n_frames`
+override that file. `--n_frames` is the class-4 frame budget (route and
+survey). Omit it to keep `class4.n_frames` in the yaml. Each item records `generation_config` and `generation_config_hash`.
 
 ---
 
@@ -119,7 +120,7 @@ python -m cm_benchmark.generation.generate_items \
 items/house_007514/items_house_007514.json
 ```
 
-Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`. A single scene
+Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--n_frames`. A single scene
 database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.

@@ -411,6 +411,136 @@ def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
     return kept
 
 
+def _fov_step_indices(episode: dict, start_step: int, end_step: int) -> list[int]:
+    """FOV steps with an image in the inclusive window, in time order."""
+    out: list[int] = []
+    for step in episode.get('steps') or []:
+        step_idx = int(step['step'])
+        if (
+            start_step <= step_idx <= end_step
+            and step.get('image_path')
+            and is_fov_step(episode, step_idx)
+        ):
+            out.append(step_idx)
+    return sorted(set(out))
+
+
+def _sample_steps_evenly(
+    pool: Sequence[int],
+    n: int,
+    required: Sequence[int],
+) -> Optional[list[int]]:
+    """Even sample of ``pool``, always keeping ``required``.
+
+    Returns None when a required step is missing from the pool or the required
+    set is larger than ``n``.
+    """
+    ordered = sorted({int(s) for s in pool})
+    need = sorted({int(s) for s in required})
+    if n < 1 or not ordered or any(step not in ordered for step in need):
+        return None
+    if len(need) > n:
+        return None
+    if len(ordered) <= n:
+        return ordered
+    span = len(ordered) - 1
+    if n == 1:
+        picked = [ordered[0]]
+    else:
+        picked = [ordered[int(round(i * span / (n - 1)))] for i in range(n)]
+    have = set(picked)
+    for step in need:
+        if step in have:
+            continue
+        victims = [s for s in have if s not in need]
+        if not victims:
+            return None
+        victim = min(victims, key=lambda s: (abs(s - step), s))
+        have.remove(victim)
+        have.add(step)
+    return sorted(have)
+
+
+def _class4_role_images(
+    episode: dict,
+    steps: Sequence[int],
+    source: str,
+    goal: str,
+    t_src: int,
+    t_goal: int,
+) -> tuple[list[str], list[str]]:
+    """Frame paths for the sampled steps, with source and goal labels."""
+    pairs: list[tuple[list[str], str]] = []
+    for step_idx in steps:
+        if step_idx == t_src and step_idx == t_goal:
+            role = f'source/goal · {source} → {goal}'
+        elif step_idx == t_src:
+            role = f'source · {source}'
+        elif step_idx == t_goal:
+            role = f'goal · {goal}'
+        else:
+            role = 'walk'
+        pairs.append((_img(step_by_index(episode, int(step_idx))), role))
+    return merge_role_images(pairs)
+
+
+def _node_xyz(graph: nx.Graph, node_id: str) -> Optional[tuple[float, float, float]]:
+    if node_id not in graph:
+        return None
+    return _xyz_tuple((graph.nodes[node_id] or {}).get('pos'))
+
+
+def _steps_covering_path(
+    episode: dict,
+    graph: nx.Graph,
+    path: Sequence[str],
+    radius: float,
+    query_step: int,
+) -> Optional[list[int]]:
+    """One FOV step per planned edge, at or before the query.
+
+    A step covers an edge when both endpoints are within ``radius`` of the
+    agent. None when any edge has no such step.
+    """
+    poses: list[tuple[int, tuple[float, float, float]]] = []
+    for step in episode.get('steps') or []:
+        step_idx = int(step['step'])
+        if step_idx > int(query_step):
+            continue
+        if not step.get('image_path') or not is_fov_step(episode, step_idx):
+            continue
+        pos, _rot = agent_pose_at_step(episode, step_idx)
+        xyz = _xyz_tuple(pos)
+        if xyz is None:
+            continue
+        poses.append((step_idx, xyz))
+    covers: list[int] = []
+    r = float(radius)
+    nodes = list(path or [])
+    for a, b in zip(nodes, nodes[1:]):
+        pa = _node_xyz(graph, a)
+        pb = _node_xyz(graph, b)
+        if pa is None or pb is None:
+            return None
+        mid_x = (pa[0] + pb[0]) / 2.0
+        mid_z = (pa[2] + pb[2]) / 2.0
+        best: Optional[int] = None
+        best_d: Optional[float] = None
+        for step_idx, xyz in poses:
+            da = math.hypot(xyz[0] - pa[0], xyz[2] - pa[2])
+            db = math.hypot(xyz[0] - pb[0], xyz[2] - pb[2])
+            if da > r or db > r:
+                continue
+            dist = math.hypot(xyz[0] - mid_x, xyz[2] - mid_z)
+            if best_d is None or dist < best_d or (dist == best_d and step_idx < best):
+                best = step_idx
+                best_d = dist
+        if best is None:
+            return None
+        covers.append(best)
+    return covers
+
+
 def validate_delay_window(name: str, min_delay: int, max_delay: Optional[int]) -> None:
     """Raise ValueError unless ``1 <= min_delay <= max_delay`` (max may be None).
 
@@ -1615,8 +1745,26 @@ def _partner_event(episode: dict, ev: dict) -> Optional[dict]:
     return None
 
 
+def _dest_clearly_visible(episode: dict, obj_id: str, step_idx: int) -> bool:
+    """True when the destination passes the question-visibility floors on this step.
+
+    A border sliver or a detection below the query floors does not count.
+    """
+    step = step_by_index(episode, step_idx)
+    if step is None:
+        return False
+    odata = _id_raw_odata(episode, step, obj_id)
+    if not isinstance(odata, dict) or _mask_pixel_count(odata) <= 0:
+        return False
+    return fov_metrics_ok(
+        odata,
+        image_wh=camera_size_wh(episode),
+        model=visibility_model_from_episode(episode),
+    )
+
+
 def _last_mask_step_before(episode: dict, obj_id: Optional[str], query_step: int) -> Optional[int]:
-    """Latest FOV step before ``query_step`` where ``obj_id`` has mask pixels."""
+    """Latest FOV step before ``query_step`` where ``obj_id`` is clearly visible."""
     if not obj_id:
         return None
     last = None
@@ -1624,7 +1772,7 @@ def _last_mask_step_before(episode: dict, obj_id: Optional[str], query_step: int
         si = int(step.get('step'))
         if si >= int(query_step) or not is_fov_step(episode, si):
             continue
-        if _object_mask_pixels(episode, obj_id, si) > 0:
+        if _dest_clearly_visible(episode, obj_id, si):
             last = si
     return last
 
@@ -1664,9 +1812,10 @@ def _id_shown_frames(
 ) -> Optional[list[int]]:
     """Frames that show the destination cue, then the walk to the query.
 
-    The receptacle, the floor landmark, and a swap partner each need mask
-    pixels on some step before the query. None means the item cannot be
-    answered and must be dropped. ``k`` stays query minus the object encode.
+    The receptacle, the floor landmark, and a swap partner each need a
+    clear sighting (question-visibility floors, not a border sliver) before
+    the query. None means the item cannot be answered and must be dropped.
+    ``k`` stays query minus the object encode.
     """
     also: list[int] = []
     if partner_id:
@@ -3664,18 +3813,20 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 rejects[f'turns_gt_{_cfg().class4.route.max_turns}'] += 1
                 continue
 
-            images, image_roles = merge_role_images(
-                [
-                    (
-                        _img(step_by_index(episode, int(meta[src_id]['first_seen_step']))),
-                        f'source · {source}',
-                    ),
-                    (
-                        _img(step_by_index(episode, int(meta[goal_id]['first_seen_step']))),
-                        f'goal · {goal}',
-                    ),
-                ]
+            margin = int(_cfg().class4.route.context_margin_steps)
+            pool = _fov_step_indices(episode, t_src - margin, t_goal + margin)
+            shown = _sample_steps_evenly(
+                pool, int(_cfg().class4.n_frames), [t_src, t_goal]
             )
+            if not shown:
+                rejects['frames_exceed_n'] += 1
+                continue
+            images, image_roles = _class4_role_images(
+                episode, shown, source, goal, t_src, t_goal
+            )
+            if len(images) != len(shown):
+                rejects['frames_exceed_n'] += 1
+                continue
             geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
             fact = (
                 PlannedFact(
@@ -3696,7 +3847,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'B': goal,
                         'source_landmark_id': src_id,
                         'goal_landmark_id': goal_id,
-                        'shown_frame_steps': [t_src, t_goal],
+                        'shown_frame_steps': shown,
                         'source_mark': _object_mark_at(
                             episode,
                             int(meta[src_id]['first_seen_step']),
@@ -4178,18 +4329,26 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         if _agent_near_landmark(episode, meta[src_id]['position'], [t0]):
             rejects['agent_near_source'] += 1
             continue
-        images, image_roles = merge_role_images(
-            [
-                (
-                    _img(step_by_index(episode, t0)),
-                    f'source sighted · {source}',
-                ),
-                (
-                    _img(step_by_index(episode, t1)),
-                    f'goal sighted · {goal}',
-                ),
-            ]
+        query = max(t0, t1)
+        walk = _fov_step_indices(episode, 0, query)
+        covers = _steps_covering_path(episode, graph, path, view_radius, query)
+        if covers is None:
+            rejects['path_not_in_frames'] += 1
+            continue
+        shown = _sample_steps_evenly(
+            walk,
+            int(_cfg().class4.n_frames),
+            list(covers) + [t0, t1],
         )
+        if not shown:
+            rejects['frames_exceed_n'] += 1
+            continue
+        images, image_roles = _class4_role_images(
+            episode, shown, source, goal, t0, t1
+        )
+        if len(images) != len(shown):
+            rejects['frames_exceed_n'] += 1
+            continue
         hops = len(path) - 1
         turn_count = int(ref['turn_count'])
         if turn_count < _cfg().class4.survey.min_turns:
@@ -4220,7 +4379,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     ),
                     'source_landmark_id': src_id,
                     'goal_landmark_id': goal_id,
-                    'shown_frame_steps': [t0, t1],
+                    'shown_frame_steps': shown,
                     'source_mark': _object_mark_at(episode, t0, src_id),
                     'goal_mark': _object_mark_at(episode, t1, goal_id),
                     'source_node': n0,
@@ -4276,12 +4435,14 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
 def _co_visible_distinguishable_step(
     episode: dict, obj_ids: Sequence[str]
 ) -> Optional[int]:
-    """Latest step where every obj_id is QUERY-FOV distinguishable."""
+    """Latest step where every object is distinguishable and has mask pixels."""
     best = None
     for step in episode.get('steps') or []:
         si = int(step['step'])
         if all(
-            _distinguishable_encoding_sighting(episode, si, oid) for oid in obj_ids
+            _distinguishable_encoding_sighting(episode, si, oid)
+            and _object_mask_pixels(episode, oid, si) > 0
+            for oid in obj_ids
         ):
             best = si
     return best
@@ -4290,12 +4451,11 @@ def _co_visible_distinguishable_step(
 def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
     """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C.
 
-    A, B, and C must each be FOV-distinguishable and uniquely nameable.
+    A, B, and C must be distinguishable together in one frame, with mask
+    pixels on that frame. A triple that is never co-visible is dropped.
     ``select_landmark_candidates`` keeps unique-category landmarks here
-    (default); class-4 is the construct that allows referring phrases for
-    duplicates. Prefer a frame where all three are co-visible; otherwise use
-    each landmark's clear sighting frame. Triples are tried in landmark
-    salience order and the first ``max_items`` valid ones are emitted.
+    (default). Triples are tried in landmark salience order and the first
+    ``max_items`` valid ones are emitted.
     """
     pt = _cfg().perspective_taking
     landmarks = select_landmark_candidates(
@@ -4325,12 +4485,14 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 if not pos_a or not pos_b or not pos_c:
                     continue
 
-                sa = int(a['first_seen_step'])
-                sb = int(b['first_seen_step'])
-                sc = int(c['first_seen_step'])
-                name_a = _referring_display_name(episode, sa, a['obj_id'])
-                name_b = _referring_display_name(episode, sb, b['obj_id'])
-                name_c = _referring_display_name(episode, sc, c['obj_id'])
+                co_step = _co_visible_distinguishable_step(
+                    episode, [a['obj_id'], b['obj_id'], c['obj_id']]
+                )
+                if co_step is None:
+                    continue
+                name_a = _referring_display_name(episode, co_step, a['obj_id'])
+                name_b = _referring_display_name(episode, co_step, b['obj_id'])
+                name_c = _referring_display_name(episode, co_step, c['obj_id'])
                 if name_a is None or name_b is None or name_c is None:
                     continue
                 if _named_ids_confusable(
@@ -4342,45 +4504,16 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 if not label or label not in EGO_DIRECTION_OPTIONS:
                     continue
 
-                co_step = _co_visible_distinguishable_step(
-                    episode, [a['obj_id'], b['obj_id'], c['obj_id']]
+                query_step = co_step
+                encoding_step = co_step
+                images, image_roles = merge_role_images(
+                    [
+                        (
+                            _img(step_by_index(episode, co_step)),
+                            f'A/B/C co-visible · stand at {name_a}, face {name_b}, locate {name_c}',
+                        )
+                    ]
                 )
-                if co_step is not None:
-                    # Re-resolve names at the co-visible frame (same ids).
-                    name_a = _referring_display_name(episode, co_step, a['obj_id']) or name_a
-                    name_b = _referring_display_name(episode, co_step, b['obj_id']) or name_b
-                    name_c = _referring_display_name(episode, co_step, c['obj_id']) or name_c
-                    query_step = co_step
-                    encoding_step = co_step
-                    images, image_roles = merge_role_images(
-                        [
-                            (
-                                _img(step_by_index(episode, co_step)),
-                                f'A/B/C co-visible · stand at {name_a}, face {name_b}, locate {name_c}',
-                            )
-                        ]
-                    )
-                else:
-                    # Each landmark's own frame; the names above already required
-                    # a distinguishable sighting there.
-                    query_step = max(sa, sb, sc)
-                    encoding_step = min(sa, sb, sc)
-                    images, image_roles = merge_role_images(
-                        [
-                            (
-                                _img(step_by_index(episode, sa)),
-                                f'A · stand here ({name_a})',
-                            ),
-                            (
-                                _img(step_by_index(episode, sb)),
-                                f'B · face toward ({name_b})',
-                            ),
-                            (
-                                _img(step_by_index(episode, sc)),
-                                f'C · locate ({name_c})',
-                            ),
-                        ]
-                    )
                 if not images:
                     continue
 
@@ -4458,7 +4591,8 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                             'perspective_shift_magnitude': shift,
                             'frame_of_reference': 'allocentric',
                             'image_roles': image_roles,
-                            'abc_co_visible': co_step is not None,
+                            'shown_frame_steps': [co_step],
+                            'abc_co_visible': True,
                         },
                     )
                 )

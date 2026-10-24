@@ -91,7 +91,7 @@ def stored_display(item: dict) -> str:
     """Practice-screen text for the stored benchmark answer."""
     answer = item.get('answer')
     if is_nav(item):
-        return '' if answer is None else str(answer)
+        return 'Yes'
     letter = '' if answer is None else str(answer)
     text = (item.get('options') or {}).get(letter, '')
     if letter and text:
@@ -335,6 +335,8 @@ def page_item(item: dict, role: str, frames: list[str]) -> dict:
         'role': role,
         'kind': 'nav' if is_nav(item) else 'mc',
         'question': item.get('question') or '',
+        'route_from': str((item.get('context') or {}).get('source') or ''),
+        'route_to': str((item.get('context') or {}).get('goal') or ''),
         'frames': frames,
         'options': _option_rows(item),
         'show_answer': None,
@@ -406,7 +408,7 @@ const FLAGS = __FLAGS__;
 const KEY = "cm-review:" + REVIEWER_ID;
 
 function blank() {
-  return {answer: "", flags: [], comment: "", seconds: 0, frames_viewed: []};
+  return {answer: "", flags: [], comment: "", route: "", seconds: 0, frames_viewed: []};
 }
 function loadState() {
   try {
@@ -449,7 +451,7 @@ function downloadCsv() {
   pauseTimer();
   if (activeId) timerStart = Date.now();
   save();
-  const header = ["reviewer_id", "item_id", "construct", "answer", "flags", "comment", "seconds", "role", "frames_viewed"];
+  const header = ["reviewer_id", "item_id", "construct", "answer", "flags", "comment", "route", "seconds", "role", "frames_viewed"];
   const lines = [header.join(",")];
   PAYLOAD.forEach(function (item) {
     const rec = state.items[item.item_id] || blank();
@@ -460,7 +462,7 @@ function downloadCsv() {
     });
     const row = [
       REVIEWER_ID, item.item_id, item.construct, rec.answer || "",
-      flags.join("|"), rec.comment || "", rec.seconds || 0, item.role, seen.join("|")
+      flags.join("|"), rec.comment || "", rec.route || "", rec.seconds || 0, item.role, seen.join("|")
     ].map(csvEscape);
     lines.push(row.join(","));
   });
@@ -477,7 +479,7 @@ function instructionsHtml() {
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
-    + '<p>For route and survey questions, do not list actions. Answer only: <strong>Is this question clear and answerable from the frames?</strong> Yes or no.</p>'
+    + '<p>For route and survey questions, answer <strong>Can the route from A to B be worked out from these frames?</strong> Yes or no. A written route is optional.</p>'
     + '<p>Also tick any problem that applies:</p><ul>'
     + '<li>ambiguous reference</li><li>unclear question</li>'
     + '<li>object not visible</li><li>more than one option looks correct</li></ul>'
@@ -540,11 +542,20 @@ function questionOpen(item) {
   const rec = itemState(item.item_id);
   return !!(rec.revealed || rec.answer);
 }
+function navPrompt(item) {
+  const a = item.route_from || "A";
+  const b = item.route_to || "B";
+  return "Can the route from " + a + " to " + b + " be worked out from these frames?";
+}
 function questionBlock(item, answers, flags, prompt) {
   const rec = itemState(item.item_id);
+  const route = item.kind === "nav"
+    ? '<h2>Route (optional)</h2><textarea id="route">' + esc(rec.route || "") + '</textarea>'
+    : '';
   return '<div class="card"><p class="question">' + esc(item.question) + '</p>'
     + '<h2>' + prompt + '</h2>' + answers
     + '<h2>Problems</h2>' + flags
+    + route
     + '<h2>Comment</h2><textarea id="comment">' + esc(rec.comment || "") + '</textarea>'
     + '</div>';
 }
@@ -578,9 +589,7 @@ function itemHtml(item, index) {
     const text = flag.replace(/_/g, " ");
     flags += '<label class="choice"><input type="checkbox" name="flag" value="' + flag + '"' + checked + '> ' + esc(text) + '</label>';
   });
-  const prompt = item.kind === "nav"
-    ? "Is this question clear and answerable from the frames?"
-    : "Your answer";
+  const prompt = item.kind === "nav" ? navPrompt(item) : "Your answer";
   const open = questionOpen(item);
   let banner = '';
   if (practice) {
@@ -618,6 +627,8 @@ function readForm(item) {
   );
   const comment = document.getElementById("comment");
   rec.comment = comment ? comment.value : "";
+  const route = document.getElementById("route");
+  if (route) rec.route = route.value;
   save();
 }
 function bindChrome(index) {

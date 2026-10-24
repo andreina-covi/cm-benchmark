@@ -176,6 +176,7 @@ class TemplatesConfig:
 
 @dataclass(frozen=True)
 class Class4RouteConfig:
+    context_margin_steps: int
     max_ratio_floor: float
     min_hop_count: int
     max_subpath_nodes: int
@@ -207,6 +208,7 @@ class Class4FallbackConfig:
 
 @dataclass(frozen=True)
 class Class4Config:
+    n_frames: int
     min_pair_geodesic_m: float
     max_pair_geodesic_m: float
     scene_geodesic_percentile: float
@@ -283,6 +285,7 @@ class GenerationConfig:
         su_min_delay: Optional[int] = None,
         su_max_delay: Optional[int] = None,
         visibility_model_path: Optional[str] = None,
+        n_frames: Optional[int] = None,
     ) -> 'GenerationConfig':
         """Return a new frozen config with CLI overlays applied."""
         cfg = self
@@ -313,6 +316,8 @@ class GenerationConfig:
                 cfg,
                 visibility=replace(cfg.visibility, model_path=str(visibility_model_path)),
             )
+        if n_frames is not None:
+            cfg = replace(cfg, class4=replace(cfg.class4, n_frames=int(n_frames)))
         return cfg
 
 
@@ -431,6 +436,7 @@ def generation_config_from_mapping(
             verbose_max_nonvisible_names=int(raw['templates']['verbose_max_nonvisible_names']),
         ),
         class4=Class4Config(
+            n_frames=int(c4['n_frames']),
             min_pair_geodesic_m=float(c4['min_pair_geodesic_m']),
             max_pair_geodesic_m=float(c4['max_pair_geodesic_m']),
             scene_geodesic_percentile=float(c4['scene_geodesic_percentile']),
@@ -442,6 +448,7 @@ def generation_config_from_mapping(
             search_state_quant_m=float(c4['search_state_quant_m']),
             move_block_slack_m=float(c4['move_block_slack_m']),
             route=Class4RouteConfig(
+                context_margin_steps=int(c4['route']['context_margin_steps']),
                 max_ratio_floor=float(c4['route']['max_ratio_floor']),
                 min_hop_count=int(c4['route']['min_hop_count']),
                 max_subpath_nodes=int(c4['route']['max_subpath_nodes']),

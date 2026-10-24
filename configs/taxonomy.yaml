@@ -216,7 +216,7 @@ class_3:
         No object-intrinsic facing is required.
       distractor_pattern: [camera_frame_answer, mirrored_left_right, wrong_facing_assumption]
       discriminators:
-        - A, B, C are three distinct landmarks, each distinguishable in >=1 shown frame
+        - A, B, and C are distinguishable together in the one shown frame
         - agent does NOT actually move to viewpoint A (no real action — imagined only)
         - answer is in the imagined (A, A->B heading) frame, never the agent's actual current frame
         - heading is computed relationally from A and B positions — no
