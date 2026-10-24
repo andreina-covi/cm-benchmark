@@ -200,8 +200,9 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
    direct moves: the destination must be named — `_landmark_display_in_frames`, or for floor destinations `_nearest_floor_anchor` + `humanize_receptacle` ("the floor near the Sofa");
 8. `_try_ego_direction_fact` → `_ego_pool_from_specs` (45° wedge at the query pose) + `_pad_id_ego_options`.
    Shown frames run from the earlier of the object encode and the latest
-   pre-query sighting of the destination (mask pixels > 0) through the query,
-   in time order. No such sighting drops the item. ``k`` stays query minus encode.
+   pre-query sighting where the destination passes the question-visibility
+   floors through the query, in time order. A partial sliver does not count.
+   No clear sighting drops the item. ``k`` stays query minus encode.
 
 ### spatial_updating (class 3) — "Considering the last k steps, where is the X now?"
 
@@ -217,9 +218,9 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 ### perspective_taking (class 3) — "Imagine standing at A, facing B. Where is C?"
 
 1. `select_landmark_candidates` (category-unique, `top_n_per_region=4`, `max_total=18`) ← `_distinguishable_landmark_candidates` (salience ranking);
-2. for each ordered triple: `_referring_display_name` for A, B, C at their first clear sightings;
-3. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
-4. `_co_visible_distinguishable_step` prefers one frame showing all three; otherwise the three sighting frames;
+2. `_co_visible_distinguishable_step` keeps a triple only when A, B, and C are distinguishable with mask pixels in one frame; otherwise the triple is dropped;
+3. `_referring_display_name` for A, B, C on that frame;
+4. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
 
 ### route_knowledge (class 4, free action sequence) — "List the actions you took from S to G."
@@ -231,7 +232,8 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 5. for every pair in walk order: `_class4_pair_reject_reason` (at least 2 m geodesic, ≤ 30 m, ≥ scene median, detour ratio), names for both endpoints, reject confusable endpoint pairs, `shortest_path` on walked edges, hop count, real move;
 6. recorded `agent_actions` between source and goal sightings, replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
 7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
-8. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
+8. frames are an even sample of the FOV walk from the source sighting minus `context_margin_steps` through the goal sighting plus that margin, at most `n_frames`, always including both sightings. The item is dropped when those sightings do not fit;
+9. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
 ### survey_based_route_planning (class 4) — "List the actions from S to G" over a never-walked path
 
@@ -240,7 +242,8 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 3. per pair: no path on walked edges (`path_exists`), a path on viewed edges, `_class4_pair_reject_reason` with the survey ratio cap, names for both endpoints;
 4. reference = one `continuous_bfs_to_goals` flood per source pose (quantised visited cells, action-count order) on viewed nodes, only after the geodesic gate;
 5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame; the reference must contain at least `class4.survey.min_turns` real turns;
-6. ranked hardest-first like route.
+6. frames are an even sample of the FOV walk from the start of the episode through the query, at most `n_frames`. The sample always includes the source and goal sightings and one frame per planned-path edge (both endpoints within the view radius of that frame). The item is dropped when that required set does not fit, or when an edge has no covering frame;
+7. ranked hardest-first like route.
 
 ## Where an item's fields come from
 

@@ -560,6 +560,29 @@ def test_id_frames_include_dest_seen_before_encode():
     assert [Path(p).name for p in fact.image_paths] == ['img_0.png', 'img_1.png', 'img_2.png']
 
 
+def test_id_drops_when_dest_is_only_a_sliver():
+    """A border scrap of the destination is not a clear sighting."""
+    episode = _placement_episode(dest=_BEHIND)
+    episode['camera'] = {'width': 396, 'height': 224}
+    episode['episode_meta']['camera'] = {'width': 396, 'height': 224}
+    step0 = episode['steps'][0]
+    step1 = episode['steps'][1]
+    cup = step0['visible_objects'].pop('Cup|1')
+    step0['visible_objects']['CounterTop|1'] = {
+        'category': 'CounterTop',
+        'position': [2.0, 0.9, 1.0],
+        'bbox': [0, 177, 25, 223],
+        'bbox_area': 1150.0,
+        'min_side': 25.0,
+        'visible_pixels': 400.0,
+    }
+    step0['edges_egocentric'] = [_ego('CounterTop|1')]
+    step1['visible_objects'] = {'Cup|1': cup}
+    step1['edges_egocentric'] = [_ego('Cup|1')]
+    facts = plan_invisible_displacement(episode, max_items=3)
+    assert not any(f.status == 'ok' for f in facts)
+
+
 def test_id_drops_when_dest_never_seen():
     episode = _placement_episode(dest=_BEHIND)
     step0 = episode['steps'][0]
@@ -575,9 +598,9 @@ def test_swap_frames_include_partner_before_encode():
     episode = _placement_episode(dest=_BEHIND)
     episode['steps'][0]['visible_objects']['Plate|1'] = {
         'category': 'Plate',
-        'visible_pixels': 50.0,
-        'bbox_area': 200.0,
-        'min_side': 12.0,
+        'visible_pixels': 800.0,
+        'bbox_area': 2000.0,
+        'min_side': 40.0,
     }
     frames = _id_shown_frames(episode, 2, 2, partner_id='Plate|1')
     assert frames == [0, 1, 2]

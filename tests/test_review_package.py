@@ -149,7 +149,8 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert 'reveal-question' in html
         assert 'Show the question' in html
         assert "Can't tell" in html
-        assert 'clear and answerable from the frames' in html
+        assert 'worked out from these frames' in html
+        assert 'id="route"' in html
         assert 'Download CSV' in html
         assert 'localStorage' in html
         for row in payload:

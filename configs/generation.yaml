@@ -106,6 +106,7 @@ templates:
   verbose_max_nonvisible_names: 4  # none found (b418bda)
 
 class4:
+  n_frames: 16  # none found; even sample of the route window or the survey walk
   min_pair_geodesic_m: 2.0  # none found; source–goal path at least 2 m (literature band was 1–30 m)
   max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
   scene_geodesic_percentile: 0.5  # none found (7a2ee6a); survey length floor, and the route/survey detour-ratio floors. Route length uses min_pair_geodesic_m only
@@ -117,6 +118,7 @@ class4:
   search_state_quant_m: 0.05  # visited-cell size for continuous BFS; not a pair gate
   move_block_slack_m: 1.0e-6  # derived: added to the calibrated block radius so a pose at that distance is not blocked
   route:
+    context_margin_steps: 4  # none found; FOV steps kept before the source sighting and after the goal sighting
     max_ratio_floor: 1.1  # literature: Habitat PointNav rejects geo/eucl < 1.1
     min_hop_count: 2  # none found (5b4cb02; at least one real edge)
     max_subpath_nodes: 512  # none found (274e5ff)
