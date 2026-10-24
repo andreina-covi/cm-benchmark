@@ -590,16 +590,13 @@ def test_rotate_only_window_is_filtered(folder_episode):
         assert not any(f.status == 'ok' for f in facts), construct
 
 
-def test_images_between_drops_stationary_intermediates(folder_episode):
+def test_images_between_keeps_stationary_intermediates(folder_episode):
     from cm_benchmark.generation.planner import _images_between
 
     episode = folder_episode
     # step 0 and 1 same position, step 2 translated (fixture)
     paths = _images_between(episode, 0, 2)
-    assert paths[0].endswith('img_0.png')
-    assert paths[-1].endswith('img_2.png')
-    # Intermediate rotate-only frame at same (x,z) as step 0 is dropped.
-    assert not any(p.endswith('img_1.png') for p in paths)
+    assert [Path(p).name for p in paths] == ['img_0.png', 'img_1.png', 'img_2.png']
 
 
 def test_perspective_taking_abc_landmarks(folder_episode):
@@ -1808,7 +1805,7 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
     k = fact.extra['k']
     assert k == fact.query_step - fact.encoding_step
     assert k >= 2
-    # One image per navigated pose in the window (stationary intermediates dropped).
+    # Every FOV frame from the sighting through the query, including turns in place.
     assert 2 <= len(fact.image_paths) <= k + 1
     from cm_benchmark.generation.planner import _has_real_move_between
 
