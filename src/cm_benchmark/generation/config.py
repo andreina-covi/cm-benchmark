@@ -150,6 +150,7 @@ class InvisibleDisplacementConfig:
     floor_anchor_radius_m: float
     min_displacement_m: float
     min_diagnostic_labels: int
+    max_delay: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -408,6 +409,11 @@ def generation_config_from_mapping(
             floor_anchor_radius_m=float(raw['invisible_displacement']['floor_anchor_radius_m']),
             min_displacement_m=float(raw['invisible_displacement']['min_displacement_m']),
             min_diagnostic_labels=int(raw['invisible_displacement']['min_diagnostic_labels']),
+            max_delay=(
+                None
+                if raw['invisible_displacement'].get('max_delay') is None
+                else int(raw['invisible_displacement']['max_delay'])
+            ),
         ),
         landmarks=LandmarksConfig(
             layout_base=float(raw['landmarks']['layout_base']),

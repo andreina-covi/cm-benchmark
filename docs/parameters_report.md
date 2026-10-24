@@ -88,6 +88,7 @@ value in that range is better.
 | real-move epsilon | 0.001 m | `planner.py:214` (`_POSITION_EPS_M`) | "the agent moved on the floor plane" for SWM / ID / route | SWM, ID, route | — | derived: float noise, far below the 0.20 m step | 1e-4–0.05 | `motion.position_eps_m` |
 | `FLOOR_ANCHOR_RADIUS_M` | 1.2 m | `planner.py:690` | floor destination needs a named landmark this close | invisible_displacement | larger → more floor events kept, vaguer anchors | none found (05535fa, comment "Floor destinations need a nearby distinguishable landmark for the question cue") | 0.6–2.0 | `invisible_displacement.floor_anchor_radius_m` |
 | ID diagnostic minimum | ≥ 2 distinct ego labels among the option specs | `planner.py:1137, 1209` | at least one diagnostic distractor besides the answer | invisible_displacement | 3 → fewer items, more diagnostic pools | derived: invariant 7 (each item has a diagnostic distractor) | 2–3 | `invisible_displacement.min_diagnostic_labels` |
+| ID query delay cap | 10 | `planner.py` (`_id_earliest_query_window`) | earliest later step after encode where the dest has no mask pixels; k is that delay | invisible_displacement | smaller → fewer items, dest still on screen | none found; dest must leave the mask before the query | 5–20 | `invisible_displacement.max_delay` |
 | displacement candidate roles | chosen / original_location / nearby_receptacle / salient_decoy_location | `planner.py` | which locations become options when an episode has no `placement_candidates` | invisible_displacement | — | derived: collector teleport trials; pilots are built from `placement_candidates` (latest hide, receptacle parent = anchor) | — | (structural) |
 | landmark salience | layout 2.0 + 0.1·sightings; others 1.0 + 0.05·sightings | `planner.py:1755, 1759` | landmark ranking for PT and class 4 | perspective_taking, route, survey | changes which landmarks are tried first | none found (05535fa, comment "Layout landmarks get a salience boost; more sightings → higher weight") | layout boost 1–3 | `landmarks.salience.*` |
 | landmark caps (default) | top 5 per region, 40 total | `planner.py:1768-1769` | landmarks kept for class 4 | route, survey | more → more pairs tried | none found (05535fa) | 3–10 / 20–80 | `landmarks.top_n_per_region` / `max_total` |
@@ -192,10 +193,11 @@ generation. They stay with the nav generator and are listed for completeness.
    sightings (`_count_category_seen`), but the encoding step is the first step
    where the category appears at all (`_first_step_with_category`), possibly a
    weak sighting.
-10. **`_landmark_matches` matches by type stem.** An invisible_displacement
-    destination such as `CounterTop|9` matches any visible CounterTop, so a
-    different instance can be taken as the destination landmark (addressed by
-    the phase-4 whole-item duplicate check).
+10. **Destination anchors match by exact `obj-id`.** Type-stem matching
+    (`CounterTop|9` ≈ any CounterTop) is not used. Confusable siblings are
+    objects with mask pixels > 0 in a shown frame and a confusable
+    `obj-synset`; the target is marked (or proximity) and only
+    visibility-passing siblings receive a drawn dot.
 11. **`build_route` label mismatch.** `get_distance_text` returns
     `"within reach"`, but `build_route` filters on `'within_reach'`, so route
     landmarks only ever include "nearby" objects. `episode['route']` is not

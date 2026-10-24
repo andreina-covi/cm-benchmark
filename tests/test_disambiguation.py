@@ -413,3 +413,56 @@ def test_unique_objects_have_none_disambiguation():
             assert not item.get('marks')
             assert 'marked with a' not in item['question']
             assert 'close to the' not in item['question']
+
+
+def test_pixel_sibling_marks_target_only():
+    """A confusable sibling with mask pixels but failing visibility is not dotted."""
+    target = _vis('Chair', [0.0, 0.0, 1.0], mark_xy=(40, 30))
+    sibling = _vis('Chair', [3.0, 0.0, 1.0], area=40, side=4, pix=20, mark_xy=(80, 30))
+    step = _step(0, {'Chair|1': target})
+    step['visible_frames'] = {'Chair|1': target, 'Chair|2': sibling}
+    episode = {
+        'object_catalog': {
+            'Chair|1': {'category': 'Chair', 'synset': 'chair.n.01'},
+            'Chair|2': {'category': 'Chair', 'synset': 'chair.n.01'},
+        },
+        'steps': [step],
+    }
+    names = resolve_named_objects(episode, [0], ['Chair|1'])
+    assert names is not None
+    assert names['Chair|1'].mode == 'mark'
+    assert 'Chair|1' in names['Chair|1'].marks
+    assert 'Chair|2' not in names['Chair|1'].marks
+
+
+def test_passing_sibling_is_marked():
+    episode = {
+        'steps': [
+            _step(
+                0,
+                {
+                    'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
+                    'Chair|2': _vis('Chair', [3.0, 0.0, 1.0]),
+                },
+            )
+        ]
+    }
+    names = resolve_named_objects(episode, [0], ['Chair|1'])
+    assert names is not None
+    assert names['Chair|1'].mode == 'mark'
+    assert set(names['Chair|1'].marks) == {'Chair|1', 'Chair|2'}
+
+
+def test_pixel_sibling_unmarkable_target_drops():
+    target = _vis('Chair', [0.0, 0.0, 1.0], mark_xy=None)
+    sibling = _vis('Chair', [3.0, 0.0, 1.0], area=40, side=4, pix=20, mark_xy=(80, 30))
+    step = _step(0, {'Chair|1': target})
+    step['visible_frames'] = {'Chair|1': target, 'Chair|2': sibling}
+    episode = {
+        'object_catalog': {
+            'Chair|1': {'category': 'Chair', 'synset': 'chair.n.01'},
+            'Chair|2': {'category': 'Chair', 'synset': 'chair.n.01'},
+        },
+        'steps': [step],
+    }
+    assert resolve_named_objects(episode, [0], ['Chair|1']) is None

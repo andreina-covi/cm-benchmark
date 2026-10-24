@@ -734,9 +734,12 @@ def _image_paths_for_item(
         from cm_benchmark.generation.planner import _step_for_image_path
 
         steps = [
-            si if (si := _step_for_image_path(episode, p)) is not None else 0
+            si
             for p in paths
+            if (si := _step_for_image_path(episode, p)) is not None
         ]
+        if len(steps) != len(paths):
+            return paths
     dest = Path(marked_root) / item_id
     return draw_marked_frames(episode, paths, steps, marks, dest)
 

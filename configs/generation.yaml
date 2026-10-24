@@ -88,6 +88,7 @@ invisible_displacement:
   floor_anchor_radius_m: 1.2  # none found (05535fa); unused when placement CSV has radius_m
   min_displacement_m: 0.5  # none found; reject placements closer than this
   min_diagnostic_labels: 2  # derived: invariant 7 (at least one diagnostic distractor)
+  max_delay: 10  # none found; earliest query after encode, dest has no mask pixels
 
 landmarks:
   layout_base: 2.0  # none found (05535fa; layout salience boost)

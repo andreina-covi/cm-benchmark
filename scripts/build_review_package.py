@@ -278,16 +278,29 @@ def _safe(item_id: str) -> str:
     return item_id.replace('/', '_').replace('\\', '_')
 
 
-def resolve_image(raw: str, items_root: Path) -> Path | None:
+def resolve_image(raw: str, items_root: Path, scene_id: str = '') -> Path | None:
+    """Resolve a stored frame path without grabbing another scene's basename."""
     path = Path(str(raw))
-    if path.is_file():
-        return path
     if path.is_absolute():
+        return path if path.is_file() else None
+    if path.parent != Path('.'):
+        cand = (items_root / path).resolve()
+        return cand if cand.is_file() else None
+    name = path.name
+    if not name:
         return None
-    for base in (items_root, Path.cwd()):
-        cand = base / path
-        if cand.is_file():
-            return cand
+    roots = []
+    if scene_id:
+        scene_dir = items_root / scene_id
+        if scene_dir.is_dir():
+            roots.append(scene_dir)
+    roots.append(items_root)
+    for root in roots:
+        hits = sorted(p for p in root.rglob(name) if p.is_file())
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None
     return None
 
 
@@ -296,7 +309,7 @@ def copy_frames(item: dict, folder: Path, items_root: Path) -> list[str]:
     rels: list[str] = []
     dest = folder / 'frames' / _safe(str(item['item_id']))
     for i, raw in enumerate(item.get('image_paths') or []):
-        src = resolve_image(str(raw), items_root)
+        src = resolve_image(str(raw), items_root, str(item.get('scene_id') or ''))
         name = f'{i}_{Path(str(raw)).name or "frame.png"}'
         rel = f'frames/{_safe(str(item["item_id"]))}/{name}'
         if src is None:
@@ -461,7 +474,8 @@ function instructionsHtml() {
   return ''
     + '<div class="top"><h1>Spatial question review</h1><span class="progress">' + esc(REVIEWER_ID) + '</span></div>'
     + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled only "frame i of n".</p>'
-    + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. The question and the answer choices stay on the right. On a narrow screen they sit under the frame. Which distinct frames you open is recorded.</p>'
+    + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
+    + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
     + '<p>For route and survey questions, do not list actions. Answer only: <strong>Is this question clear and answerable from the frames?</strong> Yes or no.</p>'
     + '<p>Also tick any problem that applies:</p><ul>'
@@ -518,6 +532,14 @@ function viewerHtml(item) {
     + (n < 2 ? " disabled" : "") + '>'
     + '<div class="thumbs" id="thumbs">' + thumbs + '</div>';
 }
+function isSequence(item) {
+  return !!(item && item.frames && item.frames.length > 1);
+}
+function questionOpen(item) {
+  if (!isSequence(item)) return true;
+  const rec = itemState(item.item_id);
+  return !!(rec.revealed || rec.answer);
+}
 function questionBlock(item, answers, flags, prompt) {
   const rec = itemState(item.item_id);
   return '<div class="card"><p class="question">' + esc(item.question) + '</p>'
@@ -559,19 +581,27 @@ function itemHtml(item, index) {
   const prompt = item.kind === "nav"
     ? "Is this question clear and answerable from the frames?"
     : "Your answer";
-  const banner = practice
-    ? ('<div class="banner"><p>Practice. The stored answer is shown. This one is not part of the scored review.</p>'
-      + '<p class="answer">Stored answer: ' + esc(item.show_answer || "") + '</p></div>')
-    : '';
+  const open = questionOpen(item);
+  let banner = '';
+  if (practice) {
+    banner = '<div class="banner"><p>Practice. This one is not part of the scored review.</p>';
+    if (open) banner += '<p class="answer">Stored answer: ' + esc(item.show_answer || "") + '</p>';
+    banner += '</div>';
+  }
   const nav = '<div class="row"><button class="secondary" type="button" id="back">Back</button>'
-    + '<button type="button" id="next">' + (index === n ? "Done" : "Next") + '</button>'
+    + (open ? '<button type="button" id="next">' + (index === n ? "Done" : "Next") + '</button>' : '')
     + '<button class="secondary" type="button" id="download">Download CSV</button></div>';
+  const panel = open
+    ? (questionBlock(item, answers, flags, prompt) + nav)
+    : ('<div class="card"><p>Look through the frames in order. The question appears when you finish.</p>'
+      + '<div class="row"><button type="button" id="reveal-question">Show the question</button></div></div>'
+      + nav);
   return ''
     + '<div class="top"><h1>' + esc(label) + '</h1><span class="progress">' + esc(REVIEWER_ID) + '</span></div>'
     + banner
     + '<div class="item-layout">'
     + '<div class="card viewer">' + viewerHtml(item) + '</div>'
-    + '<div class="question-panel">' + questionBlock(item, answers, flags, prompt) + nav + '</div>'
+    + '<div class="question-panel">' + panel + '</div>'
     + '</div>';
 }
 function readForm(item) {
@@ -645,6 +675,18 @@ function bindItem(item, index) {
   if (slider) slider.addEventListener("input", function () { setFrame(Number(slider.value) - 1); });
   document.querySelectorAll(".thumb").forEach(function (el) {
     el.addEventListener("click", function () { setFrame(Number(el.getAttribute("data-frame"))); });
+  });
+  const reveal = document.getElementById("reveal-question");
+  if (reveal) reveal.addEventListener("click", function () {
+    const keep = frameIndex;
+    itemState(item.item_id).revealed = true;
+    save();
+    frameIndex = keep;
+    const root = document.getElementById("app");
+    root.innerHTML = itemHtml(item, index);
+    bindItem(item, index);
+    bindChrome(index);
+    setFrame(keep);
   });
 }
 document.addEventListener("keydown", function (e) {

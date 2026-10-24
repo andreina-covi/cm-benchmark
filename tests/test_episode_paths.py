@@ -98,6 +98,20 @@ def test_resolve_image_path_relative_and_basename(tmp_path: Path):
     assert resolve_image_path(None, images_dir=imgs, timestep=3) == str(target.resolve())
 
 
+def test_resolve_image_path_ignores_cwd_basename(tmp_path: Path, monkeypatch):
+    """``img_N.png`` is shared across houses; CWD must not win over images_dir."""
+    cwd = tmp_path / 'other_house'
+    cwd.mkdir()
+    (cwd / 'img_3.png').write_bytes(b'other')
+    imgs = tmp_path / 'images'
+    imgs.mkdir()
+    target = imgs / 'img_3.png'
+    target.write_bytes(b'scene')
+    monkeypatch.chdir(cwd)
+    assert resolve_image_path('img_3.png', images_dir=imgs, timestep=3) == str(target.resolve())
+    assert Path(resolve_image_path('img_3.png', images_dir=imgs, timestep=3)).read_bytes() == b'scene'
+
+
 def test_list_collection_episodes_walks_timestamp_children(tmp_path: Path):
     """A root of <timestamp>/{annotations,images} yields one episode per child."""
     root = tmp_path / 'navigation'

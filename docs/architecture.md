@@ -199,6 +199,9 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 7. swap events: the partner must also be distinguishable before and hidden after (`_partner_event`, `_object_distinguishable_in_frames`);
    direct moves: the destination must be named — `_landmark_display_in_frames`, or for floor destinations `_nearest_floor_anchor` + `humanize_receptacle` ("the floor near the Sofa");
 8. `_try_ego_direction_fact` → `_ego_pool_from_specs` (45° wedge at the query pose) + `_pad_id_ego_options`.
+   Shown frames run from the earlier of the object encode and the latest
+   pre-query sighting of the destination (mask pixels > 0) through the query,
+   in time order. No such sighting drops the item. ``k`` stays query minus encode.
 
 ### spatial_updating (class 3) — "Considering the last k steps, where is the X now?"
 

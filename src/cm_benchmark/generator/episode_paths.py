@@ -214,20 +214,19 @@ def resolve_image_path(
     text = str(raw_path).strip()
     if text and text.lower() != 'nan':
         p = Path(text)
-        if p.is_file():
+        # Bare names like ``img_0.png`` are shared across houses. Never pick
+        # a same-named file from the current working directory.
+        if p.is_absolute() and p.is_file():
             return str(p.resolve())
-        if not p.is_absolute() and images_dir is not None:
+        if images_dir is not None:
             candidate = images_dir / p.name if p.name else images_dir / text
             if candidate.is_file():
                 return str(candidate.resolve())
             candidate = images_dir / text
             if candidate.is_file():
                 return str(candidate.resolve())
-        # Absolute but missing: try basename under images_dir
-        if images_dir is not None and p.name:
-            candidate = images_dir / p.name
-            if candidate.is_file():
-                return str(candidate.resolve())
+        if not p.is_absolute() and p.parent != Path('.') and p.is_file():
+            return str(p.resolve())
 
     if images_dir is not None and timestep is not None:
         candidate = images_dir / f'img_{int(timestep)}.png'

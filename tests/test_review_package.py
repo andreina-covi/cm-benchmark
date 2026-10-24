@@ -146,6 +146,8 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert 'frame ' in html and ' of ' in html
         assert 'frames_viewed' in html
         assert 'frame-slider' in html
+        assert 'reveal-question' in html
+        assert 'Show the question' in html
         assert "Can't tell" in html
         assert 'clear and answerable from the frames' in html
         assert 'Download CSV' in html
@@ -167,6 +169,25 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
     outsider_html = (out / outsiders[0] / 'index.html').read_text()
     assert f'"item_id": "{sample_id}"' not in outsider_html
     assert not (out / reviewers[0] / 'manifest.json').exists()
+
+
+def test_resolve_image_stays_in_item_scene(tmp_path: Path, monkeypatch):
+    build = _load('build_review_package.py')
+    items_root = tmp_path / 'items'
+    house_a = items_root / 'house_a' / 'images'
+    house_b = items_root / 'house_b' / 'images'
+    house_a.mkdir(parents=True)
+    house_b.mkdir(parents=True)
+    (house_a / 'img_0.png').write_bytes(b'aaa')
+    (house_b / 'img_0.png').write_bytes(b'bbb')
+    cwd = tmp_path / 'cwd'
+    cwd.mkdir()
+    (cwd / 'img_0.png').write_bytes(b'cwd')
+    monkeypatch.chdir(cwd)
+    got = build.resolve_image('img_0.png', items_root, 'house_a')
+    assert got is not None
+    assert got.read_bytes() == b'aaa'
+    assert build.resolve_image(str((house_b / 'img_0.png').resolve()), items_root, 'house_a').read_bytes() == b'bbb'
 
 
 def test_analyze_accuracy_alpha_and_both_wrong(tmp_path: Path):
