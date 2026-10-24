@@ -379,11 +379,10 @@ def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[Pla
 
 
 def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
-    """Image paths for the inclusive step window, in navigation order.
+    """Every FOV frame in the inclusive step window, in time order.
 
-    Intermediate frames that share the previous kept frame's horizontal agent
-    position are dropped (rotate-in-place / look-only). Encoding and query
-    endpoints are always kept when present.
+    A turn or look in place stays in the sequence. Dropping it would hide a
+    step the question counts.
     """
     window: list[tuple[int, str]] = []
     for step in episode.get('steps') or []:
@@ -395,20 +394,7 @@ def _images_between(episode: dict, start_step: int, end_step: int) -> list[str]:
         ):
             window.append((step_idx, step['image_path']))
     window.sort(key=lambda pair: pair[0])
-    if not window:
-        return []
-
-    start_i, end_i = int(start_step), int(end_step)
-    kept: list[str] = []
-    last_pos: Optional[tuple[float, float]] = None
-    for step_idx, path in window:
-        pos = _agent_horizontal_pos(episode, step_idx)
-        is_endpoint = step_idx == start_i or step_idx == end_i
-        if is_endpoint or last_pos is None or _horizontal_pos_differs(last_pos, pos):
-            kept.append(path)
-            if pos is not None:
-                last_pos = pos
-    return kept
+    return [path for _step_idx, path in window]
 
 
 def _fov_step_indices(episode: dict, start_step: int, end_step: int) -> list[int]:

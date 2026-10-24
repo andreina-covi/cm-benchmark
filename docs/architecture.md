@@ -181,7 +181,7 @@ Relation mode (most of the budget):
 5. `_ego_label_at` at the encoding pose (20° wedge);
 6. a "current view" distractor: the label of another object visible now;
 7. `_ego_pool_with_diagnostics`, then `_referring_disambiguator` at the encoding step;
-8. frames = `_images_between(encode, query)` (rotate-in-place frames dropped).
+8. frames = `_images_between(encode, query)` — every FOV frame from the sighting through the query, in time order, including turns in place.
 
 Count mode (reserved `max(1, max_items // 3)` slots): for each step,
 `_count_category_seen` counts distinct, distinguishable instances per
@@ -213,7 +213,8 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 5. the object must not be visible at the query step;
 6. `ego_label_from_world_pose` at the query pose with the 45° wedge (full circle);
 7. the pre-move bearing (`_ego_label_at` at encode, 20° wedge) becomes the "non-updating" distractor;
-8. `_referring_disambiguator` at the encoding step; repeated (object, encode, answer) triples are dropped.
+8. `_referring_disambiguator` at the encoding step; repeated (object, encode, answer) triples are dropped;
+9. frames = `_images_between(encode, query)` — every FOV frame in that window, in time order. A turn in place is kept, because the question counts that step.
 
 ### perspective_taking (class 3) — "Imagine standing at A, facing B. Where is C?"
 
