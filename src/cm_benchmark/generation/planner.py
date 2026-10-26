@@ -12,6 +12,7 @@ import networkx as nx
 
 from cm_benchmark.generation.config import get_generation_config, legacy_constant
 from cm_benchmark.generation.disambiguation import (
+    _aabb_minmax,
     active_margin_m,
     aggregate_disambiguation,
     object_aabb_gap_m,
@@ -806,28 +807,39 @@ def _ego_label_at(
     *,
     obj_pos=None,
     ahead_half_width: Optional[float] = None,
+    count_straddle_drop: Optional[str] = None,
 ) -> Optional[str]:
     """Ego MC label from yaw-only bearing of the object center.
 
     Prefer the catalog AABB center (``bbox_center``) over the mesh pivot when
-    the object is in view. ``ang_width_deg`` refuses a label whose footprint
-    crosses a sector boundary. An explicit ``obj_pos`` is the fallback for
-    hidden / displaced poses that have no current center.
+    the object is in view. Sector straddling refuses the label: visible objects
+    use 2D bbox edge angles; hidden objects use the eight AABB corners. An
+    explicit ``obj_pos`` is the fallback for hidden / displaced poses that have
+    no current center. Pass ``count_straddle_drop`` (construct id) for answer
+    locking so drops appear in the per-construct report.
     """
     ag_pos, ag_rot = agent_pose_at_step(episode, int(step_idx))
     step = step_by_index(episode, int(step_idx))
-    odata = {}
+    odata: dict = {}
+    visible = False
     if step is not None:
-        odata = (step.get('visible_objects') or {}).get(obj_id) or {}
+        vis = step.get('visible_objects') or {}
+        if obj_id in vis:
+            visible = True
+            odata = vis.get(obj_id) or {}
     pos = _finite_xyz(odata.get('bbox_center'))
     if pos is None:
         pos = obj_pos if obj_pos is not None else odata.get('position')
     if pos is None and step is not None:
         mem = (step.get('non_visible_objects') or {}).get(obj_id) or {}
         pos = mem.get('position') or (mem.get('last_known') or {}).get('position')
+        if not visible and not odata:
+            odata = mem
     if pos is None:
         pos = _object_world_pos(episode, obj_id)
     ang_width = odata.get('ang_width_deg')
+    bbox = odata.get('bbox') if visible else None
+    amin, amax = _aabb_minmax(episode, obj_id, odata or {})
     return ego_label_from_world_pose(
         ag_pos,
         ag_rot,
@@ -835,6 +847,11 @@ def _ego_label_at(
         episode,
         ahead_half_width=ahead_half_width,
         ang_width_deg=ang_width,
+        bbox=bbox,
+        aabb_min=amin,
+        aabb_max=amax,
+        visible=visible,
+        count_straddle_drop=count_straddle_drop,
     )
 
 
@@ -861,6 +878,7 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
                 obj_id,
                 obj_pos=visible[obj_id].get('position'),
                 ahead_half_width=_cfg().directions.ahead_half_width_fov_deg,
+                count_straddle_drop='egocentric_encoding',
             )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
@@ -992,6 +1010,7 @@ def plan_spatial_working_memory(
                 obj_id,
                 obj_pos=enc_vis.get('position'),
                 ahead_half_width=_cfg().directions.ahead_half_width_fov_deg,
+                count_straddle_drop='spatial_working_memory',
             )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
@@ -1603,8 +1622,47 @@ def _unused_ego_label(used: set[str]) -> Optional[str]:
     return None
 
 
+def _aabb_around_world_pos(episode: dict, obj_id: str, pos) -> tuple:
+    """Catalog extents centered on ``pos`` — for displaced objects at a new pose."""
+    if pos is None or not obj_id:
+        return None, None
+    try:
+        px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+    except (TypeError, ValueError, IndexError):
+        return None, None
+    catalog = (episode.get('object_catalog') or {}).get(obj_id) or {}
+    size = catalog.get('size')
+    if size is not None:
+        try:
+            hx = abs(float(size[0])) / 2.0
+            hy = abs(float(size[1])) / 2.0
+            hz = abs(float(size[2])) / 2.0
+            return (px - hx, py - hy, pz - hz), (px + hx, py + hy, pz + hz)
+        except (TypeError, ValueError, IndexError):
+            pass
+    amin = catalog.get('aabb_min')
+    amax = catalog.get('aabb_max')
+    if amin is not None and amax is not None:
+        try:
+            cx = (float(amin[0]) + float(amax[0])) / 2.0
+            cy = (float(amin[1]) + float(amax[1])) / 2.0
+            cz = (float(amin[2]) + float(amax[2])) / 2.0
+            dx, dy, dz = px - cx, py - cy, pz - cz
+            return (
+                (float(amin[0]) + dx, float(amin[1]) + dy, float(amin[2]) + dz),
+                (float(amax[0]) + dx, float(amax[1]) + dy, float(amax[2]) + dz),
+            )
+        except (TypeError, ValueError, IndexError):
+            return None, None
+    return None, None
+
+
 def _ego_pool_from_specs(
-    episode: dict, specs: list[dict], query_step: int
+    episode: dict,
+    specs: list[dict],
+    query_step: int,
+    *,
+    obj_id: Optional[str] = None,
 ) -> tuple[Optional[str], list[str], list[str]]:
     """Map option specs to unique ego labels at query_step.
 
@@ -1613,6 +1671,7 @@ def _ego_pool_from_specs(
     ``ego_bank_filler``, so the new label is not claimed as that pose). When
     no unused label remains, that distractor is omitted; the caller drops the
     item if the pool is still shorter than ``min_diagnostic_labels``.
+    Answer bearings refuse sector-straddling AABB extents when ``obj_id`` is set.
     """
     ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
     answer_dir: Optional[str] = None
@@ -1625,12 +1684,21 @@ def _ego_pool_from_specs(
     for spec in ordered:
         if spec.get('position') is None:
             continue
+        amin = amax = None
+        count_drop = None
+        if spec.get('is_answer') and obj_id:
+            amin, amax = _aabb_around_world_pos(episode, obj_id, spec['position'])
+            count_drop = 'invisible_displacement'
         lab = ego_label_from_world_pose(
             ag_pos,
             ag_rot,
             spec['position'],
             episode,
             ahead_half_width=_cfg().directions.ahead_half_width_full_deg,
+            aabb_min=amin,
+            aabb_max=amax,
+            visible=False,
+            count_straddle_drop=count_drop,
         )
         if not lab:
             continue
@@ -1700,7 +1768,9 @@ def _pick_best_id_query_step(
     best: Optional[int] = None
     best_key = (-1, -1)
     for si in _hidden_query_candidates(episode, obj_id, at_t):
-        answer, pool, _seeds = _ego_pool_from_specs(episode, specs, si)
+        answer, pool, _seeds = _ego_pool_from_specs(
+            episode, specs, si, obj_id=obj_id
+        )
         if not answer or answer not in pool or len(pool) < _cfg().invisible_displacement.min_diagnostic_labels:
             continue
         key = (len(pool), si)
@@ -1863,7 +1933,9 @@ def _try_ego_direction_fact(
     None unless the option specs give the answer plus at least one distinct
     diagnostic bearing at ``query_step``; the pool is then padded to four.
     """
-    answer_dir, dir_pool, dir_seeds = _ego_pool_from_specs(episode, specs, query_step)
+    answer_dir, dir_pool, dir_seeds = _ego_pool_from_specs(
+        episode, specs, query_step, obj_id=obj_id
+    )
     if not answer_dir or len(dir_pool) < _cfg().invisible_displacement.min_diagnostic_labels:
         return None
     dir_pool, dir_seeds = _pad_id_ego_options(answer_dir, dir_pool, dir_seeds)
@@ -2890,8 +2962,18 @@ def plan_spatial_updating(
             obj_pos = mem.get('position') or (mem.get('last_known') or {}).get('position')
             if obj_pos is None:
                 obj_pos = _object_world_pos(episode, obj_id)
+            mem_box = mem if isinstance(mem, dict) else {}
+            amin, amax = _aabb_minmax(episode, obj_id, mem_box)
             label = ego_label_from_world_pose(
-                ag_pos, ag_rot, obj_pos, episode, ahead_half_width=_cfg().directions.ahead_half_width_full_deg
+                ag_pos,
+                ag_rot,
+                obj_pos,
+                episode,
+                ahead_half_width=_cfg().directions.ahead_half_width_full_deg,
+                aabb_min=amin,
+                aabb_max=amax,
+                visible=False,
+                count_straddle_drop='spatial_updating',
             )
             key = (obj_id, enc_idx)
             if not label or seen_answers.get(key) == label:
