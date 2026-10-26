@@ -125,6 +125,7 @@ database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
 - Temporal wording is `{k} steps ago` / `now` — not a bundled “time order” cue.
+- Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).
 - Same-type objects are named across **every shown frame** (not only the
@@ -200,11 +201,54 @@ python scripts/build_review_package.py \
 
 ```bash
 python scripts/analyze_review.py \
-  --manifest /path/to/review_package/manifest.json \
-  --csv /path/to/reviewer_csvs
+  --package /path/to/review_package
 ```
 
 Process and checklist: [`Evaluation_process_manual.md`](../Evaluation_process_manual.md).
+
+---
+
+## VLM chat kit (manual pilot)
+
+Same study items as the human review package (same `--seed` /
+`--per-construct`, or `--review-package` to reuse that manifest). Default
+`--items-per-construct 2` so each construct has two chat examples
+(`construct_batches/<construct>.txt` lists their vision folders).
+
+Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
+`blind/` (prompt only). Prompts keep the evaluation framing but, like human
+review, allow **Can't tell** and an optional comment (MC also lists Can't
+tell under the options). Gold is only in `answers.csv` / `private/`. Final
+cm-evaluation still uses forced A–D via `protocol.SYSTEM_INSTRUCTION`.
+
+```bash
+# Smoke test with 2 items total
+python scripts/build_vlm_chat_kit.py \
+  --items  src/cm_benchmark/storage/ai2thor/items \
+  --output /path/to/vlm_kit \
+  --seed 0 \
+  --per-construct 25 \
+  --max-items 2
+
+# Default pilot: 2 items per construct, aligned with a human package
+python scripts/build_vlm_chat_kit.py \
+  --items  src/cm_benchmark/storage/ai2thor/items \
+  --output /path/to/vlm_kit \
+  --review-package /path/to/review_package
+```
+
+Fill `results_template.csv` (or copy to `results.csv`): set `model`,
+`raw_reply`, and optional `comment`. Score:
+
+```bash
+python scripts/analyze_review.py \
+  --vlm-kit /path/to/vlm_kit \
+  --human-package /path/to/review_package
+```
+
+Reports per construct × vision/blind accuracy, Can't tell rate, MC chance
+(0.25), human accuracy on the same items, and flags when blind is well above
+chance or vision is near ceiling.
 
 ---
 
