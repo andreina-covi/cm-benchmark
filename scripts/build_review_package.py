@@ -372,7 +372,7 @@ _PAGE = r"""<!DOCTYPE html>
   button { background: #1c1a16; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
   button.secondary { background: #fff; color: #1c1a16; border: 1px solid #1c1a16; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; }
-  .progress { color: #5c564c; font-size: 0.9rem; }
+  .construct-tag { color: #9a9388; font-size: 0.65rem; font-weight: 400; letter-spacing: 0.04em; margin-left: 8px; vertical-align: middle; }
   .card { background: #fff; border-radius: 10px; padding: 16px; margin-top: 12px; }
   .frame-wrap { display: flex; justify-content: center; background: #111; border-radius: 8px; min-height: 180px; }
   .frame-wrap img { max-width: 100%; max-height: 520px; object-fit: contain; }
@@ -406,6 +406,16 @@ const REVIEWER_ID = "__REVIEWER_ID__";
 const PAYLOAD = __PAYLOAD__;
 const FLAGS = __FLAGS__;
 const KEY = "cm-review:" + REVIEWER_ID;
+const CONSTRUCT_INITIALS = {
+  egocentric_encoding: "EE",
+  allocentric_encoding: "AE",
+  spatial_working_memory: "SWM",
+  invisible_displacement: "ID",
+  spatial_updating: "SU",
+  perspective_taking: "PT",
+  route_knowledge: "RK",
+  survey_based_route_planning: "SR"
+};
 
 function blank() {
   return {answer: "", flags: [], comment: "", route: "", seconds: 0, frames_viewed: []};
@@ -474,7 +484,7 @@ function downloadCsv() {
 }
 function instructionsHtml() {
   return ''
-    + '<div class="top"><h1>Spatial question review</h1><span class="progress">' + esc(REVIEWER_ID) + '</span></div>'
+    + '<div class="top"><h1>Spatial question review</h1></div>'
     + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled only "frame i of n".</p>'
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
@@ -605,8 +615,12 @@ function itemHtml(item, index) {
     : ('<div class="card"><p>Look through the frames in order. The question appears when you finish.</p>'
       + '<div class="row"><button type="button" id="reveal-question">Show the question</button></div></div>'
       + nav);
+  const initials = CONSTRUCT_INITIALS[item.construct] || "";
+  const tag = initials
+    ? '<span class="construct-tag" title="' + esc(item.construct) + '">' + esc(initials) + '</span>'
+    : '';
   return ''
-    + '<div class="top"><h1>' + esc(label) + '</h1><span class="progress">' + esc(REVIEWER_ID) + '</span></div>'
+    + '<div class="top"><h1>' + esc(label) + tag + '</h1></div>'
     + banner
     + '<div class="item-layout">'
     + '<div class="card viewer">' + viewerHtml(item) + '</div>'

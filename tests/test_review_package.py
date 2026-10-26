@@ -151,6 +151,8 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert "Can't tell" in html
         assert 'worked out from these frames' in html
         assert 'id="route"' in html
+        assert 'construct-tag' in html
+        assert 'CONSTRUCT_INITIALS' in html
         assert 'Download CSV' in html
         assert 'localStorage' in html
         for row in payload:
