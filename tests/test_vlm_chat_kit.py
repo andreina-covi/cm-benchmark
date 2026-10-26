@@ -108,12 +108,18 @@ def test_kit_matches_review_sample_and_hides_gold(tmp_path: Path):
         assert list(blind.glob('frame_*')) == []
         vision_prompt = (vision / 'prompt.txt').read_text()
         blind_prompt = (blind / 'prompt.txt').read_text()
-        assert 'You are answering spatial-cognition questions' in vision_prompt
+        assert 'You are a robot exploring a house' in vision_prompt
         assert "Can't tell" in vision_prompt
+        assert "Can't tell" in build_kit.CHAT_SYSTEM_INSTRUCTION
         assert 'No images are available' in blind_prompt
         assert 'No images are available' not in vision_prompt
         assert not (vision / 'answer.txt').exists()
         assert not (blind / 'answers.csv').exists()
+        upload = (kit_out / 'chat_upload_message.txt').read_text()
+        assert 'prompt.txt' in upload
+        assert 'frame_01' in upload
+        assert 'web search' in upload
+        assert upload.strip() == build_kit.CHAT_UPLOAD_MESSAGE.strip()
         item = next(row for row in items if row['item_id'] == item_id)
         gold = str(item['answer'])
         if item['construct'] not in NAV:

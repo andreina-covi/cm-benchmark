@@ -10,7 +10,8 @@ For each sampled study item write two chat folders:
 A–D, ``Can't tell``, plus an optional comment (aligned with human review).
 Gold never appears in those folders.
 
-Also writes ``results_template.csv`` (fill ``model`` / ``raw_reply`` /
+Also writes ``chat_upload_message.txt`` (paste when attaching files in a
+chat/tool), ``results_template.csv`` (fill ``model`` / ``raw_reply`` /
 ``comment`` by hand), ``answers.csv``, ``construct_batches/``, and
 ``kit_manifest.json``.
 
@@ -50,18 +51,31 @@ CHAT_SYSTEM_INSTRUCTION = (
     'You are a robot exploring a house with a front-facing camera. The images are '
     'frames from your camera in chronological order: the first image is the earliest '
     'and the last image is your current view ("now"). One step is one action you took. '
-    'Answer using only the images and text in this message.'
+    'Answer using only the images and text in this message. '
     'Directions ("left", "right", "ahead", "behind") are relative to where you are '
     'facing in the last image, unless the question asks you to imagine another position. '
     'An object "marked with a <colour> dot" is the object under that dot in the images. '
     'Your actions: move_ahead (0.2 m forward), move_back (0.2 m backward), '
     'rotate_left (turn 45° left), rotate_right (turn 45° right). '
     'Multiple-choice questions: on the first line, answer with only the option letter '
-    '(A, B, C or D). Always choose one option, even if unsure. '
+    '(A, B, C or D), or write Can\'t tell if you cannot decide. '
     'Route questions: on the first line, answer with the actions in order, '
-    'comma-separated, using only the action names above. Always give your best attempt. '
+    'comma-separated, using only the action names above, or write Can\'t tell. '
     'Optionally, add one short comment on a second line (for route questions you may '
     'describe the route using landmarks). The comment is not scored.'
+)
+
+# Paste this as the chat/tool message when attaching prompt.txt (+ frames for vision).
+CHAT_UPLOAD_MESSAGE = (
+    'The attached file prompt.txt contains your instructions and the question.\n'
+    'The attached images are the only visual information: they are frames from a camera,\n'
+    'named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the\n'
+    'highest number is the current view).\n'
+    '\n'
+    'Read prompt.txt and answer the question it contains, following its answer format\n'
+    'exactly. Base your answer only on these images and the text in prompt.txt, plus\n'
+    'your general knowledge of everyday objects and spaces. Do not use information from\n'
+    'other conversations, memory, projects, files not attached here, or web search.'
 )
 
 def _load_review():
@@ -349,6 +363,10 @@ def build_kit(
         json.dumps(manifest, indent=2, sort_keys=True) + '\n',
         encoding='utf-8',
     )
+    (output / 'chat_upload_message.txt').write_text(
+        CHAT_UPLOAD_MESSAGE.rstrip() + '\n',
+        encoding='utf-8',
+    )
     (output / 'README.txt').write_text(
         '\n'.join(
             [
@@ -358,9 +376,19 @@ def build_kit(
                 'In one chat, run both vision folders for that construct, then',
                 'optionally the blind folders.',
                 '',
-                'Per item:',
-                '  items/<item_id>/vision/  — upload frames in order, paste prompt.txt',
-                '  items/<item_id>/blind/   — paste prompt.txt only (no frames)',
+                'Per item (vision):',
+                '  1. Attach every frame_*.png from items/<item_id>/vision/',
+                '     (order does not matter for upload if names are kept).',
+                '  2. Attach prompt.txt from that folder.',
+                '  3. Paste chat_upload_message.txt (kit root) as the chat text.',
+                '',
+                'Per item (blind):',
+                '  1. Attach only prompt.txt from items/<item_id>/blind/.',
+                '  2. Paste chat_upload_message.txt (ignore the image lines, or',
+                '     note that no frames are attached for this condition).',
+                '',
+                'Do not attach answers.csv, private/, or any other kit file.',
+                'Turn off web search / browsing if the tool offers it.',
                 '',
                 'MC answers: A–D or Can\'t tell; optional comment on the next line.',
                 'Nav answers: action list or Can\'t tell; optional comment.',
