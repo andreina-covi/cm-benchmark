@@ -4,7 +4,7 @@
 Generation Pipeline, not model scoring. Class-4 scoring details:
 [`docs/generation.md`](docs/generation.md).
 
-**Non-goal:** This is not a rubric for grading VLM answers. Item correctness and model scoring are separate concerns (invariant #3: scoring is deterministic code, no LLM judge).
+**Non-goal:** This is not a rubric for grading VLM answers. Item correctness and model scoring are separate concerns (invariant #3: scoring is deterministic code, no LLM judge). For a manual VLM chat/tool pilot (attach `prompt.txt` + frames, paste the kit upload message, score with `analyze_review.py --vlm-kit`), see **VLM chat kit** in [`docs/generation.md`](docs/generation.md).
 
 ---
 

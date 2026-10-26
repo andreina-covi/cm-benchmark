@@ -216,10 +216,10 @@ Same study items as the human review package (same `--seed` /
 (`construct_batches/<construct>.txt` lists their vision folders).
 
 Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
-`blind/` (prompt only). Prompts keep the evaluation framing but, like human
-review, allow **Can't tell** and an optional comment (MC also lists Can't
-tell under the options). Gold is only in `answers.csv` / `private/`. Final
-cm-evaluation still uses forced A–D via `protocol.SYSTEM_INSTRUCTION`.
+`blind/` (prompt only). `prompt.txt` holds the task instruction, question,
+and answer format (MC may use A–D or **Can't tell**, plus an optional
+comment). Gold is only in `answers.csv` / `private/`. Final cm-evaluation
+still uses forced A–D via `protocol.SYSTEM_INSTRUCTION`.
 
 ```bash
 # Smoke test with 2 items total
@@ -235,6 +235,28 @@ python scripts/build_vlm_chat_kit.py \
   --items  src/cm_benchmark/storage/ai2thor/items \
   --output /path/to/vlm_kit \
   --review-package /path/to/review_package
+```
+
+### Running one item in a chat or tool
+
+For each vision folder: attach every `frame_*.png` and `prompt.txt`, then
+paste the kit’s `chat_upload_message.txt` as the message body (also in
+`README.txt`). For blind: attach only that folder’s `prompt.txt` and the
+same upload message. Do not attach gold, answers, or other kit files; turn
+off web search if the tool offers it.
+
+Upload message (also written to `chat_upload_message.txt`):
+
+```text
+The attached file prompt.txt contains your instructions and the question.
+The attached images are the only visual information: they are frames from a camera,
+named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the
+highest number is the current view).
+
+Read prompt.txt and answer the question it contains, following its answer format
+exactly. Base your answer only on these images and the text in prompt.txt, plus
+your general knowledge of everyday objects and spaces. Do not use information from
+other conversations, memory, projects, files not attached here, or web search.
 ```
 
 Fill `results_template.csv` (or copy to `results.csv`): set `model`,
