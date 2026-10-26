@@ -17,6 +17,10 @@ from cm_benchmark.generation.episode_io import (
     scene_id_of,
     write_items,
 )
+from cm_benchmark.generation.geometry import (
+    reset_straddle_drop_counts,
+    straddle_drop_counts,
+)
 from cm_benchmark.generation.pipeline import ALL_CONSTRUCTS, generate_items_for_episode
 from cm_benchmark.generation.planner import validate_delay_window
 
@@ -233,6 +237,17 @@ def _report(scene_name: str, items: list[dict], path: Path) -> None:
     )
 
 
+def _report_straddle_drops() -> None:
+    """Print answer labels refused because the object straddled a direction sector."""
+    drops = straddle_drop_counts()
+    if not drops:
+        print('Straddle drops: none')
+        return
+    print('Straddle drops (answer labels refused per construct):')
+    for construct in sorted(drops):
+        print(f'  {construct}: {drops[construct]}')
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """CLI entry: one DB episode, or every ``nav_<scene>.json`` under ``--episode_json``."""
     parser = argparse.ArgumentParser(
@@ -374,6 +389,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     constructs = [c.strip() for c in args.constructs.split(',') if c.strip()]
     styles = tuple(s.strip() for s in args.styles.split(',') if s.strip())
+    reset_straddle_drop_counts()
 
     if args.episode_json is None:
         episode = load_episode(db_path=args.db_path, episode_id=args.episode_id)
@@ -392,6 +408,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         for scene_name, items in balanced:
             path = write_items(items, items_output_file(args.output_path, scene_name))
             _report(scene_name, items, path)
+        _report_straddle_drops()
         return
 
     sources = list_nav_episode_jsons(args.episode_json)
@@ -418,6 +435,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         _report(scene_name, items, path)
         built.append(scene_name)
     print(f'Built items for {len(built)} scene(s): {", ".join(built) or "(none)"}')
+    _report_straddle_drops()
     if failures:
         raise SystemExit(
             f'{len(failures)} scene(s) failed under {args.episode_json}'

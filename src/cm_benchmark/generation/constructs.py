@@ -326,14 +326,10 @@ def angular_span_crosses_sector(
     *,
     ahead_half_width: Optional[float] = None,
 ) -> bool:
-    """True when the object's horizontal angular width straddles a sector edge.
+    """True when center±half ``ang_width_deg`` touches a sector edge.
 
-    VSI-Bench drops direction items near an angle boundary but does not publish
-    the cutoff. ViewSpatial-Bench (2025) uses 45° bins and removes ambiguous
-    cases by hand, also without a numeric margin. The measured substitute is
-    the exported ``ang-width-deg``: if any part of the object crosses a sector
-    boundary, the point label is not a fair ground truth. A missing width does
-    not invent a ±10° reject.
+    Kept as a fallback when neither a 2D bbox nor a 3D AABB is available.
+    Prefer ``bbox_edges_cross_sector`` (visible) or corner bearings (hidden).
     """
     if not get_generation_config().directions.refuse_straddling_objects:
         return False
@@ -353,6 +349,80 @@ def angular_span_crosses_sector(
         if delta <= half:
             return True
     return False
+
+
+def bearings_cross_sector(
+    bearings_deg: list[float] | tuple[float, ...],
+    *,
+    ahead_half_width: Optional[float] = None,
+) -> bool:
+    """True when the bearings do not all fall in one ego sector."""
+    if not get_generation_config().directions.refuse_straddling_objects:
+        return False
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
+    labels: set[str] = set()
+    for bearing in bearings_deg:
+        try:
+            labels.add(
+                angle_to_ego_label(float(bearing), ahead_half_width=ahead_half_width)
+            )
+        except (TypeError, ValueError):
+            continue
+        if len(labels) > 1:
+            return True
+    return False
+
+
+def pixel_column_to_bearing_deg(
+    column: float, frame_w: float, fov_h_deg: float
+) -> Optional[float]:
+    """Horizontal ego bearing (0 = ahead) for an image column via pinhole FOV."""
+    try:
+        w = float(frame_w)
+        fov_h = float(fov_h_deg)
+        u = float(column)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0.0 or fov_h <= 0.0 or math.isnan(w) or math.isnan(fov_h):
+        return None
+    fx = w / (2.0 * math.tan(math.radians(fov_h / 2.0)))
+    if fx <= 0.0 or math.isnan(fx) or math.isinf(fx):
+        return None
+    cx = w / 2.0
+    return math.degrees(math.atan2(u - cx, fx)) % 360.0
+
+
+def bbox_edges_cross_sector(
+    bbox,
+    frame_w: float,
+    fov_h_deg: float,
+    *,
+    ahead_half_width: Optional[float] = None,
+) -> bool:
+    """True when the 2D bbox left/right edges fall in different ego sectors.
+
+    Used for objects visible in the answer frame: the visible extent must not
+    straddle a sector boundary under the same ``ahead_half_width`` as the answer.
+    """
+    if not get_generation_config().directions.refuse_straddling_objects:
+        return False
+    try:
+        cmin, _rmin, cmax, _rmax = (
+            float(bbox[0]),
+            float(bbox[1]),
+            float(bbox[2]),
+            float(bbox[3]),
+        )
+    except (TypeError, ValueError, IndexError):
+        return False
+    left = pixel_column_to_bearing_deg(cmin, frame_w, fov_h_deg)
+    right = pixel_column_to_bearing_deg(cmax, frame_w, fov_h_deg)
+    if left is None or right is None:
+        return False
+    return bearings_cross_sector(
+        (left, right), ahead_half_width=ahead_half_width
+    )
 
 
 def local_offset_to_ego_label(
@@ -458,11 +528,19 @@ def is_fov_step(episode: Optional[dict], step_idx) -> bool:
     return si % fov_stride_of(episode) == 0
 
 
-def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
-    """Return (width, height) from episode_meta.camera when present."""
+def _episode_camera(episode: Optional[dict]) -> dict:
+    """Prefer top-level ``camera``, else ``episode_meta.camera``."""
     if not isinstance(episode, dict):
-        return None
-    cam = (episode.get('episode_meta') or {}).get('camera') or {}
+        return {}
+    cam = episode.get('camera')
+    if isinstance(cam, dict) and cam:
+        return cam
+    return (episode.get('episode_meta') or {}).get('camera') or {}
+
+
+def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
+    """Return (width, height) from episode camera when present."""
+    cam = _episode_camera(episode)
     try:
         w = int(cam.get('width'))
         h = int(cam.get('height'))
@@ -471,6 +549,30 @@ def camera_size_wh(episode: Optional[dict]) -> Optional[tuple[int, int]]:
     if w > 0 and h > 0:
         return w, h
     return None
+
+
+def camera_horizontal_fov_deg(episode: Optional[dict]) -> Optional[float]:
+    """Horizontal FOV degrees from episode camera (derived from vertical FOV)."""
+    cam = _episode_camera(episode)
+    size = camera_size_wh(episode)
+    if size is None:
+        return None
+    try:
+        fov_v = float(cam.get('fov_vertical_deg') or cam.get('fov_v'))
+    except (TypeError, ValueError):
+        return None
+    if fov_v <= 0.0:
+        return None
+    from cm_benchmark.utils.spatial_transformer import get_focal_length
+
+    _fx, _fy, fov_h = get_focal_length(size[0], size[1], fov_v)
+    try:
+        fov_h_f = float(fov_h)
+    except (TypeError, ValueError):
+        return None
+    if fov_h_f <= 0.0 or math.isnan(fov_h_f) or math.isinf(fov_h_f):
+        return None
+    return fov_h_f
 
 
 def bbox_not_border_scrape(

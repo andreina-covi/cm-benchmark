@@ -32,7 +32,7 @@ directions:
   ahead_half_width_full_deg: 45.0  # derived: four equal 90° sectors; behind boundary = 135°
   pt_back_deg: 135.0  # literature: VSI-Bench relative direction, back = turn ≥ 135°
   pt_boundary_margin_deg: 10.0  # none found (c87ae77; not a published VSI/ViewSpatial constant)
-  refuse_straddling_objects: true  # derived: drop when exported ang-width crosses a sector edge
+  refuse_straddling_objects: true  # derived: drop when 2D bbox edges (visible) or AABB corners (hidden) span >1 sector; ang-width fallback
 
 options:
   n_options: 4  # derived: four ego labels

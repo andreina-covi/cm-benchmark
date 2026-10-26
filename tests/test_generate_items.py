@@ -363,6 +363,21 @@ def straight_corridor_episode():
 def delayed_episode(tiny_episode):
     """Tiny episode extended so SWM/SU exercise multi-step delay with translation."""
     episode = deepcopy(tiny_episode)
+    # Keep Cup well inside one sector after the agent walks +X: the default
+    # 0.1 m box at z=0.8 straddles ahead/left at the query pose under the
+    # AABB-corner refuse gate.
+    cup = (episode.get('object_catalog') or {}).get('Cup|1')
+    if isinstance(cup, dict):
+        cup['size'] = (0.02, 0.02, 0.02)
+        cup['position'] = (0.0, 1.0, 1.5)
+        cup['bbox_center'] = (0.0, 1.0, 1.5)
+    for step in episode.get('steps') or []:
+        for bag in ('visible_objects', 'non_visible_objects'):
+            odata = (step.get(bag) or {}).get('Cup|1')
+            if isinstance(odata, dict):
+                odata['position'] = (0.0, 1.0, 1.5)
+                odata['bbox_center'] = (0.0, 1.0, 1.5)
+                odata['size'] = (0.02, 0.02, 0.02)
     # Ensure every step has a distinct floor position (tiny starts rotate-only).
     for i, pose in enumerate(episode.get('agent_trajectory') or []):
         new_pos = (0.25 * i, 1.0, 0.0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Optional
 
 import numpy as np
@@ -9,10 +10,32 @@ import numpy as np
 from cm_benchmark.generation.config import get_generation_config
 from cm_benchmark.generation.constructs import (
     angular_span_crosses_sector,
+    bearings_cross_sector,
     bearing_deg_xz,
+    bbox_edges_cross_sector,
+    camera_horizontal_fov_deg,
+    camera_size_wh,
     local_offset_to_ego_label,
 )
 from cm_benchmark.utils.spatial_transformer import world_to_local
+
+# Answer-locking drops when refuse_straddling_objects rejects a direction.
+_STRADDLE_DROPS: Counter = Counter()
+
+
+def reset_straddle_drop_counts() -> None:
+    """Clear per-construct straddle drop counters (call at generation start)."""
+    _STRADDLE_DROPS.clear()
+
+
+def straddle_drop_counts() -> dict[str, int]:
+    """``{construct: n}`` answer labels refused for sector straddling."""
+    return dict(_STRADDLE_DROPS)
+
+
+def _record_straddle_drop(construct: Optional[str]) -> None:
+    if construct:
+        _STRADDLE_DROPS[construct] += 1
 
 
 def _yaw_only_rotation(agent_rot):
@@ -34,6 +57,110 @@ def _yaw_only_rotation(agent_rot):
     return rot
 
 
+def aabb_corner_bearings(
+    agent_pos,
+    agent_rot,
+    aabb_min,
+    aabb_max,
+) -> list[float]:
+    """Yaw-only horizontal bearings of the eight AABB corners from the agent."""
+    try:
+        amin = [float(aabb_min[0]), float(aabb_min[1]), float(aabb_min[2])]
+        amax = [float(aabb_max[0]), float(aabb_max[1]), float(aabb_max[2])]
+    except (TypeError, ValueError, IndexError):
+        return []
+    corners = (
+        (amin[0], amin[1], amin[2]),
+        (amin[0], amin[1], amax[2]),
+        (amin[0], amax[1], amin[2]),
+        (amin[0], amax[1], amax[2]),
+        (amax[0], amin[1], amin[2]),
+        (amax[0], amin[1], amax[2]),
+        (amax[0], amax[1], amin[2]),
+        (amax[0], amax[1], amax[2]),
+    )
+    yaw_rot = _yaw_only_rotation(agent_rot)
+    out: list[float] = []
+    for corner in corners:
+        try:
+            local = world_to_local(agent_pos, yaw_rot, corner)
+        except Exception:
+            continue
+        local = np.asarray(local, dtype=float)
+        if local.shape[0] < 3 or not np.isfinite(local).all():
+            continue
+        bearing = bearing_deg_xz(float(local[0]), float(local[2]))
+        if bearing is not None:
+            out.append(bearing)
+    return out
+
+
+def aabb_corners_cross_sector(
+    agent_pos,
+    agent_rot,
+    aabb_min,
+    aabb_max,
+    *,
+    ahead_half_width: Optional[float] = None,
+) -> bool:
+    """True when AABB corners do not all share one ego sector (hidden objects)."""
+    bearings = aabb_corner_bearings(agent_pos, agent_rot, aabb_min, aabb_max)
+    if len(bearings) < 2:
+        return False
+    return bearings_cross_sector(bearings, ahead_half_width=ahead_half_width)
+
+
+def direction_extent_crosses_sector(
+    agent_pos,
+    agent_rot,
+    *,
+    ahead_half_width: Optional[float] = None,
+    episode: Optional[dict] = None,
+    visible: bool = False,
+    bbox=None,
+    aabb_min=None,
+    aabb_max=None,
+    ang_width_deg: float | None = None,
+    bearing_deg: float | None = None,
+) -> bool:
+    """True when the object's extent straddles a direction sector.
+
+    Visible + bbox → both 2D left/right edges must share a sector (camera FOV).
+    Otherwise → all eight AABB corners must share a sector.
+    Fallback → center ± exported ``ang_width_deg`` (legacy).
+    """
+    if not get_generation_config().directions.refuse_straddling_objects:
+        return False
+    if ahead_half_width is None:
+        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
+
+    if visible and bbox is not None and episode is not None:
+        size = camera_size_wh(episode)
+        fov_h = camera_horizontal_fov_deg(episode)
+        if size is not None and fov_h is not None:
+            return bbox_edges_cross_sector(
+                bbox,
+                size[0],
+                fov_h,
+                ahead_half_width=ahead_half_width,
+            )
+
+    if aabb_min is not None and aabb_max is not None and agent_pos is not None and agent_rot is not None:
+        return aabb_corners_cross_sector(
+            agent_pos,
+            agent_rot,
+            aabb_min,
+            aabb_max,
+            ahead_half_width=ahead_half_width,
+        )
+
+    if bearing_deg is not None:
+        return angular_span_crosses_sector(
+            bearing_deg, ang_width_deg, ahead_half_width=ahead_half_width
+        )
+    return False
+
+
 def ego_label_from_world_pose(
     agent_pos,
     agent_rot,
@@ -42,16 +169,20 @@ def ego_label_from_world_pose(
     *,
     ahead_half_width: Optional[float] = None,
     ang_width_deg: float | None = None,
+    bbox=None,
+    aabb_min=None,
+    aabb_max=None,
+    visible: bool = False,
+    count_straddle_drop: Optional[str] = None,
 ) -> Optional[str]:
     """Map agent pose + world object pose → horizontal MC ego label.
 
-    Bearing is yaw-only (pitch zeroed). If ``ang_width_deg`` straddles a sector
-    boundary the label is refused: VSI-Bench and ViewSpatial-Bench both drop
-    ambiguous directions, and neither publishes a ±10° cutoff to copy.
-    ``episode`` is accepted for call-site compatibility. Pass
-    ``AHEAD_HALF_WIDTH_FOV`` when the object is constrained to the camera FOV.
+    Bearing is yaw-only (pitch zeroed). Direction answers that straddle a sector
+    are refused: visible objects use 2D bbox edge angles (camera FOV); hidden
+    objects use the eight AABB corners; otherwise the legacy ``ang_width_deg``
+    check. Pass ``AHEAD_HALF_WIDTH_FOV`` when the object is constrained to the
+    camera FOV. ``count_straddle_drop`` is a construct id for the drop report.
     """
-    del episode  # unused — wedge width is explicit via ahead_half_width
     if ahead_half_width is None:
         ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
     if agent_pos is None or agent_rot is None or world_pos is None:
@@ -64,9 +195,19 @@ def ego_label_from_world_pose(
     bearing = bearing_deg_xz(float(local[0]), float(local[2]))
     if bearing is None:
         return None
-    if angular_span_crosses_sector(
-        bearing, ang_width_deg, ahead_half_width=ahead_half_width
+    if direction_extent_crosses_sector(
+        agent_pos,
+        agent_rot,
+        ahead_half_width=ahead_half_width,
+        episode=episode,
+        visible=visible,
+        bbox=bbox,
+        aabb_min=aabb_min,
+        aabb_max=aabb_max,
+        ang_width_deg=ang_width_deg,
+        bearing_deg=bearing,
     ):
+        _record_straddle_drop(count_straddle_drop)
         return None
     return local_offset_to_ego_label(local, ahead_half_width=ahead_half_width)
 

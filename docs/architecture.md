@@ -99,7 +99,8 @@ the agent?* (`_ego_label_at`), and *did the agent really move?*
 **`constructs.py`** holds the vocabulary and the label rules: the four
 egocentric options and their opposite / orthogonal / mirrored partners, the
 question templates per construct, the bearing → label rule
-(`angle_to_ego_label`) and its boundary check (`angular_span_crosses_sector`),
+(`angle_to_ego_label`) and its boundary checks (`bbox_edges_cross_sector` /
+AABB corners / `angular_span_crosses_sector` fallback),
 the perspective-taking rule (`imagined_perspective_label`), the pixel-size
 visibility gates (`fov_metrics_ok`, `bbox_not_border_scrape`), the object
 naming rule (`object_type_from_id`), and a thin referring-phrase wrapper
@@ -110,7 +111,8 @@ AABB proximity, colour-dot marks, and the 2D bbox check live in
 **`geometry.py`** turns an agent pose plus a world point into an ego label
 (`ego_label_from_world_pose`). It uses the agent yaw only, so the camera's
 downward pitch never changes a left/right answer, and refuses a label when the
-object's angular width straddles a sector edge.
+object's visible extent straddles a sector edge (2D bbox edges when in view,
+eight AABB corners when hidden).
 
 **`nav_graph.py`** is the class-4 graph toolbox: build the navigability graph
 from the exported nav graph, snap the trajectory and landmarks to nodes, derive
@@ -160,7 +162,7 @@ directions are never used.
 1. `plan_egocentric_encoding` walks steps in order; for each visible object:
 2. `_distinguishable_encoding_sighting` — visibility model or QUERY pixel floors, not a border scrape, has an ego edge;
 3. `find_ego_edge`;
-4. `_ego_label_at` → `ego_label_from_world_pose` with the 20° FOV wedge (`AHEAD_HALF_WIDTH_FOV`) at the AABB centre; refused near a sector edge;
+4. `_ego_label_at` → `ego_label_from_world_pose` with the 20° FOV wedge (`AHEAD_HALF_WIDTH_FOV`) at the AABB centre; refused when the 2D bbox edges straddle a sector;
 5. `_referring_disambiguator` → `resolve_referring_disambiguator`;
 6. `_ego_pool_with_diagnostics` — answer + opposite + orthogonal, padded to four;
 7. stops after `max_per_construct` facts (first ones in walk order).
