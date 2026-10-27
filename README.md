@@ -176,11 +176,14 @@ loaded file when present: `--max_per_construct`, `--n_frames`,
 `name`) and `generation_config_hash` (SHA-256 of the values that produced it).
 
 `--n_frames` is how many frames a route or survey item shows. Omit it to
-keep `class4.n_frames` (16). The frames are an even sample of the walk and
-always include the source and goal sightings; a survey also keeps one frame
-per planned-path edge. The item is dropped when those required frames do not
-fit. Pass a smaller or larger value when a model or machine needs a different
-budget, then regenerate the items.
+keep `class4.n_frames` (16). Class-4 frames lock source/goal sightings and
+rotation neighbors (survey also locks covers of the unwalked planned path),
+then fill straight segments within the budget and `max_frame_gap_steps`.
+The item is dropped when the required set or gap cannot be met. Pass a
+smaller or larger `--n_frames` when a model or machine needs a different
+budget, then regenerate the items. Human review class-4 load is capped
+separately (`review.class4_per_reviewer` / `--class4-per-reviewer`; see
+[`docs/generation.md`](docs/generation.md)).
 
 Spatial updating and spatial working memory show every field-of-view frame
 from the sighting through the query, in time order, including a turn in

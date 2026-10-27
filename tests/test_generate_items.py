@@ -1995,8 +1995,12 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     assert 'rotate_left' not in q
     assert fact.extra.get('source_frame') is not None
     assert fact.extra.get('goal_frame') is not None
-    assert f"in frame {fact.extra['source_frame']} you see the {fact.extra['source']}".lower() in q
-    assert f"in frame {fact.extra['goal_frame']} you see the {fact.extra['goal']}".lower() in q
+    si = fact.extra['source_frame']
+    gi = fact.extra['goal_frame']
+    assert f'start at your position in frame {si}'.lower() in q
+    assert f'the {fact.extra["source"]} is in view'.lower() in q
+    assert f'ending at your position in frame {gi}'.lower() in q
+    assert f'the {fact.extra["goal"]} is in view'.lower() in q
     assert 'retrace the route you walked' in q
     assert 'which of these' not in q
     shown = fact.extra.get('shown_frame_steps') or []
@@ -2299,15 +2303,17 @@ def test_class4_templates_match_taxonomy_wording():
     route = select_template('route_knowledge')
     assert isinstance(route, str)
     assert '{source}' in route and '{goal}' in route
-    assert '{source_frame}' in route and '{goal_frame}' in route
+    assert '{i}' in route and '{j}' in route
+    assert 'the {source}' in route and 'the {goal}' in route
     assert 'retrace the route you walked' in route.lower()
     assert 'move_ahead' not in route
     assert 'which of these' not in route.lower()
 
     assert template_count('survey_based_route_planning') == 1
     survey = select_template('survey_based_route_planning', index=0)
-    assert '{source_frame}' in survey and '{goal_frame}' in survey
-    assert 'a route to your' in survey.lower()
+    assert '{i}' in survey and '{j}' in survey
+    assert 'the {source}' in survey and 'the {goal}' in survey
+    assert 'ends at your position in frame {j}' in survey.lower()
     assert 'shortest' not in survey.lower()
     assert 'move_ahead' not in survey
     assert pick_template_index('survey_based_route_planning', None, 'a', 'b') == 0

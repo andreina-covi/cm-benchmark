@@ -186,8 +186,10 @@ def _core_question(fact: PlannedFact) -> str:
         extra.get('reference_object') or extra.get('reference_entity'),
         fact.reference_object_id,
     )
-    source = extra.get('source') or extra.get('A') or 'the start'
-    goal = extra.get('goal') or extra.get('B') or 'the goal'
+    # Class-4 templates write ``the {source}`` / ``the {goal}``; keep bare names
+    # (marks / proximity phrases stay inside the placeholder).
+    source = extra.get('source') or extra.get('A') or 'start'
+    goal = extra.get('goal') or extra.get('B') or 'goal'
     landmark_a = extra.get('A') or source
     landmark_b = extra.get('B') or goal
     landmark_c = extra.get('C') or object_type
@@ -307,31 +309,31 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
                 'in the question and report its bearing from your current pose.'
             )
     elif fact.construct == 'route_knowledge':
-        src = extra.get('source', 'the start')
-        goal = extra.get('goal', 'the goal')
+        src = extra.get('source', 'start')
+        goal = extra.get('goal', 'goal')
         si = extra.get('source_frame')
         gi = extra.get('goal_frame')
         if si is not None and gi is not None:
             parts.append(
-                f'Retrace the walked route from your pose in frame {si} '
-                f'(you see the {src}) to your pose in frame {gi} '
-                f'(you see the {goal}).'
+                f'Start at your position in frame {si}, facing as in frame {si} '
+                f'(the {src} is in view). Retrace the walked route, ending at '
+                f'your position in frame {gi} (the {goal} is in view).'
             )
         else:
             parts.append(
                 f'Retrace the walked route from the {src} to the {goal}.'
             )
     elif fact.construct == 'survey_based_route_planning':
-        src = extra.get('source', 'the start')
-        goal = extra.get('goal', 'the goal')
+        src = extra.get('source', 'start')
+        goal = extra.get('goal', 'goal')
         si = extra.get('source_frame')
         gi = extra.get('goal_frame')
         if si is not None and gi is not None:
             parts.append(
-                f'Plan a walk from your pose in frame {si} '
-                f'(you see the {src}) to your pose in frame {gi} '
-                f'(you see the {goal}), using layout you have seen. '
-                'That connecting path was never walked.'
+                f'Start at your position in frame {si}, facing as in frame {si} '
+                f'(the {src} is in view). Using layout you have seen, list a '
+                f'route that ends at your position in frame {gi} '
+                f'(the {goal} is in view). That connecting path was never walked.'
             )
         else:
             parts.append(

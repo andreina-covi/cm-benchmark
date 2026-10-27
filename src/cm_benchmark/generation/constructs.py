@@ -89,19 +89,18 @@ CONSTRUCT_TEMPLATES = {
     ],
     'route_knowledge': [
         (
-            'In frame {source_frame} you see the {source}; in frame {goal_frame} '
-            'you see the {goal}. Starting from your position and facing direction '
-            'in frame {source_frame}, list the actions that retrace the route you '
-            'walked to your position in frame {goal_frame}.'
+            'Start at your position in frame {i}, facing as in frame {i} '
+            '(the {source} is in view). List the actions that retrace the route '
+            'you walked, ending at your position in frame {j} '
+            '(the {goal} is in view).'
         ),
     ],
     'survey_based_route_planning': [
         (
-            'In frame {source_frame} you see the {source}; in frame {goal_frame} '
-            'you see the {goal}. Starting from your position and facing direction '
-            'in frame {source_frame}, list the actions of a route to your '
-            'position in frame {goal_frame}, using what you have seen of '
-            'the layout.'
+            'Start at your position in frame {i}, facing as in frame {i} '
+            '(the {source} is in view). Using what you have seen of the layout, '
+            'list the actions of a route that ends at your position in frame {j} '
+            '(the {goal} is in view).'
         ),
     ],
 }

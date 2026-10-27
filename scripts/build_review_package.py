@@ -2,13 +2,21 @@
 """Build one zip-ready review folder per reviewer.
 
 Reads concise ``status=ok`` items from an items folder. Samples up to
-``--per-construct`` items per construct, stratified across scenes. Each
-sampled item is given to ``--reviews-per-item`` reviewers (default 2) by a
-rotating pairing, so each reviewer sees a balanced mix of constructs.
+``--per-construct`` items per construct, stratified across scenes. Class-4
+(route / survey) study items are further capped so each reviewer sees at
+most ``review.class4_per_reviewer`` of them (default 5; CLI override).
+Each sampled item is given to ``--reviews-per-item`` reviewers (default 2)
+by a rotating pairing, so each reviewer sees a balanced mix of constructs.
 
 Five extra check items, from different constructs, are added to every
 reviewer. Two practice items, also from different constructs, open the
 session and show the stored answer.
+
+Route / survey items use an on-page route builder (Forward/Back ×N, 45° /
+90° turns). The CSV ``answer`` column stores the expanded action list;
+``answerable`` stores the yes/no judgment. Private item JSON under
+``private/items/`` lets ``analyze_review.py`` score those answers with the
+same simulator as models.
 
 Each reviewer folder contains ``index.html`` and the frames that item
 uses (the marked copies, when the item points at them). Gold answers for
@@ -25,6 +33,7 @@ import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 CONSTRUCTS = (
     'egocentric_encoding',
@@ -87,11 +96,21 @@ def is_nav(item: dict) -> bool:
     return item.get('construct') in NAV_CONSTRUCTS
 
 
+def nav_action_gold(item: dict) -> str:
+    """Expanded reference action list for a class-4 item."""
+    answer = item.get('answer')
+    if answer is not None and str(answer).strip():
+        return str(answer).strip()
+    seq = (item.get('context') or {}).get('action_sequence') or []
+    return ', '.join(str(a) for a in seq)
+
+
 def stored_display(item: dict) -> str:
     """Practice-screen text for the stored benchmark answer."""
-    answer = item.get('answer')
     if is_nav(item):
-        return 'Yes'
+        gold = nav_action_gold(item)
+        return gold or '(no stored actions)'
+    answer = item.get('answer')
     letter = '' if answer is None else str(answer)
     text = (item.get('options') or {}).get(letter, '')
     if letter and text:
@@ -100,9 +119,9 @@ def stored_display(item: dict) -> str:
 
 
 def review_gold(item: dict) -> str:
-    """What a reviewer should submit. Navigation items are a yes/no judgment."""
+    """Gold for analysis: MC letter, or class-4 expanded action sequence."""
     if is_nav(item):
-        return 'yes'
+        return nav_action_gold(item)
     return '' if item.get('answer') is None else str(item.get('answer'))
 
 
@@ -150,10 +169,53 @@ def reserve_diverse(
     return picked
 
 
+def class4_study_total(
+    *,
+    n_reviewers: int,
+    reviews: int,
+    class4_per_reviewer: int,
+) -> int:
+    """Max class-4 study items across route + survey combined.
+
+    Chosen so a single balanced assignment uses exactly
+    ``n_reviewers * class4_per_reviewer`` reviewer slots.
+    """
+    if n_reviewers < 1 or reviews < 1 or class4_per_reviewer < 0:
+        return 0
+    return (int(n_reviewers) * int(class4_per_reviewer)) // int(reviews)
+
+
+def _take_class4_study(
+    groups: dict[str, list[dict]],
+    total: int,
+    rng: random.Random,
+) -> dict[str, list[dict]]:
+    """Round-robin class-4 items across nav constructs up to ``total``."""
+    out: dict[str, list[dict]] = {c: [] for c in NAV_CONSTRUCTS}
+    if total <= 0:
+        return out
+    pools = {
+        c: take_stratified(groups[c], len(groups[c]), rng) for c in NAV_CONSTRUCTS
+    }
+    order = [c for c in CONSTRUCTS if c in NAV_CONSTRUCTS]
+    taken = 0
+    while taken < total and any(pools.values()):
+        for construct in order:
+            if taken >= total:
+                break
+            if pools[construct]:
+                out[construct].append(pools[construct].pop(0))
+                groups[construct] = _drop(groups[construct], out[construct][-1]['item_id'])
+                taken += 1
+    return out
+
+
 def sample_items(
     items: list[dict],
     per_construct: int,
     rng: random.Random,
+    *,
+    class4_total: Optional[int] = None,
 ) -> dict:
     """Practice, shared checks, and the per-construct study sample."""
     groups: dict[str, list[dict]] = {c: [] for c in CONSTRUCTS}
@@ -161,10 +223,17 @@ def sample_items(
         groups[item['construct']].append(item)
     practice = reserve_diverse(groups, N_PRACTICE, rng)
     checks = reserve_diverse(groups, N_CHECKS, rng)
-    study = {
-        construct: take_stratified(groups[construct], per_construct, rng)
-        for construct in CONSTRUCTS
-    }
+    study: dict[str, list[dict]] = {}
+    if class4_total is not None:
+        nav_study = _take_class4_study(groups, int(class4_total), rng)
+        for construct in CONSTRUCTS:
+            if construct in NAV_CONSTRUCTS:
+                study[construct] = nav_study.get(construct) or []
+            else:
+                study[construct] = take_stratified(groups[construct], per_construct, rng)
+    else:
+        for construct in CONSTRUCTS:
+            study[construct] = take_stratified(groups[construct], per_construct, rng)
     return {'practice': practice, 'checks': checks, 'study': study}
 
 
@@ -345,15 +414,19 @@ def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
     return labels
 
 
-def page_item(item: dict, role: str, frames: list[str]) -> dict:
+def page_item(item: dict, role: str, frames: list[str], *, move_m: float) -> dict:
+    ctx = item.get('context') or {}
     payload = {
         'item_id': item['item_id'],
         'construct': item['construct'],
         'role': role,
         'kind': 'nav' if is_nav(item) else 'mc',
         'question': item.get('question') or '',
-        'route_from': str((item.get('context') or {}).get('source') or ''),
-        'route_to': str((item.get('context') or {}).get('goal') or ''),
+        'route_from': str(ctx.get('source') or ''),
+        'route_to': str(ctx.get('goal') or ''),
+        'route_i': ctx.get('source_frame'),
+        'route_j': ctx.get('goal_frame'),
+        'move_m': float(move_m),
         'frames': frames,
         'frame_labels': _frame_labels_for_review(item, len(frames)),
         'options': _option_rows(item),
@@ -364,13 +437,16 @@ def page_item(item: dict, role: str, frames: list[str]) -> dict:
     return payload
 
 
-def render_html(reviewer_id: str, payload: list[dict]) -> str:
+def render_html(reviewer_id: str, payload: list[dict], *, move_m: float) -> str:
     """One self-contained review page."""
     data = json.dumps(payload).replace('<', '\\u003c')
     flags = json.dumps(list(FLAGS))
-    return _PAGE.replace('__REVIEWER_ID__', reviewer_id).replace(
-        '__PAYLOAD__', data
-    ).replace('__FLAGS__', flags)
+    return (
+        _PAGE.replace('__REVIEWER_ID__', reviewer_id)
+        .replace('__PAYLOAD__', data)
+        .replace('__FLAGS__', flags)
+        .replace('__MOVE_M__', f'{float(move_m):g}')
+    )
 
 
 _PAGE = r"""<!DOCTYPE html>
@@ -415,6 +491,16 @@ _PAGE = r"""<!DOCTYPE html>
   .answer { font-weight: 600; }
   ul { margin: 8px 0; padding-left: 1.2rem; }
   .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .route-builder { margin-top: 8px; }
+  .route-builder .controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+  .route-builder .controls button { font-size: 0.9rem; padding: 6px 10px; }
+  .route-builder .hint { color: #6b6560; font-size: 0.9rem; }
+  .route-builder .seq {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem; background: #f7f4ee; border-radius: 6px;
+    padding: 8px; min-height: 2.4em; white-space: pre-wrap; word-break: break-word;
+  }
+  .route-builder input[type="number"] { width: 3.5rem; font: inherit; padding: 4px 6px; }
 </style>
 </head>
 <body>
@@ -423,6 +509,7 @@ _PAGE = r"""<!DOCTYPE html>
 const REVIEWER_ID = "__REVIEWER_ID__";
 const PAYLOAD = __PAYLOAD__;
 const FLAGS = __FLAGS__;
+const MOVE_M = Number("__MOVE_M__") || 0.2;
 const KEY = "cm-review:" + REVIEWER_ID;
 const CONSTRUCT_INITIALS = {
   egocentric_encoding: "EE",
@@ -436,7 +523,29 @@ const CONSTRUCT_INITIALS = {
 };
 
 function blank() {
-  return {answer: "", flags: [], comment: "", route: "", seconds: 0, frames_viewed: []};
+  return {
+    answer: "",
+    answerable: "",
+    flags: [],
+    comment: "",
+    route_chunks: [],
+    seconds: 0,
+    frames_viewed: []
+  };
+}
+function expandChunks(chunks) {
+  const out = [];
+  (chunks || []).forEach(function (chunk) {
+    (chunk.actions || []).forEach(function (a) { out.push(a); });
+  });
+  return out;
+}
+function formatSeq(actions) {
+  if (!actions || !actions.length) return "(empty)";
+  return actions.join(", ");
+}
+function syncRouteAnswer(rec) {
+  rec.answer = expandChunks(rec.route_chunks).join(", ");
 }
 function loadState() {
   try {
@@ -479,18 +588,24 @@ function downloadCsv() {
   pauseTimer();
   if (activeId) timerStart = Date.now();
   save();
-  const header = ["reviewer_id", "item_id", "construct", "answer", "flags", "comment", "route", "seconds", "role", "frames_viewed"];
+  const header = [
+    "reviewer_id", "item_id", "construct", "answer", "answerable",
+    "flags", "comment", "seconds", "role", "frames_viewed"
+  ];
   const lines = [header.join(",")];
   PAYLOAD.forEach(function (item) {
     const rec = state.items[item.item_id] || blank();
+    if (item.kind === "nav") syncRouteAnswer(rec);
     const flags = (rec.flags || []).filter(function (flag) { return FLAGS.indexOf(flag) >= 0; });
     const seen = [];
     (rec.frames_viewed || []).forEach(function (n) {
       if (seen.indexOf(n) < 0) seen.push(n);
     });
+    const answerCol = item.kind === "nav" ? (rec.answer || "") : (rec.answer || "");
+    const answerableCol = item.kind === "nav" ? (rec.answerable || "") : "";
     const row = [
-      REVIEWER_ID, item.item_id, item.construct, rec.answer || "",
-      flags.join("|"), rec.comment || "", rec.route || "", rec.seconds || 0, item.role, seen.join("|")
+      REVIEWER_ID, item.item_id, item.construct, answerCol, answerableCol,
+      flags.join("|"), rec.comment || "", rec.seconds || 0, item.role, seen.join("|")
     ].map(csvEscape);
     lines.push(row.join(","));
   });
@@ -507,7 +622,8 @@ function instructionsHtml() {
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
-    + '<p>For route and survey questions, answer <strong>Can the route from A to B be worked out from these frames?</strong> Yes or no. A written route is optional.</p>'
+    + '<p>For route and survey questions, the prompt asks you to start at your pose in frame i (the source in view) and end at your pose in frame j (the goal in view). Answer <strong>Can that route be worked out from these frames?</strong> Yes or no, then build the action sequence with the route builder (Forward/Back ×N at '
+    + MOVE_M + ' m per step, 45° / 90° turns). Undo and Clear are available. The expanded action list is saved as your answer.</p>'
     + '<p>Also tick any problem that applies:</p><ul>'
     + '<li>ambiguous reference</li><li>unclear question</li>'
     + '<li>object not visible</li><li>more than one option looks correct</li></ul>'
@@ -575,22 +691,52 @@ function isSequence(item) {
 function questionOpen(item) {
   if (!isSequence(item)) return true;
   const rec = itemState(item.item_id);
+  if (item.kind === "nav") return !!(rec.revealed || rec.answerable);
   return !!(rec.revealed || rec.answer);
 }
 function navPrompt(item) {
-  const a = item.route_from || "A";
-  const b = item.route_to || "B";
-  return "Can the route from " + a + " to " + b + " be worked out from these frames?";
+  const a = item.route_from || "source";
+  const b = item.route_to || "goal";
+  const i = item.route_i != null ? String(item.route_i) : "?";
+  const j = item.route_j != null ? String(item.route_j) : "?";
+  return "Can the route from your position in frame " + i
+    + " (the " + a + " is in view) to your position in frame " + j
+    + " (the " + b + " is in view) be worked out from these frames?";
+}
+function routeBuilderHtml(item, rec) {
+  const move = (item.move_m != null ? Number(item.move_m) : MOVE_M) || 0.2;
+  const nVal = rec.route_n || 1;
+  const actions = expandChunks(rec.route_chunks);
+  const dist = (actions.filter(function (a) {
+    return a === "move_ahead" || a === "move_back";
+  }).length * move).toFixed(2);
+  return ''
+    + '<div class="route-builder" id="route-builder">'
+    + '<h2>Build the route</h2>'
+    + '<p class="hint">Each Forward/Back step is ' + move + ' m. Turn 90° inserts two 45° actions.</p>'
+    + '<div class="controls">'
+    + '<label>N <input type="number" id="route-n" min="1" max="40" value="' + esc(nVal) + '"></label>'
+    + '<button type="button" class="secondary" data-route="forward">Forward (×N)</button>'
+    + '<button type="button" class="secondary" data-route="back">Back (×N)</button>'
+    + '<button type="button" class="secondary" data-route="left45">Turn left 45°</button>'
+    + '<button type="button" class="secondary" data-route="right45">Turn right 45°</button>'
+    + '<button type="button" class="secondary" data-route="left90">Turn left 90°</button>'
+    + '<button type="button" class="secondary" data-route="right90">Turn right 90°</button>'
+    + '<button type="button" class="secondary" data-route="undo">Undo</button>'
+    + '<button type="button" class="secondary" data-route="clear">Clear</button>'
+    + '</div>'
+    + '<p class="hint">Sequence (<span id="route-count">' + actions.length + '</span> actions'
+    + '; travel <span id="route-dist">' + dist + '</span> m):</p>'
+    + '<div class="seq" id="route-seq">' + esc(formatSeq(actions)) + '</div>'
+    + '</div>';
 }
 function questionBlock(item, answers, flags, prompt) {
   const rec = itemState(item.item_id);
-  const route = item.kind === "nav"
-    ? '<h2>Route (optional)</h2><textarea id="route">' + esc(rec.route || "") + '</textarea>'
-    : '';
+  const route = item.kind === "nav" ? routeBuilderHtml(item, rec) : '';
   return '<div class="card"><p class="question">' + esc(item.question) + '</p>'
     + '<h2>' + prompt + '</h2>' + answers
-    + '<h2>Problems</h2>' + flags
     + route
+    + '<h2>Problems</h2>' + flags
     + '<h2>Comment</h2><textarea id="comment">' + esc(rec.comment || "") + '</textarea>'
     + '</div>';
 }
@@ -605,8 +751,8 @@ function itemHtml(item, index) {
   let answers = '';
   if (item.kind === "nav") {
     ["yes", "no"].forEach(function (value) {
-      const checked = rec.answer === value ? " checked" : "";
-      answers += '<label class="choice"><input type="radio" name="answer" value="' + value + '"' + checked + '> '
+      const checked = rec.answerable === value ? " checked" : "";
+      answers += '<label class="choice"><input type="radio" name="answerable" value="' + value + '"' + checked + '> '
         + (value === "yes" ? "Yes" : "No") + '</label>';
     });
   } else {
@@ -654,21 +800,92 @@ function itemHtml(item, index) {
 }
 function readForm(item) {
   const rec = itemState(item.item_id);
-  if (!document.querySelector('input[name="answer"]')) {
-    save();
-    return;
+  if (item.kind === "nav") {
+    const selected = document.querySelector('input[name="answerable"]:checked');
+    if (selected) rec.answerable = selected.value;
+    const nInput = document.getElementById("route-n");
+    if (nInput) {
+      const n = Math.max(1, Math.min(40, parseInt(nInput.value, 10) || 1));
+      rec.route_n = n;
+      nInput.value = String(n);
+    }
+    syncRouteAnswer(rec);
+  } else {
+    if (!document.querySelector('input[name="answer"]')) {
+      save();
+      return;
+    }
+    const selected = document.querySelector('input[name="answer"]:checked');
+    rec.answer = selected ? selected.value : "";
   }
-  const selected = document.querySelector('input[name="answer"]:checked');
-  rec.answer = selected ? selected.value : "";
   rec.flags = Array.prototype.map.call(
     document.querySelectorAll('input[name="flag"]:checked'),
     function (el) { return el.value; }
   );
   const comment = document.getElementById("comment");
   rec.comment = comment ? comment.value : "";
-  const route = document.getElementById("route");
-  if (route) rec.route = route.value;
   save();
+}
+function refreshRouteDisplay(item) {
+  const rec = itemState(item.item_id);
+  syncRouteAnswer(rec);
+  const move = (item.move_m != null ? Number(item.move_m) : MOVE_M) || 0.2;
+  const actions = expandChunks(rec.route_chunks);
+  const seq = document.getElementById("route-seq");
+  const count = document.getElementById("route-count");
+  const dist = document.getElementById("route-dist");
+  if (seq) seq.textContent = formatSeq(actions);
+  if (count) count.textContent = String(actions.length);
+  if (dist) {
+    const travel = actions.filter(function (a) {
+      return a === "move_ahead" || a === "move_back";
+    }).length * move;
+    dist.textContent = travel.toFixed(2);
+  }
+  save();
+}
+function pushRouteChunk(item, label, actions) {
+  const rec = itemState(item.item_id);
+  if (!rec.route_chunks) rec.route_chunks = [];
+  rec.route_chunks.push({label: label, actions: actions.slice()});
+  refreshRouteDisplay(item);
+}
+function bindRouteBuilder(item) {
+  const builder = document.getElementById("route-builder");
+  if (!builder) return;
+  const nInput = document.getElementById("route-n");
+  if (nInput) nInput.addEventListener("change", function () { readForm(item); });
+  builder.querySelectorAll("[data-route]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const rec = itemState(item.item_id);
+      const n = Math.max(1, Math.min(40, parseInt((nInput && nInput.value) || "1", 10) || 1));
+      rec.route_n = n;
+      const kind = btn.getAttribute("data-route");
+      if (kind === "forward") {
+        const acts = [];
+        for (let i = 0; i < n; i++) acts.push("move_ahead");
+        pushRouteChunk(item, "Forward ×" + n, acts);
+      } else if (kind === "back") {
+        const acts = [];
+        for (let i = 0; i < n; i++) acts.push("move_back");
+        pushRouteChunk(item, "Back ×" + n, acts);
+      } else if (kind === "left45") {
+        pushRouteChunk(item, "Turn left 45°", ["rotate_left"]);
+      } else if (kind === "right45") {
+        pushRouteChunk(item, "Turn right 45°", ["rotate_right"]);
+      } else if (kind === "left90") {
+        pushRouteChunk(item, "Turn left 90°", ["rotate_left", "rotate_left"]);
+      } else if (kind === "right90") {
+        pushRouteChunk(item, "Turn right 90°", ["rotate_right", "rotate_right"]);
+      } else if (kind === "undo") {
+        if (rec.route_chunks && rec.route_chunks.length) rec.route_chunks.pop();
+        refreshRouteDisplay(item);
+      } else if (kind === "clear") {
+        rec.route_chunks = [];
+        refreshRouteDisplay(item);
+      }
+    });
+  });
 }
 function bindChrome(index) {
   const start = document.getElementById("start");
@@ -712,11 +929,14 @@ function show(index) {
   bindChrome(index);
 }
 function bindItem(item, index) {
-  document.querySelectorAll('input[name="answer"], input[name="flag"]').forEach(function (el) {
+  document.querySelectorAll(
+    'input[name="answer"], input[name="answerable"], input[name="flag"]'
+  ).forEach(function (el) {
     el.addEventListener("change", function () { readForm(item); });
   });
   const comment = document.getElementById("comment");
   if (comment) comment.addEventListener("input", function () { readForm(item); });
+  bindRouteBuilder(item);
   const prev = document.getElementById("prev-frame");
   const next = document.getElementById("next-frame");
   if (prev) prev.addEventListener("click", function () { setFrame(frameIndex - 1); });
@@ -761,6 +981,29 @@ show(state.index || 0);
 """
 
 
+def _default_review_settings() -> tuple[int, float]:
+    """``(class4_per_reviewer, move_m)`` from generation.yaml."""
+    try:
+        from cm_benchmark.generation.config import get_generation_config
+
+        rev = get_generation_config().review
+        return int(rev.class4_per_reviewer), float(rev.move_m)
+    except Exception:
+        return 5, 0.2
+
+
+def _write_private_item(output: Path, item: dict) -> None:
+    """Store full item JSON for class-4 scoring in analyze_review."""
+    if not is_nav(item):
+        return
+    dest = output / 'private' / 'items'
+    dest.mkdir(parents=True, exist_ok=True)
+    safe = str(item['item_id']).replace('/', '_').replace('\\', '_')
+    (dest / f'{safe}.json').write_text(
+        json.dumps(item, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+
 def build_package(
     items_root: Path,
     output: Path,
@@ -769,26 +1012,61 @@ def build_package(
     n_reviewers: int = 10,
     reviews: int = 2,
     seed: int = 0,
+    class4_per_reviewer: Optional[int] = None,
+    move_m: Optional[float] = None,
 ) -> dict:
     """Write reviewer folders and ``manifest.json``. Return the manifest."""
     if per_construct < 1:
         raise ValueError('items per construct must be at least 1')
     if n_reviewers < 1:
         raise ValueError('need at least 1 reviewer')
+    cfg_cap, cfg_move = _default_review_settings()
+    c4_cap = cfg_cap if class4_per_reviewer is None else int(class4_per_reviewer)
+    step_m = cfg_move if move_m is None else float(move_m)
+    if c4_cap < 0:
+        raise ValueError('class4-per-reviewer must be >= 0')
+    class4_total = class4_study_total(
+        n_reviewers=n_reviewers,
+        reviews=reviews,
+        class4_per_reviewer=c4_cap,
+    )
     rng = random.Random(seed)
-    sampled = sample_items(load_items(items_root), per_construct, rng)
+    sampled = sample_items(
+        load_items(items_root),
+        per_construct,
+        rng,
+        class4_total=class4_total,
+    )
     names = reviewer_names(n_reviewers)
     study_by_reviewer: dict[int, list[dict]] = {i: [] for i in range(n_reviewers)}
     pair_by_item: dict[str, list[str]] = {}
+    # Assign all class-4 study items in one balanced round so each reviewer
+    # gets exactly class4_per_reviewer of them (when the pool is full).
+    nav_study = [
+        item
+        for construct in CONSTRUCTS
+        if construct in NAV_CONSTRUCTS
+        for item in sampled['study'][construct]
+    ]
+    nav_slots = assign_slots(len(nav_study), n_reviewers, reviews, offset=0)
+    for item, slot in zip(nav_study, nav_slots):
+        pair_by_item[item['item_id']] = [names[i] for i in slot]
+        for reviewer in slot:
+            study_by_reviewer[reviewer].append(item)
     for offset, construct in enumerate(CONSTRUCTS):
+        if construct in NAV_CONSTRUCTS:
+            continue
         study = sampled['study'][construct]
-        slots = assign_slots(len(study), n_reviewers, reviews, offset)
+        slots = assign_slots(len(study), n_reviewers, reviews, offset + 1)
         for item, slot in zip(study, slots):
             pair_by_item[item['item_id']] = [names[i] for i in slot]
             for reviewer in slot:
                 study_by_reviewer[reviewer].append(item)
 
     output.mkdir(parents=True, exist_ok=True)
+    private = output / 'private' / 'items'
+    if private.exists():
+        shutil.rmtree(private)
     manifest_items: dict[str, dict] = {}
 
     def remember(item: dict, role: str) -> None:
@@ -800,6 +1078,7 @@ def build_package(
             'gold': review_gold(item),
             'stored_answer': None if item.get('answer') is None else str(item.get('answer')),
         }
+        _write_private_item(output, item)
 
     for item in sampled['practice']:
         remember(item, 'practice')
@@ -826,13 +1105,16 @@ def build_package(
         for item in ordered:
             role = manifest_items[item['item_id']]['role']
             frames = copy_frames(item, folder, items_root)
-            payload.append(page_item(item, role, frames))
-        (folder / 'index.html').write_text(render_html(name, payload))
+            payload.append(page_item(item, role, frames, move_m=step_m))
+        (folder / 'index.html').write_text(render_html(name, payload, move_m=step_m))
         assignments[name] = [item['item_id'] for item in ordered]
 
     manifest = {
         'seed': seed,
         'per_construct': per_construct,
+        'class4_per_reviewer': c4_cap,
+        'class4_total': class4_total,
+        'move_m': step_m,
         'reviewers': n_reviewers,
         'reviews_per_item': reviews,
         'practice_item_ids': [item['item_id'] for item in sampled['practice']],
@@ -842,11 +1124,17 @@ def build_package(
         'reviewers_for_item': pair_by_item,
     }
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    _print_summary(sampled, names, assignments)
+    _print_summary(sampled, names, assignments, class4_per_reviewer=c4_cap)
     return manifest
 
 
-def _print_summary(sampled: dict, names: list[str], assignments: dict[str, list[str]]) -> None:
+def _print_summary(
+    sampled: dict,
+    names: list[str],
+    assignments: dict[str, list[str]],
+    *,
+    class4_per_reviewer: int,
+) -> None:
     print(f'practice: {len(sampled["practice"])}')
     check_constructs = [item['construct'] for item in sampled['checks']]
     print(f'checks: {len(sampled["checks"])} ({", ".join(check_constructs) or "none"})')
@@ -854,20 +1142,42 @@ def _print_summary(sampled: dict, names: list[str], assignments: dict[str, list[
         n = len(sampled['study'][construct])
         if n:
             print(f'  {construct}: {n}')
+    print(f'class-4 cap per reviewer: {class4_per_reviewer}')
+    held = {item['item_id'] for item in sampled['practice']} | {
+        item['item_id'] for item in sampled['checks']
+    }
+    study_by_id = {
+        item['item_id']: item
+        for construct in CONSTRUCTS
+        for item in sampled['study'][construct]
+    }
     for name in names:
-        n_study = sum(
-            1 for item_id in assignments[name]
-            if item_id not in {item['item_id'] for item in sampled['practice']}
-            and item_id not in {item['item_id'] for item in sampled['checks']}
+        study_ids = [i for i in assignments[name] if i not in held]
+        n_class4 = sum(
+            1 for i in study_ids if study_by_id.get(i, {}).get('construct') in NAV_CONSTRUCTS
         )
-        print(f'{name}: {n_study} study items + checks and practice → {name}/')
+        print(
+            f'{name}: {len(study_ids)} study ({n_class4} class-4) + checks and practice → {name}/'
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
+    cfg_cap, _cfg_move = _default_review_settings()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--items', type=Path, required=True, help='Items folder or one items JSON')
     parser.add_argument('--output', type=Path, required=True, help='Package root (one folder per reviewer)')
     parser.add_argument('--per-construct', type=int, default=25, help='Concise items sampled per construct')
+    parser.add_argument(
+        '--class4-per-reviewer',
+        type=int,
+        default=cfg_cap,
+        metavar='N',
+        help=(
+            'Max route+survey study items each reviewer sees '
+            f'(default: {cfg_cap} from configs/generation.yaml review.class4_per_reviewer). '
+            'Pass a larger N to include more class-4 items when the pool has them.'
+        ),
+    )
     parser.add_argument('--reviewers', type=int, default=10)
     parser.add_argument('--reviews-per-item', type=int, default=2)
     parser.add_argument('--seed', type=int, default=0)
@@ -880,6 +1190,7 @@ def main(argv: list[str] | None = None) -> int:
             n_reviewers=args.reviewers,
             reviews=args.reviews_per_item,
             seed=args.seed,
+            class4_per_reviewer=args.class4_per_reviewer,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)

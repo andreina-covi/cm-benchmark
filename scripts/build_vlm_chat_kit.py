@@ -61,10 +61,13 @@ CHAT_SYSTEM_INSTRUCTION = (
     'rotate_left (turn 45° left), rotate_right (turn 45° right). '
     'Multiple-choice questions: on the first line, answer with only the option letter '
     '(A, B, C or D), or write Can\'t tell if you cannot decide. '
-    'Route questions: on the first line, answer with the actions in order, '
-    'comma-separated, using only the action names above, or write Can\'t tell. '
-    'Optionally, add one short comment on a second line (for route questions you may '
-    'describe the route using landmarks). The comment is not scored.'
+    'Route and survey questions: start at your position and facing in the named '
+    'start frame (the source landmark is in view) and list actions that end at '
+    'your position in the named end frame (the goal landmark is in view). On the '
+    'first line, answer with the actions in order, comma-separated, using only the '
+    'action names above, or write Can\'t tell. Optionally, add one short comment '
+    'on a second line (you may describe the route using landmarks). The comment '
+    'is not scored.'
 )
 
 # Paste this as the chat/tool message when attaching prompt.txt (+ frames for vision).
@@ -192,10 +195,25 @@ def study_items_from_sample(
     seed: int,
     items_per_construct: int,
     max_items: int | None,
+    n_reviewers: int = 10,
+    reviews: int = 2,
+    class4_per_reviewer: int | None = None,
 ) -> list[dict]:
     """Same study sample as the human package, then keep N per construct."""
     review = _load_review()
-    sampled = review.sample_items(items, per_construct, random.Random(seed))
+    cfg_cap, _move = review._default_review_settings()
+    c4_cap = cfg_cap if class4_per_reviewer is None else int(class4_per_reviewer)
+    class4_total = review.class4_study_total(
+        n_reviewers=n_reviewers,
+        reviews=reviews,
+        class4_per_reviewer=c4_cap,
+    )
+    sampled = review.sample_items(
+        items,
+        per_construct,
+        random.Random(seed),
+        class4_total=class4_total,
+    )
     ordered: list[dict] = []
     for construct in review.CONSTRUCTS:
         ordered.extend(
@@ -271,6 +289,7 @@ def build_kit(
     items_per_construct: int = DEFAULT_ITEMS_PER_CONSTRUCT,
     max_items: int | None = None,
     review_package: Path | None = None,
+    class4_per_reviewer: int | None = None,
 ) -> dict:
     """Write the chat kit. Return the kit manifest dict."""
     review = _load_review()
@@ -294,6 +313,7 @@ def build_kit(
             seed=seed,
             items_per_construct=items_per_construct,
             max_items=max_items,
+            class4_per_reviewer=class4_per_reviewer,
         )
     if not selected:
         raise ValueError('no study items selected for the VLM kit')
@@ -446,6 +466,8 @@ def build_kit(
 
 
 def main(argv: list[str] | None = None) -> int:
+    review = _load_review()
+    cfg_cap, _move = review._default_review_settings()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--items', type=Path, required=True, help='Items folder or one items JSON')
     parser.add_argument('--output', type=Path, required=True, help='Kit root')
@@ -456,6 +478,16 @@ def main(argv: list[str] | None = None) -> int:
         help='Study sample size per construct (same as build_review_package)',
     )
     parser.add_argument('--seed', type=int, default=0, help='Same seed as the human review package')
+    parser.add_argument(
+        '--class4-per-reviewer',
+        type=int,
+        default=cfg_cap,
+        metavar='N',
+        help=(
+            'Match build_review_package class-4 study budget '
+            f'(default: {cfg_cap} from review.class4_per_reviewer)'
+        ),
+    )
     parser.add_argument(
         '--items-per-construct',
         type=int,
@@ -488,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             items_per_construct=args.items_per_construct,
             max_items=args.max_items,
             review_package=args.review_package,
+            class4_per_reviewer=args.class4_per_reviewer,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)

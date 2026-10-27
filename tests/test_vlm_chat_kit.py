@@ -89,6 +89,7 @@ def test_kit_matches_review_sample_and_hides_gold(tmp_path: Path):
     }
 
     kit_out = tmp_path / 'vlm_kit'
+    # Reuse the review manifest so class-4 caps and sampling stay aligned.
     manifest = build_kit.build_kit(
         items_path,
         kit_out,
@@ -96,6 +97,7 @@ def test_kit_matches_review_sample_and_hides_gold(tmp_path: Path):
         seed=7,
         items_per_construct=2,
         max_items=2,
+        review_package=review_out,
     )
     assert manifest['n_items'] == 2
     assert set(manifest['item_ids']) <= study_ids

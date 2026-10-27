@@ -226,7 +226,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 4. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
 
-### route_knowledge (class 4, free action sequence) — "In frame i you see S; in frame j you see G. Retrace …"
+### route_knowledge (class 4, free action sequence) — "Start at your position in frame i … (the S is in view). Retrace … frame j (the G is in view)."
 
 1. `_load_nav_graph_or_none` → `build_nav_graph`;
 2. `_episode_traversed_subgraph` — snap the trajectory, keep walked edges;
@@ -239,7 +239,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 9. scoring is continuous replay: success, SPL, nDTW (`d_th = goal_success_m`), headline SDTW = success × nDTW; edge-membership validity is diagnostic only;
 10. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
-### survey_based_route_planning (class 4) — "In frame i you see S; in frame j you see G. A route …" over a never-walked path
+### survey_based_route_planning (class 4) — "Start at your position in frame i … Using the layout, list a route that ends at frame j …" over a never-walked path
 
 1. graph and walked subgraph as above; floor-standing landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
 2. `calibrate_view_radius_m` + `viewed_edges_from_trajectory` — edges near the trajectory count as "seen";

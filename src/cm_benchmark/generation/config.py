@@ -244,6 +244,14 @@ class EpisodeGtConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    """Human review package sampling and route-builder display."""
+
+    class4_per_reviewer: int
+    move_m: float
+
+
+@dataclass(frozen=True)
 class GenerationConfig:
     """Frozen quality parameters for one generation run."""
 
@@ -262,6 +270,7 @@ class GenerationConfig:
     templates: TemplatesConfig
     class4: Class4Config
     episode_gt: EpisodeGtConfig
+    review: ReviewConfig
     source_path: Optional[str] = None
 
     def content_hash(self) -> str:
@@ -354,6 +363,7 @@ def generation_config_from_mapping(
     dis = raw['disambiguation']
     c4 = raw['class4']
     egt = raw['episode_gt']
+    rev = raw.get('review') or {}
     return GenerationConfig(
         name=str(raw.get('name') or DEFAULT_CONFIG_NAME),
         source_path=source_path,
@@ -473,6 +483,10 @@ def generation_config_from_mapping(
                 agent_rotation_deg=float(c4['fallback']['agent_rotation_deg']),
                 agent_move_m=c4['fallback'].get('agent_move_m'),
             ),
+        ),
+        review=ReviewConfig(
+            class4_per_reviewer=int(rev.get('class4_per_reviewer', 5)),
+            move_m=float(rev.get('move_m', egt.get('mov_constant_m', 0.2))),
         ),
         episode_gt=EpisodeGtConfig(
             frame_w=int(egt['frame_w']),
