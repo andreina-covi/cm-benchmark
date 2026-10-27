@@ -6,8 +6,11 @@ alpha, and the share of reviews with any problem flag. Check-item accuracy
 is reported per reviewer. Items that both reviewers flagged, or that both
 answered wrongly, are listed.
 
-Practice rows are ignored. Gold answers come from ``manifest.json`` written
-by ``build_review_package.py``.
+Class-4 (route / survey) answers are expanded action sequences scored with
+the same simulator as models (success, SPL; nDTW/SDTW for route). The
+yes/no ``answerable`` column is reported separately and does not gate
+success. Practice rows are ignored. Gold / private items come from
+``manifest.json`` and ``private/items/`` written by ``build_review_package.py``.
 
 With ``--vlm-kit``, score a filled VLM chat-kit results CSV against
 ``answers.csv`` (MC letter match; class-4 via the route/survey scorers) and
@@ -115,11 +118,23 @@ def load_rows(paths: list[Path]) -> list[dict]:
                 key = (reviewer, item_id)
                 if key not in merged:
                     order.append(key)
+                # Legacy CSVs stored yes/no in answer and free text in route.
+                answer = (raw.get('answer') or '').strip()
+                answerable = (raw.get('answerable') or '').strip()
+                legacy_route = (raw.get('route') or '').strip()
+                if (
+                    not answerable
+                    and answer.casefold() in {'yes', 'no'}
+                    and (raw.get('construct') or '').strip() in NAV_CONSTRUCTS
+                ):
+                    answerable = answer
+                    answer = legacy_route
                 merged[key] = {
                     'reviewer_id': reviewer,
                     'item_id': item_id,
                     'construct': (raw.get('construct') or '').strip(),
-                    'answer': (raw.get('answer') or '').strip(),
+                    'answer': answer,
+                    'answerable': answerable,
                     'flags': _parse_flags(raw.get('flags') or ''),
                     'comment': raw.get('comment') or '',
                     'seconds': (raw.get('seconds') or '').strip(),
@@ -133,7 +148,32 @@ def _role(row: dict, manifest: dict) -> str:
     return meta.get('role') or row.get('role') or 'review'
 
 
-def _correct(meta: dict, answer: str) -> bool:
+def _load_package_item(package: Path | None, item_id: str) -> dict | None:
+    if package is None:
+        return None
+    return _load_private_item(package, item_id)
+
+
+def score_nav_answer(
+    *,
+    package: Path | None,
+    item_id: str,
+    construct: str,
+    answer: str,
+) -> dict | None:
+    """Score a human/model action sequence; None when unparseable or missing item."""
+    parsed = parse_nav_actions(answer)
+    if parsed is None:
+        return None
+    item = _load_package_item(package, item_id)
+    if item is None:
+        return None
+    if construct == 'survey_based_route_planning':
+        return score_survey_based_route_planning(item, None, parsed)
+    return score_route_knowledge(item, None, parsed)
+
+
+def _correct_mc(meta: dict, answer: str) -> bool:
     gold = (meta.get('gold') or '').strip()
     given = (answer or '').strip()
     if not gold or not given:
@@ -141,7 +181,44 @@ def _correct(meta: dict, answer: str) -> bool:
     return given.casefold() == gold.casefold()
 
 
-def analyze(manifest: dict, rows: list[dict]) -> str:
+def _nav_success(
+    meta: dict,
+    row: dict,
+    *,
+    package: Path | None,
+) -> bool | None:
+    """True/False success, or None when the answer cannot be scored."""
+    construct = meta.get('construct') or row.get('construct') or ''
+    scored = score_nav_answer(
+        package=package,
+        item_id=row['item_id'],
+        construct=construct,
+        answer=row.get('answer') or '',
+    )
+    if scored is None:
+        return None
+    return bool(scored.get('success'))
+
+
+def _row_correct(
+    meta: dict,
+    row: dict,
+    *,
+    package: Path | None,
+) -> bool:
+    construct = meta.get('construct') or row.get('construct') or ''
+    if meta.get('kind') == 'nav' or construct in NAV_CONSTRUCTS:
+        ok = _nav_success(meta, row, package=package)
+        return bool(ok)
+    return _correct_mc(meta, row.get('answer') or '')
+
+
+def analyze(
+    manifest: dict,
+    rows: list[dict],
+    *,
+    package: Path | None = None,
+) -> str:
     """Text report for one merged set of reviews."""
     items = manifest.get('items') or {}
     checks = list(manifest.get('check_item_ids') or [])
@@ -157,7 +234,8 @@ def analyze(manifest: dict, rows: list[dict]) -> str:
         study_rows[meta.get('construct') or row['construct']].append(row)
 
     lines = [
-        f'{"construct":<32} {"reviews":>8} {"accuracy":>16} {"alpha":>8} {"flag_rate":>10}',
+        f'{"construct":<32} {"reviews":>8} {"accuracy":>16} {"alpha":>8} '
+        f'{"flag_rate":>10} {"mean_spl":>10} {"mean_ndtw":>10} {"mean_sdtw":>10}',
     ]
     for construct in CONSTRUCTS:
         group = study_rows.get(construct) or []
@@ -166,21 +244,73 @@ def analyze(manifest: dict, rows: list[dict]) -> str:
             for meta in items.values()
         ):
             continue
-        answered = [row for row in group if row['answer']]
-        n_correct = sum(1 for row in answered if _correct(items[row['item_id']], row['answer']))
-        if answered:
-            accuracy = f'{n_correct / len(answered):.3f} ({n_correct}/{len(answered)})'
+        is_nav = construct in NAV_CONSTRUCTS
+        answered = [
+            row
+            for row in group
+            if (row.get('answer') if is_nav else row.get('answer'))
+        ]
+        scored_rows: list[tuple[dict, dict]] = []
+        n_correct = 0
+        alpha_labels: dict[str, list[str]] = defaultdict(list)
+        for row in answered:
+            meta = items[row['item_id']]
+            if is_nav:
+                scored = score_nav_answer(
+                    package=package,
+                    item_id=row['item_id'],
+                    construct=construct,
+                    answer=row.get('answer') or '',
+                )
+                if scored is None:
+                    continue
+                scored_rows.append((row, scored))
+                ok = bool(scored.get('success'))
+                n_correct += int(ok)
+                alpha_labels[row['item_id']].append('success' if ok else 'fail')
+            else:
+                ok = _correct_mc(meta, row['answer'])
+                n_correct += int(ok)
+                alpha_labels[row['item_id']].append(row['answer'])
+        n_scored = len(scored_rows) if is_nav else len(answered)
+        if n_scored:
+            accuracy = f'{n_correct / n_scored:.3f} ({n_correct}/{n_scored})'
         else:
             accuracy = 'n/a'
-        by_item: dict[str, list[str]] = defaultdict(list)
-        for row in answered:
-            by_item[row['item_id']].append(row['answer'])
-        alpha = krippendorff_alpha(list(by_item.values()))
+        alpha = krippendorff_alpha(list(alpha_labels.values()))
         alpha_s = 'n/a' if alpha is None else f'{alpha:.3f}'
         flagged = sum(1 for row in group if row['flags'])
         flag_rate = f'{flagged / len(group):.3f}' if group else 'n/a'
+        if is_nav and scored_rows:
+            mean_spl = sum(float(s['efficiency']) for _, s in scored_rows) / len(scored_rows)
+            mean_ndtw = sum(float(s.get('ndtw') or 0.0) for _, s in scored_rows) / len(
+                scored_rows
+            )
+            mean_sdtw = sum(float(s.get('sdtw') or 0.0) for _, s in scored_rows) / len(
+                scored_rows
+            )
+            spl_s = f'{mean_spl:.3f}'
+            ndtw_s = f'{mean_ndtw:.3f}' if construct == 'route_knowledge' else 'n/a'
+            sdtw_s = f'{mean_sdtw:.3f}' if construct == 'route_knowledge' else 'n/a'
+        else:
+            spl_s = ndtw_s = sdtw_s = 'n/a'
         lines.append(
-            f'{construct:<32} {len(group):>8} {accuracy:>16} {alpha_s:>8} {flag_rate:>10}'
+            f'{construct:<32} {len(group):>8} {accuracy:>16} {alpha_s:>8} '
+            f'{flag_rate:>10} {spl_s:>10} {ndtw_s:>10} {sdtw_s:>10}'
+        )
+
+    lines.append('')
+    lines.append('class-4 answerable (yes/no; not a success gate)')
+    for construct in ('route_knowledge', 'survey_based_route_planning'):
+        group = study_rows.get(construct) or []
+        judged = [row for row in group if row.get('answerable')]
+        if not judged:
+            lines.append(f'  {construct}: n/a')
+            continue
+        n_yes = sum(1 for row in judged if row['answerable'].casefold() == 'yes')
+        lines.append(
+            f'  {construct}: yes {n_yes}/{len(judged)} '
+            f'({n_yes / len(judged):.3f})'
         )
 
     lines.append('')
@@ -197,7 +327,7 @@ def analyze(manifest: dict, rows: list[dict]) -> str:
             for item_id in checks:
                 row = by_key.get((reviewer, item_id))
                 meta = items.get(item_id) or {}
-                if row and _correct(meta, row['answer']):
+                if row and _row_correct(meta, row, package=package):
                     hits += 1
             lines.append(f'  {reviewer:<{width}}  {hits}/{len(checks)}')
 
@@ -216,9 +346,9 @@ def analyze(manifest: dict, rows: list[dict]) -> str:
             continue
         meta = items[item_id]
         both_flagged = all(row['flags'] for row in group)
-        answered = [row for row in group if row['answer']]
+        answered = [row for row in group if row.get('answer')]
         both_wrong = len(answered) >= 2 and all(
-            not _correct(meta, row['answer']) for row in answered
+            not _row_correct(meta, row, package=package) for row in answered
         ) and len(answered) == len(group)
         if both_flagged or both_wrong:
             problems.append((item_id, meta.get('construct') or '', both_flagged, both_wrong))
@@ -381,7 +511,7 @@ def human_accuracy_by_construct(
         if not meta or not row['answer']:
             continue
         construct = meta.get('construct') or row['construct']
-        tallies[construct].append(_correct(meta, row['answer']))
+        tallies[construct].append(_row_correct(meta, row, package=root))
     return {
         construct: sum(hits) / len(hits)
         for construct, hits in tallies.items()
@@ -528,11 +658,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.package / 'manifest.json' if args.package.is_dir() else args.package
             )
             manifest = load_manifest(manifest_path)
-            paths = _csv_paths(manifest_path.parent, list(args.csvs))
+            package_root = manifest_path.parent if manifest_path.is_file() else args.package
+            paths = _csv_paths(package_root, list(args.csvs))
             if not paths:
                 print('no CSV files', file=sys.stderr)
                 return 1
-            chunks.append(analyze(manifest, load_rows(paths)))
+            chunks.append(
+                analyze(manifest, load_rows(paths), package=package_root)
+            )
         if args.vlm_kit is not None:
             chunks.append(
                 analyze_vlm(

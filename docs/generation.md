@@ -183,9 +183,15 @@ and a clear destination sighting through the query.
 ## Human review package
 
 Build zip-ready reviewer folders from generated items. Reviewers see exactly
-the frames in each item’s `image_paths`. For route and survey they answer
-whether the route from A to B can be worked out from those frames (yes/no),
-plus optional free-text route and the usual problem flags. MCQ items use the
+the frames in each item’s `image_paths`. For route and survey the question
+asks them to start at their pose in frame i (the source in view) and end at
+their pose in frame j (the goal in view). They answer whether that route can
+be worked out from those frames (yes/no), then build an action sequence with
+Forward/Back (×N at `review.move_m`),
+45° / 90° turns, Undo, and Clear. The CSV `answer` column stores the expanded
+action list; `answerable` stores yes/no. Class-4 study load is capped at
+`review.class4_per_reviewer` in `configs/generation.yaml` (default 5), and
+can be overridden per run with `--class4-per-reviewer N`. MCQ items use the
 options (or Can't tell). Multi-frame items hide the question until **Show the
 question**.
 
@@ -194,10 +200,15 @@ python scripts/build_review_package.py \
   --items  src/cm_benchmark/storage/ai2thor/items \
   --output /path/to/review_package \
   --per-construct 25 \
+  --class4-per-reviewer 5 \
   --reviewers 10 \
   --reviews-per-item 2 \
   --seed 0
 ```
+
+Raise the class-4 cap when you have more route/survey items, e.g.
+`--class4-per-reviewer 20`, or change the default in
+`configs/generation.yaml` under `review.class4_per_reviewer`.
 
 ```bash
 python scripts/analyze_review.py \
@@ -211,15 +222,18 @@ Process and checklist: [`Evaluation_process_manual.md`](../Evaluation_process_ma
 ## VLM chat kit (manual pilot)
 
 Same study items as the human review package (same `--seed` /
-`--per-construct`, or `--review-package` to reuse that manifest). Default
-`--items-per-construct 2` so each construct has two chat examples
-(`construct_batches/<construct>.txt` lists their vision folders).
+`--per-construct` / `--class4-per-reviewer`, or `--review-package` to reuse
+that manifest). Default `--items-per-construct 2` so each construct has two
+chat examples (`construct_batches/<construct>.txt` lists their vision
+folders). Prefer `--review-package` when a human package already exists so
+class-4 caps and sampling stay aligned.
 
 Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
 `blind/` (prompt only). `prompt.txt` holds the task instruction, question,
 and answer format (MC may use A–D or **Can't tell**, plus an optional
-comment). Gold is only in `answers.csv` / `private/`. Final cm-evaluation
-still uses forced A–D via `protocol.SYSTEM_INSTRUCTION`.
+comment). For class-4, attached frames are listed as `frame i of n, step s`.
+Gold is only in `answers.csv` / `private/`. Final cm-evaluation still uses
+forced A–D via `protocol.SYSTEM_INSTRUCTION`.
 
 ```bash
 # Smoke test with 2 items total
@@ -228,6 +242,7 @@ python scripts/build_vlm_chat_kit.py \
   --output /path/to/vlm_kit \
   --seed 0 \
   --per-construct 25 \
+  --class4-per-reviewer 5 \
   --max-items 2
 
 # Default pilot: 2 items per construct, aligned with a human package

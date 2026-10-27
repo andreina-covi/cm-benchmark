@@ -139,6 +139,12 @@ class4:
     agent_rotation_deg: 45.0  # derived: unused when the export supplies rotation
     agent_move_m: null  # derived: unused; falls back to grid_size
 
+# Human review package. Sampling / UI only — does not change item generation.
+review:
+  # Override per run with: python scripts/build_review_package.py --class4-per-reviewer N
+  class4_per_reviewer: 5  # none found; max route+survey study items each reviewer sees
+  move_m: 0.2  # derived: same as episode_gt.mov_constant_m; shown on Forward/Back buttons
+
 # Episode-GT hyperparameters. Camera / agent fields are overridden by episode_meta.
 episode_gt:
   frame_w: 396  # derived: SPOC nav camera; overridden by episode_meta.camera

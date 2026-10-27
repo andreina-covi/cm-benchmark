@@ -246,17 +246,18 @@ class_4:
         pose sequence. Edge-membership validity is diagnostic only.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
-        In frame {source_frame} you see the {source}; in frame {goal_frame}
-        you see the {goal}. Starting from your position and facing direction
-        in frame {source_frame}, list the actions that retrace the route you
-        walked to your position in frame {goal_frame}.
+        Start at your position in frame {i}, facing as in frame {i}
+        (the {source} is in view). List the actions that retrace the route
+        you walked, ending at your position in frame {j}
+        (the {goal} is in view).
       ground_truth_method: >
         Source and goal are floor-standing landmarks on the walked trajectory.
-        They are not confusable with each other. {source_frame} / {goal_frame}
-        are 1-based indices into the shown frames (same numbering as the
-        images): source = first distinguishable sighting of the source;
-        goal = the goal sighting whose agent pose is the scorer target.
-        Marks stay in {source}/{goal} when endpoints are disambiguated.
+        They are not confusable with each other. {i} / {j} (aliases
+        {source_frame} / {goal_frame}) are 1-based indices into the shown
+        frames (same numbering as the images): source = first distinguishable
+        sighting of the source; goal = the goal sighting whose agent pose is
+        the scorer target. Marks and proximity phrases stay in {source}/{goal}
+        when endpoints are disambiguated; the template supplies the article.
         The stored reference is the agent's recorded actions between those
         sightings. Replay starts at the source-sighting pose. A move that
         lands farther than the calibrated block tolerance from every
@@ -291,21 +292,21 @@ class_4:
         of the goal-sighting pose, then SPL. No answer-level validity gate.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
-        In frame {source_frame} you see the {source}; in frame {goal_frame}
-        you see the {goal}. Starting from your position and facing direction
-        in frame {source_frame}, list the actions of a route to your
-        position in frame {goal_frame}, using what you have seen of
-        the layout.
+        Start at your position in frame {i}, facing as in frame {i}
+        (the {source} is in view). Using what you have seen of the layout,
+        list the actions of a route that ends at your position in frame {j}
+        (the {goal} is in view).
       ground_truth_method: >
         Source and goal are floor-standing landmarks with no path on
         traversed_edges and a path on viewed_edges. They are not confusable
-        with each other. {source_frame} / {goal_frame} are 1-based indices
-        into the shown frames: source = first distinguishable sighting of
-        the source; goal = the goal sighting whose agent pose is the scorer
-        target. Marks stay in {source}/{goal} when endpoints are
-        disambiguated. The stored reference is a continuous BFS from the
-        source-sighting pose over those viewed moves, not the agent's
-        recorded actions. Success is the final position within
+        with each other. {i} / {j} (aliases {source_frame} / {goal_frame})
+        are 1-based indices into the shown frames: source = first
+        distinguishable sighting of the source; goal = the goal sighting
+        whose agent pose is the scorer target. Marks and proximity phrases
+        stay in {source}/{goal} when endpoints are disambiguated; the
+        template supplies the article. The stored reference is a continuous
+        BFS from the source-sighting pose over those viewed moves, not the
+        agent's recorded actions. Success is the final position within
         goal_success_m of the goal-sighting pose, the same target as
         route_knowledge (headline). SPL is given success. Edge-membership
         validity is diagnostic only. Keep only non-trivial pairs (at least

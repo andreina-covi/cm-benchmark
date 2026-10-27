@@ -120,21 +120,31 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
     study_n = Counter(
         meta['construct'] for meta in manifest['items'].values() if meta['role'] == 'review'
     )
-    assert all(study_n[c] == 25 for c in CONSTRUCTS)
+    assert all(study_n[c] == 25 for c in CONSTRUCTS if c not in NAV)
+    # class4_per_reviewer=5, 10 reviewers, 2 reviews → 25 class-4 study items.
+    assert sum(study_n[c] for c in NAV) == 25
+    assert manifest['class4_per_reviewer'] == 5
+    assert manifest['class4_total'] == 25
     for item_id, reviewers in manifest['reviewers_for_item'].items():
         assert len(reviewers) == 2
         assert len(set(reviewers)) == 2
         meta = manifest['items'][item_id]
         if meta['kind'] == 'nav':
-            assert meta['gold'] == 'yes'
+            assert meta['gold'] == 'move_ahead'
+            assert (out / 'private' / 'items' / f'{item_id}.json').is_file()
         else:
             assert meta['gold'] == 'B'
 
-    per_reviewer = Counter()
-    for reviewers in manifest['reviewers_for_item'].values():
+    per_reviewer_class4 = Counter()
+    for item_id, reviewers in manifest['reviewers_for_item'].items():
+        if manifest['items'][item_id]['kind'] != 'nav':
+            continue
+        if manifest['items'][item_id]['role'] != 'review':
+            continue
         for name in reviewers:
-            per_reviewer[name] += 1
-    assert set(per_reviewer.values()) == {40}
+            per_reviewer_class4[name] += 1
+    assert per_reviewer_class4
+    assert set(per_reviewer_class4.values()) == {5}
 
     for name, item_ids in manifest['assignments'].items():
         html = (out / name / 'index.html').read_text()
@@ -150,7 +160,11 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert 'Show the question' in html
         assert "Can't tell" in html
         assert 'worked out from these frames' in html
-        assert 'id="route"' in html
+        assert 'route-builder' in html
+        assert 'Forward (×N)' in html
+        assert 'Turn left 90°' in html
+        assert 'answerable' in html
+        assert 'id="route"' not in html
         assert 'construct-tag' in html
         assert 'CONSTRUCT_INITIALS' in html
         assert 'Download CSV' in html
@@ -204,22 +218,28 @@ def test_analyze_accuracy_alpha_and_both_wrong(tmp_path: Path):
             'check1': {'construct': 'egocentric_encoding', 'role': 'check', 'kind': 'mc', 'gold': 'A'},
             'ok1': {'construct': 'egocentric_encoding', 'role': 'review', 'kind': 'mc', 'gold': 'A'},
             'bad1': {'construct': 'egocentric_encoding', 'role': 'review', 'kind': 'mc', 'gold': 'B'},
-            'nav1': {'construct': 'route_knowledge', 'role': 'review', 'kind': 'nav', 'gold': 'yes'},
+            'nav1': {
+                'construct': 'route_knowledge',
+                'role': 'review',
+                'kind': 'nav',
+                'gold': 'move_ahead',
+            },
             'prac1': {'construct': 'spatial_updating', 'role': 'practice', 'kind': 'mc', 'gold': 'C'},
         },
     }
     rows = [
-        {'reviewer_id': 'reviewer_01', 'item_id': 'check1', 'answer': 'A', 'flags': [], 'role': 'check'},
-        {'reviewer_id': 'reviewer_02', 'item_id': 'check1', 'answer': 'B', 'flags': [], 'role': 'check'},
-        {'reviewer_id': 'reviewer_01', 'item_id': 'ok1', 'answer': 'A', 'flags': [], 'role': 'review'},
-        {'reviewer_id': 'reviewer_02', 'item_id': 'ok1', 'answer': 'A', 'flags': ['unclear_question'], 'role': 'review'},
-        {'reviewer_id': 'reviewer_01', 'item_id': 'bad1', 'answer': 'A', 'flags': ['ambiguous_reference'], 'role': 'review'},
-        {'reviewer_id': 'reviewer_02', 'item_id': 'bad1', 'answer': "Can't tell", 'flags': ['object_not_visible'], 'role': 'review'},
-        {'reviewer_id': 'reviewer_01', 'item_id': 'nav1', 'answer': 'yes', 'flags': [], 'role': 'review'},
-        {'reviewer_id': 'reviewer_02', 'item_id': 'nav1', 'answer': 'no', 'flags': [], 'role': 'review'},
-        {'reviewer_id': 'reviewer_01', 'item_id': 'prac1', 'answer': 'wrong', 'flags': [], 'role': 'practice'},
+        {'reviewer_id': 'reviewer_01', 'item_id': 'check1', 'answer': 'A', 'answerable': '', 'flags': [], 'role': 'check'},
+        {'reviewer_id': 'reviewer_02', 'item_id': 'check1', 'answer': 'B', 'answerable': '', 'flags': [], 'role': 'check'},
+        {'reviewer_id': 'reviewer_01', 'item_id': 'ok1', 'answer': 'A', 'answerable': '', 'flags': [], 'role': 'review'},
+        {'reviewer_id': 'reviewer_02', 'item_id': 'ok1', 'answer': 'A', 'answerable': '', 'flags': ['unclear_question'], 'role': 'review'},
+        {'reviewer_id': 'reviewer_01', 'item_id': 'bad1', 'answer': 'A', 'answerable': '', 'flags': ['ambiguous_reference'], 'role': 'review'},
+        {'reviewer_id': 'reviewer_02', 'item_id': 'bad1', 'answer': "Can't tell", 'answerable': '', 'flags': ['object_not_visible'], 'role': 'review'},
+        # No private item → nav answers unscored (not counted in accuracy).
+        {'reviewer_id': 'reviewer_01', 'item_id': 'nav1', 'answer': 'move_ahead', 'answerable': 'yes', 'flags': [], 'role': 'review'},
+        {'reviewer_id': 'reviewer_02', 'item_id': 'nav1', 'answer': 'move_back', 'answerable': 'no', 'flags': [], 'role': 'review'},
+        {'reviewer_id': 'reviewer_01', 'item_id': 'prac1', 'answer': 'wrong', 'answerable': '', 'flags': [], 'role': 'practice'},
     ]
-    text = analyze.analyze(manifest, rows)
+    text = analyze.analyze(manifest, rows, package=tmp_path)
     assert 'egocentric_encoding' in text
     # ok1 both correct, bad1 both wrong → 2/4 for egocentric.
     assert '0.500 (2/4)' in text
@@ -228,13 +248,62 @@ def test_analyze_accuracy_alpha_and_both_wrong(tmp_path: Path):
     assert 'reviewer_01  1/1' in text
     assert 'reviewer_02  0/1' in text
     assert 'prac1' not in text.split('flagged or wrong')[-1]
+    assert 'answerable' in text
+    assert 'mean_ndtw' in text or 'mean_sdtw' in text or 'n/a' in text
 
     csv_path = tmp_path / 'reviewer_01.csv'
     csv_path.write_text(
-        'reviewer_id,item_id,construct,answer,flags,comment,seconds,role\n'
-        'reviewer_01,check1,egocentric_encoding,A,,"hello, there",3.5,check\n'
+        'reviewer_id,item_id,construct,answer,answerable,flags,comment,seconds,role\n'
+        'reviewer_01,check1,egocentric_encoding,A,,,"hello, there",3.5,check\n'
         'reviewer_01,ok1,egocentric_encoding,A,,,1,review\n'
+        'reviewer_01,nav1,route_knowledge,"move_ahead, rotate_left",yes,,,2,review\n'
     )
     loaded = analyze.load_rows([csv_path])
     assert loaded[0]['comment'] == 'hello, there'
     assert loaded[0]['flags'] == []
+    assert loaded[2]['answerable'] == 'yes'
+    assert 'move_ahead' in loaded[2]['answer']
+
+
+def test_class4_study_total_respects_per_reviewer_budget():
+    build = _load('build_review_package.py')
+    assert build.class4_study_total(
+        n_reviewers=10, reviews=2, class4_per_reviewer=5
+    ) == 25
+    assert build.class4_study_total(
+        n_reviewers=10, reviews=2, class4_per_reviewer=0
+    ) == 0
+
+
+def test_class4_per_reviewer_cli_override(tmp_path: Path):
+    """``--class4-per-reviewer`` changes the study budget (default stays 5)."""
+    build = _load('build_review_package.py')
+    items_path = tmp_path / 'items.json'
+    frame = tmp_path / 'img_0.png'
+    frame.write_bytes(b'frame-bytes')
+    items = _pool(per_scene=10)
+    for item in items:
+        item['image_paths'] = [str(frame)]
+    items_path.write_text(json.dumps({'items': items}))
+
+    out = tmp_path / 'pkg'
+    manifest = build.build_package(
+        items_path,
+        out,
+        per_construct=25,
+        n_reviewers=10,
+        reviews=2,
+        seed=0,
+        class4_per_reviewer=3,
+    )
+    assert manifest['class4_per_reviewer'] == 3
+    assert manifest['class4_total'] == 15
+    per_reviewer = Counter()
+    for item_id, reviewers in manifest['reviewers_for_item'].items():
+        if manifest['items'][item_id]['role'] != 'review':
+            continue
+        if manifest['items'][item_id]['kind'] != 'nav':
+            continue
+        for name in reviewers:
+            per_reviewer[name] += 1
+    assert set(per_reviewer.values()) == {3}

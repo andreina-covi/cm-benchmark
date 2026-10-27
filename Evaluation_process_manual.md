@@ -80,8 +80,8 @@ This is the part you flagged as necessary because some judgments (construct-fait
 
 ### 3.1 Who reviews, and with what
 - **Annotators:** 2 independent reviewers minimum per sampled item (`--reviews-per-item`). Reviewers should be spatial-reasoning-literate but *not* the person who wrote the generator/template for that construct.
-- **Tooling:** `scripts/build_review_package.py` writes one zip-ready folder per reviewer. Each folder has `index.html` and **exactly the frames in that item's `image_paths`** (marked copies when the item uses marks). Gold stays in `manifest.json` at the package root, not in the reviewer folders. Multi-frame items hide the question until **Show the question**. After review, `scripts/analyze_review.py` merges the downloaded CSVs against the manifest (accuracy, Krippendorff's α, flags). Commands: [`docs/generation.md`](docs/generation.md).
-- **Blinding:** reviewers see the same frames the model gets, plus the question. For MCQ they pick an option (or Can't tell). For route / survey they answer only whether the route can be worked out from those frames (yes/no), with an optional free-text route. They do **not** see the stored gold until after they submit (practice items are the exception: they show the stored answer and are skipped by analysis).
+- **Tooling:** `scripts/build_review_package.py` writes one zip-ready folder per reviewer. Each folder has `index.html` and **exactly the frames in that item's `image_paths`** (marked copies when the item uses marks). Gold stays in `manifest.json` at the package root; class-4 items also get `private/items/*.json` for simulator scoring. Multi-frame items hide the question until **Show the question**. Route/survey use an on-page route builder (CSV `answer` = expanded actions, `answerable` = yes/no). Class-4 study load per reviewer defaults to 5 (`review.class4_per_reviewer` / `--class4-per-reviewer`). After review, `scripts/analyze_review.py` merges the downloaded CSVs against the manifest (MC accuracy / α / flags; class-4 success, SPL, nDTW/SDTW). Commands: [`docs/generation.md`](docs/generation.md).
+- **Blinding:** reviewers see the same frames the model gets, plus the question. For MCQ they pick an option (or Can't tell). For route / survey they answer whether the route can be worked out (yes/no) and build an action sequence with the on-page route builder; the CSV `answer` is the expanded action list (scored like models). They do **not** see the stored gold until after they submit (practice items are the exception: they show the stored answer and are skipped by analysis).
 
 ### 3.2 What each reviewer judges, per item
 A checklist derived from the construct's `discriminators` in `taxonomy.yaml`. The HTML flags are shared across constructs: ambiguous reference, unclear question, object not visible, more than one option looks correct.
@@ -89,18 +89,18 @@ A checklist derived from the construct's `discriminators` in `taxonomy.yaml`. Th
 For every construct (from `shared_rules`):
 - [ ] Question does not name the answer, a direction, or a move/event
 - [ ] Frame of reference is unambiguous
-- [ ] The frames shown are enough to answer (for MCQ: exactly one option is defensibly correct; for route/survey: the route from A to B can be worked out from these frames)
+- [ ] The frames shown are enough to answer (for MCQ: exactly one option is defensibly correct; for route/survey: the route from the start pose in frame i — the source in view — to the end pose in frame j — the goal in view — can be worked out from these frames)
 
 Construct-specific checks that matter in review:
 - [ ] **spatial_updating / spatial_working_memory:** the sequence is consecutive FOV frames for the stated `k` (no missing turn in the middle)
 - [ ] **invisible_displacement:** the destination place is clearly visible in some shown frame before the query
 - [ ] **perspective_taking:** A, B, and C appear together in the one shown frame
-- [ ] **route / survey:** the shown walk is enough to work out A→B; do not grade a written action list as gold
+- [ ] **route / survey:** the shown walk is enough to work out A→B; the built action sequence is scored with the same simulator as models
 
 Plus one holistic item:
 - [ ] **Can you personally answer this from the images alone**, and would you expect a spatially competent adult to agree? (Catches cases where automated gates passed but the image is ambiguous, blurry, or the object is only technically visible.)
 
-On MCQ items the reviewer selects an option *before* seeing gold. On route/survey items the scored judgment is yes/no on whether the route can be worked out; the optional written route is free text for qualitative notes, not the benchmark gold.
+On MCQ items the reviewer selects an option *before* seeing gold. On route/survey items they mark answerable yes/no and build a route; `analyze_review.py` scores the expanded action list (success / SPL; nDTW/SDTW for route).
 
 ### 3.3 Decision rule
 - **Agree + checklist clean, both reviewers:** item promoted, `status: verified`.
@@ -108,10 +108,10 @@ On MCQ items the reviewer selects an option *before* seeing gold. On route/surve
 - **Both reviewers reject on the same discriminator:** item rejected, and the underlying template/generator gets a bug ticket referencing the specific `discriminators` line that failed. Don't just discard the item silently — a systematic discriminator failure across many items means the generator itself is broken for that construct.
 
 ### 3.4 Inter-annotator agreement (IAA)
-Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_based_route_planning` are inherently harder to adjudicate than `egocentric_encoding`). `scripts/analyze_review.py` reports human accuracy vs gold, nominal Krippendorff's α, and flag rates on study items (practice rows are ignored). For MCQ, gold is the stored letter; for route/survey, gold for the yes/no judgment is `yes` (the question is answerable from the frames). A construct with α below your threshold means the items are ambiguous to humans too, and the fix is almost always in wording, frame selection, or distractors — not in adding more reviewers.
+Track agreement per construct, not just globally — constructs differ hugely in difficulty (`perspective_taking` and `survey_based_route_planning` are inherently harder to adjudicate than `egocentric_encoding`). `scripts/analyze_review.py` reports human accuracy vs gold, nominal Krippendorff's α, and flag rates on study items (practice rows are ignored). For MCQ, gold is the stored letter; for route/survey, accuracy is simulator success on the built action sequence (with SPL / nDTW / SDTW). A construct with α below your threshold means the items are ambiguous to humans too, and the fix is almost always in wording, frame selection, or distractors — not in adding more reviewers.
 
 ### 3.5 Sampling
-At this stage of the project (small item sets, active template iteration), review **100% of `auto_pass` items** — you don't have volume yet where sampling saves meaningful effort, and full review gives you the richest signal for fixing templates. Once templates stabilize and volume grows, move to a stratified sample (e.g., all items from any construct/scene combo not yet seen, plus a fixed percentage of repeats) and hold out a fully-reviewed set as a periodic audit.
+At this stage of the project (small item sets, active template iteration), review **100% of `auto_pass` items** — you don't have volume yet where sampling saves meaningful effort, and full review gives you the richest signal for fixing templates. Once templates stabilize and volume grows, move to a stratified sample (e.g., all items from any construct/scene combo not yet seen, plus a fixed percentage of repeats) and hold out a fully-reviewed set as a periodic audit. Class-4 (`route_knowledge`, `survey_based_route_planning`) is further capped at `review.class4_per_reviewer` (default 5) so each person sees a bounded number of route/survey items; raise it with `--class4-per-reviewer` when the generated pool has more usable class-4 items.
 
 ---
 

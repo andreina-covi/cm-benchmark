@@ -99,6 +99,8 @@ value in that range is better.
 
 | name | current value | file:line (all copies) | what it controls | constructs affected | effect of raising / lowering | justification | suggested ablation range | config key |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| class-4 per reviewer | 5 | `build_review_package.py` | max route+survey study items each human reviewer sees. Default from yaml; override per run with `--class4-per-reviewer N` (also on `build_vlm_chat_kit.py` when not using `--review-package`) | review package | higher → more class-4 judgments per person | none found | 3–10 | `review.class4_per_reviewer` |
+| review move step | 0.2 m | review UI | distance shown / applied per Forward or Back click in the route builder | review package | — | derived: `episode_gt.mov_constant_m` | — | `review.move_m` |
 | class-4 frame budget | 16 | `planner.py` | lock required frames (sightings; rotation ±1; survey path covers), then fill straight segments evenly. Drop if required set or max gap unmet. `--n_frames` overrides for one run | route, survey | higher → more of the walk, longer items | none found | 8–24 | `class4.n_frames` |
 | max frame gap | 5 steps | `planner.py` | max agent steps between consecutive shown frames; drop the item if unmet within `n_frames` | route, survey | lower → denser coverage, more drops | none found | 3–8 | `class4.max_frame_gap_steps` |
 | route context margin | 4 steps | `planner.py` | FOV steps kept before the source sighting and after the goal sighting | route | higher → more approach and departure context | none found | 0–8 | `class4.route.context_margin_steps` |
