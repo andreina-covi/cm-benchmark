@@ -116,7 +116,7 @@ class_2:
       answer_type: recalled relation, location, or count of past-seen items
       required_temporal_fields: [agent_trajectory, agent_actions]
       question_template: >-
-        Considering what you saw {k} steps ago: where was the {object} relative to you then?
+        {k} steps ago, where was the {object_type}{disambiguator} relative to you at that moment?
         / How many {objects} have you seen so far?
       ground_truth_method: >
         Recalled relation, location, or count from the encoding step.
