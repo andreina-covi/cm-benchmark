@@ -136,9 +136,9 @@ def class4_slide_panel(
             'path': f'Stored walk: {walk}',
             'actions': 'Letter marker at the object bbox center on that still.',
             'scoring': (
-                'Score: success = within 1.0 m of the goal (continuous replay); '
-                'validity = stay on viewed edges and use at least one unwalked hop; '
-                'efficiency = SPL vs viewed shortest path.'
+                'Score: success (headline) = within 1.0 m of the goal '
+                '(continuous replay); efficiency = SPL vs viewed shortest path. '
+                'Edge-membership validity is diagnostic only.'
             ),
         }
     return {
@@ -147,9 +147,10 @@ def class4_slide_panel(
         'path': f'Stored walk: {walk}',
         'actions': 'Letter marker at the object bbox center on that still.',
         'scoring': (
-            'Score: success = within 1.0 m of the goal (continuous replay); '
-            'validity = stay on walked edges; efficiency = SPL. '
-            'Headline = valid-success + route_efficiency.'
+            'Score: success = within 1.0 m of the goal; efficiency = SPL; '
+            'nDTW vs reference poses (d_th = goal_success_m); '
+            'headline SDTW = success × nDTW. '
+            'Edge-membership validity is diagnostic only.'
         ),
     }
 

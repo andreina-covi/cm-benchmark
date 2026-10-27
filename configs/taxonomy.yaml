@@ -242,20 +242,29 @@ class_4:
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
         [CODE] replays the sequence continuously from the source-sighting
         pose; success is the final position within goal_success_m of the
-        goal-sighting pose, then validity and SPL.
+        goal-sighting pose; SPL; nDTW / SDTW (headline) vs the reference
+        pose sequence. Edge-membership validity is diagnostic only.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
-        List the actions you took from where you saw the {source} to where
-        you saw the {goal}.
+        In frame {source_frame} you see the {source}; in frame {goal_frame}
+        you see the {goal}. Starting from your position and facing direction
+        in frame {source_frame}, list the actions that retrace the route you
+        walked to your position in frame {goal_frame}.
       ground_truth_method: >
         Source and goal are floor-standing landmarks on the walked trajectory.
-        They are not confusable with each other.
+        They are not confusable with each other. {source_frame} / {goal_frame}
+        are 1-based indices into the shown frames (same numbering as the
+        images): source = first distinguishable sighting of the source;
+        goal = the goal sighting whose agent pose is the scorer target.
+        Marks stay in {source}/{goal} when endpoints are disambiguated.
         The stored reference is the agent's recorded actions between those
         sightings. Replay starts at the source-sighting pose. A move that
         lands farther than the calibrated block tolerance from every
         reachable node is a no-op. Success is the final position within
         goal_success_m of the goal-sighting pose. The landmark centroid
-        is not that pose.
+        is not that pose. nDTW compares the replayed and reference pose
+        sequences with d_th = goal_success_m; SDTW = success × nDTW
+        (headline). Edge-membership validity is logged only.
         Keep only non-trivial walks (at least 2 m, detour, and at least
         one real turn). There is no scene-percentile length gate. A scene
         with no such walk is unsupported.
@@ -264,7 +273,7 @@ class_4:
         - the queried route was previously traversed (path on traversed_edges)
         - source and goal are named landmarks, not graph nodes
         - the walk is non-trivial (not a short straight shot)
-        - free action sequence; [CODE] scores success / validity / SPL
+        - free action sequence; [CODE] scores success / SPL / SDTW
         - INVALID if that source–goal walk was not previously traversed
 
     survey_based_route_planning:
@@ -278,27 +287,28 @@ class_4:
         ordered sequence of collected navigation actions
         (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
         [CODE] replays the sequence continuously from the source-sighting
-        pose; success is the final position within goal_success_m of the
-        goal-sighting pose. Validity requires the walk to use at least one
-        unwalked viewed edge, then SPL.
+        pose; success (headline) is the final position within goal_success_m
+        of the goal-sighting pose, then SPL. No answer-level validity gate.
       required_temporal_fields: [agent_trajectory, nav_graph]
-      question_template:
-        - >-
-          Using your knowledge of the environment's layout, list the
-          actions that take you from where you saw the {source} to where
-          you saw the {goal}.
-        - >-
-          Based on what you've seen of this space, list the actions, in
-          order, that go from where you saw the {source} to where you saw
-          the {goal}.
+      question_template: >
+        In frame {source_frame} you see the {source}; in frame {goal_frame}
+        you see the {goal}. Starting from your position and facing direction
+        in frame {source_frame}, list the actions of a route to your
+        position in frame {goal_frame}, using what you have seen of
+        the layout.
       ground_truth_method: >
         Source and goal are floor-standing landmarks with no path on
         traversed_edges and a path on viewed_edges. They are not confusable
-        with each other. The stored reference is
-        a continuous BFS from the source-sighting pose over those viewed
-        moves, not the agent's recorded actions. Success is the final
-        position within goal_success_m of the goal-sighting pose, the same
-        target as route_knowledge. Keep only non-trivial pairs (at least
+        with each other. {source_frame} / {goal_frame} are 1-based indices
+        into the shown frames: source = first distinguishable sighting of
+        the source; goal = the goal sighting whose agent pose is the scorer
+        target. Marks stay in {source}/{goal} when endpoints are
+        disambiguated. The stored reference is a continuous BFS from the
+        source-sighting pose over those viewed moves, not the agent's
+        recorded actions. Success is the final position within
+        goal_success_m of the goal-sighting pose, the same target as
+        route_knowledge (headline). SPL is given success. Edge-membership
+        validity is diagnostic only. Keep only non-trivial pairs (at least
         2 m and at least one real turn); emit the hardest surviving ones.
       distractor_pattern: []
       discriminators:
@@ -306,7 +316,7 @@ class_4:
         - a path exists on viewed_edges (answerable from what was seen)
         - agent is not standing at the source when it is first sighted
         - the planned walk is non-trivial
-        - free action sequence; [CODE] scores viewed_edges validity + SPL
+        - free action sequence; [CODE] scores success + SPL
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
 # (Core fields are always present; these are the construct-dependent ones.)

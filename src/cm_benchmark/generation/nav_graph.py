@@ -1496,7 +1496,7 @@ def _spl_ratio(opt_m: Optional[float], path_m: float, *, success: bool) -> float
 
 
 def _route_outcome(success: bool, validity: bool) -> str:
-    """Label for the 2×2 success × validity cell of a class-4 score."""
+    """Diagnostic 2×2 label (validity is not a score gate)."""
     if success and validity:
         return 'valid_success'
     if success:
@@ -1504,6 +1504,43 @@ def _route_outcome(success: bool, validity: bool) -> str:
     if validity:
         return 'valid_fail'
     return 'invalid_fail'
+
+
+def _dtw_xz(
+    pred: Sequence[tuple[float, float]],
+    ref: Sequence[tuple[float, float]],
+) -> float:
+    """Dynamic time warping cost between xz trajectories (Euclidean local cost)."""
+    if not ref:
+        return 0.0 if not pred else float('inf')
+    if not pred:
+        return float('inf')
+    n, m = len(pred), len(ref)
+    prev = [float('inf')] * (m + 1)
+    prev[0] = 0.0
+    for i in range(1, n + 1):
+        cur = [float('inf')] * (m + 1)
+        px, pz = pred[i - 1]
+        for j in range(1, m + 1):
+            rx, rz = ref[j - 1]
+            cost = math.hypot(px - rx, pz - rz)
+            cur[j] = cost + min(prev[j], cur[j - 1], prev[j - 1])
+        prev = cur
+    return float(prev[m])
+
+
+def ndtw_xz(
+    pred: Sequence[tuple[float, float]],
+    ref: Sequence[tuple[float, float]],
+    d_th: float,
+) -> float:
+    """Normalised DTW (Ilharco et al. 2019): exp(-DTW / (d_th · |τ*|))."""
+    if not ref or float(d_th) <= 0.0:
+        return 0.0
+    dtw = _dtw_xz(pred, ref)
+    if not math.isfinite(dtw):
+        return 0.0
+    return float(math.exp(-dtw / (float(d_th) * len(ref))))
 
 
 def _route_score_record(
@@ -1522,8 +1559,11 @@ def _route_score_record(
     shortest_path_full_m: Optional[float] = None,
     efficiency: float = 0.0,
     route_efficiency: float = 0.0,
+    ndtw: float = 0.0,
+    sdtw: float = 0.0,
     end_xz=None,
     end_heading_deg=None,
+    poses_xz=None,
 ) -> dict:
     """Uniform score dict returned by both class-4 scorers."""
     crossed = [tuple(e) for e in (crossed_edges or [])]
@@ -1533,9 +1573,12 @@ def _route_score_record(
         'success': bool(success),
         'success_raw': bool(success),
         'validity': bool(validity),
-        'route_success': bool(success and validity),
+        # Validity is diagnostic only; headline bits follow success (and SDTW).
+        'route_success': bool(success),
         'efficiency': float(efficiency),
         'route_efficiency': float(route_efficiency),
+        'ndtw': float(ndtw),
+        'sdtw': float(sdtw),
         'outcome': _route_outcome(success, validity),
         'parse_ok': bool(parse_ok),
         'end_node': end_node,
@@ -1543,6 +1586,7 @@ def _route_score_record(
         'end_heading_deg': end_heading_deg,
         'actions': list(actions or []),
         'snapped_nodes': list(snapped_nodes or []),
+        'poses_xz': [tuple(p) for p in (poses_xz or [])],
         'simulated_length_m': float(simulated_length_m),
         'shortest_path_m': shortest_path_m,
         'shortest_path_full_m': shortest_path_full_m,
@@ -1636,6 +1680,7 @@ def simulate_nav_action_sequence(
         'parse_ok': parsed is not None,
         'actions': list(parsed or []),
         'snapped': [],
+        'poses_xz': [],
         'simulated_length_m': 0.0,
         'end_node': None,
         'end_xz': None,
@@ -1669,6 +1714,7 @@ def simulate_nav_action_sequence(
     if start_nid is None:
         start_nid = source_node if source_node in graph else None
     snapped = [start_nid] if start_nid is not None else []
+    poses_xz: list[tuple[float, float]] = [(x, z)]
     sim_len = 0.0
     blocked_moves = 0
     current = start_nid
@@ -1688,6 +1734,7 @@ def simulate_nav_action_sequence(
             current_node=current,
         )
         current = nid
+        poses_xz.append((x, z))
         if blocked:
             blocked_moves += 1
             continue
@@ -1699,6 +1746,7 @@ def simulate_nav_action_sequence(
         'parse_ok': True,
         'actions': parsed,
         'snapped': snapped,
+        'poses_xz': poses_xz,
         'simulated_length_m': sim_len,
         'end_node': snapped[-1] if snapped else start_nid,
         'end_xz': (x, z),
@@ -1926,6 +1974,44 @@ def _fail_from_sim(sim: dict) -> dict:
     )
 
 
+def _reference_poses_xz(
+    graph: nx.Graph,
+    source_node: str,
+    *,
+    start_heading_deg: float,
+    start_pos,
+    move_m: Optional[float],
+    rotation_deg: Optional[float],
+    snap_tolerance: Optional[float],
+    goal_tolerance: Optional[float],
+    block_tolerance: Optional[float],
+    allowed_nodes,
+    reference_actions,
+    reference_poses_xz,
+) -> list[tuple[float, float]]:
+    """Reference trajectory for nDTW: explicit poses, else replay reference actions."""
+    if reference_poses_xz:
+        return [(float(p[0]), float(p[1])) for p in reference_poses_xz]
+    if reference_actions is None:
+        return []
+    ref_sim = simulate_nav_action_sequence(
+        graph,
+        source_node,
+        reference_actions,
+        start_heading_deg=start_heading_deg,
+        start_pos=start_pos,
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        snap_tolerance=snap_tolerance,
+        goal_tolerance=goal_tolerance,
+        block_tolerance=block_tolerance,
+        allowed_nodes=allowed_nodes,
+    )
+    if not ref_sim.get('ok'):
+        return []
+    return list(ref_sim.get('poses_xz') or [])
+
+
 def score_route_action_sequence(
     graph: nx.Graph,
     source_node: str,
@@ -1941,21 +2027,16 @@ def score_route_action_sequence(
     snap_tolerance: Optional[float] = None,
     goal_tolerance: Optional[float] = None,
     block_tolerance: Optional[float] = None,
+    reference_actions=None,
+    reference_poses_xz=None,
 ) -> dict:
     """[CODE] route_knowledge scorer: continuous replay, not node hopping.
 
-    Returns ``success``, ``validity``, and two SPL fields as separate values.
-
-    * Simulate with ``agent_move_m`` / ``agent_rotation_deg`` (continuous xz).
-    * A move farther than the calibrated block radius from every node is a no-op.
-    * ``success`` / ``success_raw``: final xz within ObjectNav ``goal_success_m``
-      (1.0 m) of the goal position.
-    * ``validity``: every snapped edge is in the exported-only subset of
-      ``traversed_edges``. Always logged (``illegal_edges``, ``outcome``).
-    * ``efficiency``: SPL given success: ``S * ℓ / max(p, ℓ)`` on the filtered
-      traversed subgraph (0 on failure, capped at 1). ``p`` is unblocked metres.
-    * ``route_efficiency``: same SPL given success **and** validity (construct
-      score). ``route_success`` is the valid-success bit.
+    * ``success`` / ``success_raw``: final xz within ObjectNav ``goal_success_m``.
+    * ``efficiency`` / ``route_efficiency``: SPL given success (validity not a gate).
+    * ``ndtw``: Ilharco nDTW vs the reference pose sequence; ``d_th = goal_success_m``.
+    * ``sdtw``: headline = success × nDTW.
+    * ``validity``: edge-membership diagnostic only (logged, not a gate).
     """
     sim = simulate_nav_action_sequence(
         graph,
@@ -1982,6 +2063,26 @@ def score_route_action_sequence(
     illegal = [edge for edge in crossed if edge not in exported]
     validity = not illegal
     success = xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance'])
+    d_th = float(sim['goal_tolerance'])
+    ref_poses = _reference_poses_xz(
+        graph,
+        source_node,
+        start_heading_deg=start_heading_deg,
+        start_pos=start_pos,
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        snap_tolerance=snap_tolerance,
+        goal_tolerance=goal_tolerance,
+        block_tolerance=block_tolerance,
+        allowed_nodes=None,
+        reference_actions=reference_actions,
+        reference_poses_xz=reference_poses_xz,
+    )
+    # Self-nDTW when no external reference is supplied (reference-answer audit).
+    if not ref_poses:
+        ref_poses = list(sim.get('poses_xz') or [])
+    ndtw = ndtw_xz(sim.get('poses_xz') or [], ref_poses, d_th)
+    sdtw = (1.0 if success else 0.0) * ndtw
 
     opt_traversed = _shortest_on_edges(graph, exported, source_node, goal_node)
     try:
@@ -1992,9 +2093,6 @@ def score_route_action_sequence(
         opt_full = None
     opt_nav = opt_traversed if opt_traversed is not None else opt_full
     efficiency = _spl_ratio(opt_nav, sim_len, success=success)
-    route_efficiency = _spl_ratio(
-        opt_traversed, sim_len, success=bool(success and validity)
-    )
     return _route_score_record(
         success=success,
         validity=validity,
@@ -2008,9 +2106,12 @@ def score_route_action_sequence(
         shortest_path_m=opt_traversed,
         shortest_path_full_m=opt_full,
         efficiency=efficiency,
-        route_efficiency=route_efficiency,
+        route_efficiency=efficiency,
+        ndtw=ndtw,
+        sdtw=sdtw,
         end_xz=sim.get('end_xz'),
         end_heading_deg=sim.get('end_heading_deg'),
+        poses_xz=sim.get('poses_xz'),
     )
 
 
@@ -2031,16 +2132,14 @@ def score_survey_action_sequence(
     goal_tolerance: Optional[float] = None,
     block_tolerance: Optional[float] = None,
     allowed_nodes=None,
+    reference_actions=None,
+    reference_poses_xz=None,
 ) -> dict:
     """[CODE] survey scorer: same continuous simulator as route_knowledge.
 
-    * ``success``: final xz within ObjectNav ``goal_success_m`` of the goal.
-    * ``validity``: every crossed edge is in exported ``viewed_edges``, and at
-      least one crossed edge is **not** in exported ``traversed_edges``.
-    * ``efficiency``: SPL given success against the shortest path in the
-      viewed_edges subgraph (this construct's optimal, not traversed-only).
-    * ``route_efficiency``: the same SPL, but given success **and** validity —
-      the construct headline, matching score_route_action_sequence.
+    * ``success``: headline — final xz within ``goal_success_m`` of the goal.
+    * ``efficiency`` / ``route_efficiency``: SPL given success (no validity gate).
+    * ``validity``: diagnostic only (viewed edges + at least one unwalked hop).
     """
     sim = simulate_nav_action_sequence(
         graph,
@@ -2070,11 +2169,27 @@ def score_survey_action_sequence(
     novel = [edge for edge in crossed if edge not in traversed]
     validity = (not illegal) and bool(novel)
     success = xz_reaches_goal(sim.get('end_xz'), goal_xyz, sim['goal_tolerance'])
+    d_th = float(sim['goal_tolerance'])
+    ref_poses = _reference_poses_xz(
+        graph,
+        source_node,
+        start_heading_deg=start_heading_deg,
+        start_pos=start_pos,
+        move_m=move_m,
+        rotation_deg=rotation_deg,
+        snap_tolerance=snap_tolerance,
+        goal_tolerance=goal_tolerance,
+        block_tolerance=block_tolerance,
+        allowed_nodes=allowed_nodes,
+        reference_actions=reference_actions,
+        reference_poses_xz=reference_poses_xz,
+    )
+    if not ref_poses:
+        ref_poses = list(sim.get('poses_xz') or [])
+    ndtw = ndtw_xz(sim.get('poses_xz') or [], ref_poses, d_th)
+    sdtw = (1.0 if success else 0.0) * ndtw
     opt_viewed = _shortest_on_edges(graph, viewed, source_node, goal_node)
     efficiency = _spl_ratio(opt_viewed, sim_len, success=success)
-    route_efficiency = _spl_ratio(
-        opt_viewed, sim_len, success=bool(success and validity)
-    )
     return _route_score_record(
         success=success,
         validity=validity,
@@ -2088,9 +2203,12 @@ def score_survey_action_sequence(
         novel_edges=novel,
         shortest_path_m=opt_viewed,
         efficiency=efficiency,
-        route_efficiency=route_efficiency,
+        route_efficiency=efficiency,
+        ndtw=ndtw,
+        sdtw=sdtw,
         end_xz=sim.get('end_xz'),
         end_heading_deg=sim.get('end_heading_deg'),
+        poses_xz=sim.get('poses_xz'),
     )
 
 

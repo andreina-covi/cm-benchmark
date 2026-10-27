@@ -328,6 +328,23 @@ def _option_rows(item: dict) -> list[dict]:
     return [{'letter': str(k), 'text': str(v)} for k, v in sorted(options.items())]
 
 
+def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
+    """Labels shown under the viewer: ``frame i of n, step s`` (+ role when known)."""
+    ctx = item.get('context') or {}
+    roles = item.get('image_roles') or ctx.get('image_roles') or []
+    steps = ctx.get('shown_frame_steps') or []
+    labels: list[str] = []
+    for i in range(n_frames):
+        if i < len(roles) and str(roles[i]).startswith('frame '):
+            labels.append(str(roles[i]))
+            continue
+        step = int(steps[i]) if i < len(steps) else i
+        role = str(roles[i]) if i < len(roles) else ''
+        base = f'frame {i + 1} of {n_frames}, step {step}'
+        labels.append(f'{base} · {role}' if role else base)
+    return labels
+
+
 def page_item(item: dict, role: str, frames: list[str]) -> dict:
     payload = {
         'item_id': item['item_id'],
@@ -338,6 +355,7 @@ def page_item(item: dict, role: str, frames: list[str]) -> dict:
         'route_from': str((item.get('context') or {}).get('source') or ''),
         'route_to': str((item.get('context') or {}).get('goal') or ''),
         'frames': frames,
+        'frame_labels': _frame_labels_for_review(item, len(frames)),
         'options': _option_rows(item),
         'show_answer': None,
     }
@@ -485,7 +503,7 @@ function downloadCsv() {
 function instructionsHtml() {
   return ''
     + '<div class="top"><h1>Spatial question review</h1></div>'
-    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled only "frame i of n".</p>'
+    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n, step s".</p>'
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
@@ -512,7 +530,11 @@ function setFrame(index0) {
   const img = document.getElementById("frame-img");
   if (img) img.src = activeItem.frames[frameIndex];
   const label = document.getElementById("frame-label");
-  if (label) label.textContent = "frame " + (frameIndex + 1) + " of " + n;
+  if (label) {
+    const labels = activeItem.frame_labels || [];
+    label.textContent = labels[frameIndex]
+      || ("frame " + (frameIndex + 1) + " of " + n);
+  }
   const slider = document.getElementById("frame-slider");
   if (slider && document.activeElement !== slider) slider.value = String(frameIndex + 1);
   document.querySelectorAll(".thumb").forEach(function (el, i) {
@@ -535,10 +557,13 @@ function viewerHtml(item) {
     thumbs += '<button type="button" class="thumb' + (i === frameIndex ? " current" : "") + '" data-frame="' + i + '">'
       + '<img alt="" src="' + esc(src) + '"></button>';
   });
+  const labels = item.frame_labels || [];
+  const startLabel = labels[frameIndex]
+    || ('frame ' + (frameIndex + 1) + ' of ' + n);
   return ''
     + '<div class="frame-wrap"><img id="frame-img" alt="" src="' + esc(item.frames[frameIndex]) + '"></div>'
     + '<div class="frame-nav"><button class="secondary" type="button" id="prev-frame">Previous</button>'
-    + '<span id="frame-label">frame ' + (frameIndex + 1) + ' of ' + n + '</span>'
+    + '<span id="frame-label">' + esc(startLabel) + '</span>'
     + '<button class="secondary" type="button" id="next-frame">Next</button></div>'
     + '<input id="frame-slider" type="range" min="1" max="' + n + '" value="' + (frameIndex + 1) + '"'
     + (n < 2 ? " disabled" : "") + '>'

@@ -345,6 +345,8 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     assert scored['illegal_edges'] == []
     assert 0.0 < scored['efficiency'] <= 1.0
     assert scored['route_efficiency'] == scored['efficiency']
+    assert scored['ndtw'] == pytest.approx(1.0)
+    assert scored['sdtw'] == pytest.approx(1.0)
     assert scored['simulated_length_m'] > 0
 
     # Fake snap-only edge is dropped before validity / efficiency.
@@ -380,8 +382,8 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     assert near['validity'] is True
     assert 0.0 < near['efficiency'] <= 1.0
 
-    # Validity is independent: reaching via an untraversed edge is invalid.
-    # SPL given success stays; construct SPL (route_efficiency) is 0.
+    # Validity is diagnostic only: illegal edges are logged, but success and
+    # SPL still count; route_success follows success (not validity).
     invalid = score_route_action_sequence(
         tiny_graph,
         'n0',
@@ -392,11 +394,12 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     )
     assert invalid['success'] is True
     assert invalid['validity'] is False
-    assert invalid['route_success'] is False
+    assert invalid['route_success'] is True
     assert invalid['outcome'] == 'invalid_success'
     assert ('n1', 'n2') in invalid['illegal_edges']
     assert 0.0 < invalid['efficiency'] <= 1.0
-    assert invalid['route_efficiency'] == 0.0
+    assert invalid['route_efficiency'] == invalid['efficiency']
+    assert invalid['sdtw'] == invalid['ndtw']
 
     item = {
         'context': {
@@ -404,6 +407,7 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
             'goal_node': 'n2',
             'traversed_edges': walked,
             'start_heading_deg': heading,
+            'action_sequence': actions,
         }
     }
     wrapped = score_route_knowledge(item, tiny_graph, actions)
@@ -411,6 +415,7 @@ def test_score_route_action_sequence_metric_not_node_walk(tiny_graph):
     assert wrapped['validity'] is True
     assert wrapped['route_success'] is True
     assert wrapped['efficiency'] == wrapped['route_efficiency']
+    assert wrapped['ndtw'] == pytest.approx(1.0)
     assert wrapped['illegal_edges'] == []
 
 
@@ -432,18 +437,19 @@ def test_survey_route_efficiency_is_spl_not_a_constant_zero(tiny_graph):
         tiny_graph, 'n0', 'n2', actions, viewed, [], start_heading_deg=heading
     )
     assert scored['outcome'] == 'valid_success'
+    assert scored['success'] is True
     assert 0.0 < scored['route_efficiency'] <= 1.0
     assert scored['route_efficiency'] == scored['efficiency']
 
-    # Nothing novel (every edge already walked) is a success but not valid,
-    # so the construct SPL drops to 0 while plain SPL given success stays.
+    # Nothing novel (every edge already walked): validity fails as a diagnostic,
+    # but success + SPL still count (no answer-level validity gate).
     not_novel = score_survey_action_sequence(
         tiny_graph, 'n0', 'n2', actions, viewed, viewed, start_heading_deg=heading
     )
     assert not_novel['success'] is True
     assert not_novel['validity'] is False
     assert 0.0 < not_novel['efficiency'] <= 1.0
-    assert not_novel['route_efficiency'] == 0.0
+    assert not_novel['route_efficiency'] == not_novel['efficiency']
 
 
 def test_viewed_edges_are_superset_of_exported_traversed(tiny_graph):

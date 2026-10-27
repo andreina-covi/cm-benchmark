@@ -200,6 +200,9 @@ def _core_question(fact: PlannedFact) -> str:
     other_object_type = extra.get('other_object_type') or 'another object'
     condition = extra.get('condition') or 'a passage is closed'
     relation = extra.get('relation') or 'left'
+    # 1-based indices into shown frames (class-4); fall back if a fact is partial.
+    source_frame = int(extra.get('source_frame') or 1)
+    goal_frame = int(extra.get('goal_frame') or max(source_frame, 2))
 
     body = tmpl.format(
         object_type=object_type,
@@ -211,6 +214,10 @@ def _core_question(fact: PlannedFact) -> str:
         reference_entity=reference,
         source=source,
         goal=goal,
+        source_frame=source_frame,
+        goal_frame=goal_frame,
+        i=source_frame,
+        j=goal_frame,
         A=landmark_a,
         B=landmark_b,
         C=landmark_c,
@@ -302,17 +309,36 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
     elif fact.construct == 'route_knowledge':
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
-        parts.append(
-            f'Retrace the walked route from the {src} to the {goal}.'
-        )
+        si = extra.get('source_frame')
+        gi = extra.get('goal_frame')
+        if si is not None and gi is not None:
+            parts.append(
+                f'Retrace the walked route from your pose in frame {si} '
+                f'(you see the {src}) to your pose in frame {gi} '
+                f'(you see the {goal}).'
+            )
+        else:
+            parts.append(
+                f'Retrace the walked route from the {src} to the {goal}.'
+            )
     elif fact.construct == 'survey_based_route_planning':
         src = extra.get('source', 'the start')
         goal = extra.get('goal', 'the goal')
-        parts.append(
-            f'Use the layout to plan a walk from the {src} to the {goal}. '
-            'The connecting path was never walked; evidence comes from a '
-            'doorway glimpse.'
-        )
+        si = extra.get('source_frame')
+        gi = extra.get('goal_frame')
+        if si is not None and gi is not None:
+            parts.append(
+                f'Plan a walk from your pose in frame {si} '
+                f'(you see the {src}) to your pose in frame {gi} '
+                f'(you see the {goal}), using layout you have seen. '
+                'That connecting path was never walked.'
+            )
+        else:
+            parts.append(
+                f'Use the layout to plan a walk from the {src} to the {goal}. '
+                'The connecting path was never walked; evidence comes from a '
+                'doorway glimpse.'
+            )
     elif fact.construct == 'perspective_taking':
         parts.append(
             f"Adopt an imagined viewpoint at {extra.get('A', 'landmark A')}, "

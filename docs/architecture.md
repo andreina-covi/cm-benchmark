@@ -226,7 +226,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 4. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
 
-### route_knowledge (class 4, free action sequence) — "List the actions you took from S to G."
+### route_knowledge (class 4, free action sequence) — "In frame i you see S; in frame j you see G. Retrace …"
 
 1. `_load_nav_graph_or_none` → `build_nav_graph`;
 2. `_episode_traversed_subgraph` — snap the trajectory, keep walked edges;
@@ -235,18 +235,20 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 5. for every pair in walk order: `_class4_pair_reject_reason` (at least 2 m geodesic, ≤ 30 m, ≥ scene median, detour ratio), names for both endpoints, reject confusable endpoint pairs, `shortest_path` on walked edges, hop count, real move;
 6. recorded `agent_actions` between source and goal sightings, replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
 7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
-8. frames are an even sample of the FOV walk from the source sighting minus `context_margin_steps` through the goal sighting plus that margin, at most `n_frames`, always including both sightings. The item is dropped when those sightings do not fit;
-9. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
+8. frames (`_sample_class4_frames`): within `n_frames`, lock source/goal sightings and the FOV frames just before/after every rotation between them; fill the remaining budget evenly on straight segments; enforce `max_frame_gap_steps` between consecutive shown frames (drop the item if unmet). Labels are `frame i of n, step s`;
+9. scoring is continuous replay: success, SPL, nDTW (`d_th = goal_success_m`), headline SDTW = success × nDTW; edge-membership validity is diagnostic only;
+10. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
-### survey_based_route_planning (class 4) — "List the actions from S to G" over a never-walked path
+### survey_based_route_planning (class 4) — "In frame i you see S; in frame j you see G. A route …" over a never-walked path
 
 1. graph and walked subgraph as above; floor-standing landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
 2. `calibrate_view_radius_m` + `viewed_edges_from_trajectory` — edges near the trajectory count as "seen";
 3. per pair: no path on walked edges (`path_exists`), a path on viewed edges, `_class4_pair_reject_reason` with the survey ratio cap, names for both endpoints;
 4. reference = one `continuous_bfs_to_goals` flood per source pose (quantised visited cells, action-count order) on viewed nodes, only after the geodesic gate;
 5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame; the reference must contain at least `class4.survey.min_turns` real turns;
-6. frames are an even sample of the FOV walk from the start of the episode through the query, at most `n_frames`. The sample always includes the source and goal sightings and one frame per planned-path edge (both endpoints within the view radius of that frame). The item is dropped when that required set does not fit, or when an edge has no covering frame;
-7. ranked hardest-first like route.
+6. frames (`_sample_class4_frames`): within `n_frames`, lock source/goal sightings, frames covering the unwalked planned-path edges, and rotation neighbors; fill straight segments; enforce `max_frame_gap_steps` (drop if required covers/gap unmet). Labels are `frame i of n, step s`;
+7. scoring: success (headline) and SPL; no answer-level validity gate (validity remains a diagnostic);
+8. ranked hardest-first like route.
 
 ## Where an item's fields come from
 

@@ -209,6 +209,7 @@ class Class4FallbackConfig:
 @dataclass(frozen=True)
 class Class4Config:
     n_frames: int
+    max_frame_gap_steps: int
     min_pair_geodesic_m: float
     max_pair_geodesic_m: float
     scene_geodesic_percentile: float
@@ -437,6 +438,7 @@ def generation_config_from_mapping(
         ),
         class4=Class4Config(
             n_frames=int(c4['n_frames']),
+            max_frame_gap_steps=int(c4['max_frame_gap_steps']),
             min_pair_geodesic_m=float(c4['min_pair_geodesic_m']),
             max_pair_geodesic_m=float(c4['max_pair_geodesic_m']),
             scene_geodesic_percentile=float(c4['scene_geodesic_percentile']),
