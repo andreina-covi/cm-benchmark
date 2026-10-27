@@ -52,8 +52,8 @@ CONSTRUCT_TEMPLATES = {
         # Delay k is a difficulty axis — must be stated in the question (not implicit).
         'recall_relation': [
             (
-                'You last saw the {object_type}{disambiguator} {k} steps ago: '
-                'where was it relative to you at that time?'
+                '{k} steps ago, where was the {object_type}{disambiguator} '
+                'relative to you at that moment?'
             )
         ],
         'recall_count': [
