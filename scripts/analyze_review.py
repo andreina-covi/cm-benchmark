@@ -350,7 +350,8 @@ def score_vlm_reply(
             scored = score_survey_based_route_planning(item, None, parsed)
         else:
             scored = score_route_knowledge(item, None, parsed)
-        ok = scored.get('outcome') == 'valid_success'
+        # Validity is diagnostic only; binary correct = success (pose within goal).
+        ok = bool(scored.get('success'))
         return bool(ok), ', '.join(parsed), False
     letter = parse_mc_letter(raw_reply)
     if letter is None:

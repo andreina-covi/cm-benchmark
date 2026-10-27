@@ -28,7 +28,9 @@ _ACTION_LIST = ', '.join(ACTION_VOCAB)
 
 SYSTEM_INSTRUCTION = (
     'You are answering spatial-cognition questions from first-person views. '
-    'When multiple images are provided, they are in chronological order, earliest first.\n'
+    'When multiple images are provided, they are in chronological order, earliest first. '
+    'Each frame is labeled "frame i of n, step s" (i is the 1-based index among '
+    'shown frames; s is the agent step index).\n'
     '\n'
     'Multiple-choice items: respond with only the option letter (A, B, C, or D) '
     '— no words, punctuation, or explanation. Always choose one option, even if uncertain.\n'

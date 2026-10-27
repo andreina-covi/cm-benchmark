@@ -1114,6 +1114,7 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
     The corridor is three straight runs, so the reference must read as long
     ``move_ahead`` runs with two 90° corners — not one rotation per lattice hop.
     """
+    from cm_benchmark.generation.config import get_generation_config
     from cm_benchmark.generation.planner import (
         ROUTE_MIN_TURN_COUNT,
         _load_nav_graph_or_none,
@@ -1147,7 +1148,16 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
         rotation_deg=_rotation_deg(u_corridor_episode),
     )
     assert score['outcome'] == 'valid_success'
+    assert score['success'] is True
     assert score['illegal_edges'] == []
+    assert score['ndtw'] == pytest.approx(1.0)
+    assert score['sdtw'] == pytest.approx(1.0)
+    assert score['efficiency'] == score['route_efficiency']
+    assert extra.get('scoring') == 'success_spl_sdtw'
+    assert extra.get('max_shown_gap_steps', 0) <= get_generation_config().class4.max_frame_gap_steps
+    roles = extra.get('image_roles') or []
+    assert roles and roles[0].startswith('frame 1 of ')
+    assert ', step ' in roles[0]
 
 
 def test_route_rejects_straight_and_turnless_pairs(straight_corridor_episode):
@@ -1258,8 +1268,11 @@ def test_survey_reference_scores_valid_success(two_room_episode):
             rotation_deg=_rotation_deg(two_room_episode),
         )
         assert score['outcome'] == 'valid_success'
+        assert score['success'] is True
         assert score['illegal_edges'] == []
         assert score['novel_edges'], 'survey must leave the traversed edge set'
+        assert extra.get('scoring') == 'success_spl'
+        assert (extra.get('image_roles') or [''])[0].startswith('frame ')
 
 
 def test_survey_does_not_require_through_door_evidence(two_room_episode):
@@ -1898,6 +1911,23 @@ def test_sample_steps_keeps_required_and_drops_when_over_budget():
     assert _sample_steps_evenly(list(range(10)), 3, [1, 2, 3, 4]) is None
 
 
+def test_sample_class4_frames_keeps_rotations_and_enforces_gap():
+    from cm_benchmark.generation.planner import _max_gap_steps, _sample_class4_frames
+
+    pool = list(range(0, 41))
+    required = [0, 10, 11, 20, 21, 40]  # sightings + rotation neighbors
+    got = _sample_class4_frames(pool, 12, required, max_gap=5, straight_pool=pool)
+    assert got is not None
+    assert set(required) <= set(got)
+    assert len(got) <= 12
+    assert _max_gap_steps(got) <= 5
+    # Required alone already exceeds budget → drop
+    assert _sample_class4_frames(pool, 4, required, max_gap=5) is None
+    # Gap impossible even with full pool → drop
+    sparse = [0, 20, 40]
+    assert _sample_class4_frames(sparse, 3, sparse, max_gap=5) is None
+
+
 def test_route_frames_include_sightings_within_budget(u_corridor_episode):
     from cm_benchmark.generation.config import get_generation_config
     from cm_benchmark.generation.planner import plan_route_knowledge
@@ -1955,7 +1985,7 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     assert fact.extra.get('goal')
     assert fact.extra.get('path_nodes')
     assert fact.extra.get('answer_format') == 'action_sequence'
-    assert fact.extra.get('scoring') == 'success_validity_efficiency'
+    assert fact.extra.get('scoring') == 'success_spl_sdtw'
     assert fact.extra.get('graph_scope') == 'traversed'
     assert fact.extra.get('traversed_edges') is not None
     assert fact.extra.get('action_sequence')
@@ -1963,9 +1993,15 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     q = _core_question(fact).lower()
     assert 'move_ahead' not in q
     assert 'rotate_left' not in q
-    assert f"where you saw the {fact.extra['source']}".lower() in q
-    assert f"to where you saw the {fact.extra['goal']}".lower() in q
+    assert fact.extra.get('source_frame') is not None
+    assert fact.extra.get('goal_frame') is not None
+    assert f"in frame {fact.extra['source_frame']} you see the {fact.extra['source']}".lower() in q
+    assert f"in frame {fact.extra['goal_frame']} you see the {fact.extra['goal']}".lower() in q
+    assert 'retrace the route you walked' in q
     assert 'which of these' not in q
+    shown = fact.extra.get('shown_frame_steps') or []
+    assert shown[int(fact.extra['source_frame']) - 1] == fact.encoding_step
+    assert shown[int(fact.extra['goal_frame']) - 1] == fact.query_step
 
 
 def test_survey_based_route_planning_unsupported_without_novel_path(folder_episode):
@@ -1987,15 +2023,16 @@ def test_survey_based_route_planning_unsupported_without_novel_path(folder_episo
         return
     fact = facts[0]
     assert fact.extra.get('answer_format') == 'action_sequence'
-    assert fact.extra.get('scoring') == 'success_validity_efficiency'
+    assert fact.extra.get('scoring') == 'success_spl'
     assert fact.extra.get('graph_scope') == 'viewed'
     assert fact.extra.get('viewed_edges') is not None
     assert fact.extra.get('traversed_edges') is not None
     assert fact.extra.get('action_sequence')
     assert 'move_ahead' in (fact.answer_label or '')
     roles = fact.extra.get('image_roles') or []
-    assert any('source sighted' in r for r in roles)
-    assert any('goal sighted' in r for r in roles)
+    assert any('source' in r for r in roles)
+    assert any('goal' in r for r in roles)
+    assert any(r.startswith('frame ') and ', step ' in r for r in roles)
 
 
 def test_object_type_skips_undefined_category():
@@ -2164,23 +2201,116 @@ def test_core_question_covers_active_template_placeholders():
                     assert 'close to' not in q.lower()
 
 
+def test_class4_reference_answers_score_success_and_report_frames(
+    u_corridor_episode, two_room_episode
+):
+    """Every emitted route/survey reference must succeed; report frame/gap/turns."""
+    from cm_benchmark.generation.config import get_generation_config
+    from cm_benchmark.generation.nav_graph import (
+        score_route_action_sequence,
+        score_survey_action_sequence,
+    )
+    from cm_benchmark.generation.planner import (
+        _load_nav_graph_or_none,
+        _rotation_deg,
+        plan_route_knowledge,
+        plan_survey_based_route_planning,
+    )
+
+    max_gap = get_generation_config().class4.max_frame_gap_steps
+    route_facts = [
+        f for f in plan_route_knowledge(u_corridor_episode, max_items=2) if f.status == 'ok'
+    ]
+    survey_facts = [
+        f
+        for f in plan_survey_based_route_planning(two_room_episode, max_items=2)
+        if f.status == 'ok'
+    ]
+    assert route_facts, 'U-corridor must yield route items'
+    ndtw_vals: list[float] = []
+    rows: list[dict] = []
+
+    graph_r = _load_nav_graph_or_none(u_corridor_episode)
+    for fact in route_facts:
+        extra = fact.extra or {}
+        scored = score_route_action_sequence(
+            graph_r,
+            extra['source_node'],
+            extra['goal_node'],
+            extra['action_sequence'],
+            [tuple(e) for e in extra['traversed_edges']],
+            start_heading_deg=extra['start_heading_deg'],
+            start_pos=extra.get('start_pos'),
+            goal_pos=extra.get('goal_pos'),
+            rotation_deg=_rotation_deg(u_corridor_episode),
+        )
+        assert scored['success'] is True
+        assert scored['ndtw'] == pytest.approx(1.0)
+        ndtw_vals.append(float(scored['ndtw']))
+        gap = int(extra.get('max_shown_gap_steps') or 0)
+        assert gap <= max_gap
+        rows.append(
+            {
+                'construct': 'route_knowledge',
+                'shown_frame_steps': extra.get('shown_frame_steps'),
+                'max_shown_gap_steps': gap,
+                'turns_covered': extra.get('turns_covered'),
+            }
+        )
+
+    if survey_facts:
+        graph_s = _load_nav_graph_or_none(two_room_episode)
+        for fact in survey_facts:
+            extra = fact.extra or {}
+            scored = score_survey_action_sequence(
+                graph_s,
+                extra['source_node'],
+                extra['goal_node'],
+                extra['action_sequence'],
+                [tuple(e) for e in extra['viewed_edges']],
+                [tuple(e) for e in extra['traversed_edges']],
+                start_heading_deg=extra['start_heading_deg'],
+                start_pos=extra.get('start_pos'),
+                goal_pos=extra.get('goal_pos'),
+                rotation_deg=_rotation_deg(two_room_episode),
+            )
+            assert scored['success'] is True
+            gap = int(extra.get('max_shown_gap_steps') or 0)
+            assert gap <= max_gap
+            rows.append(
+                {
+                    'construct': 'survey_based_route_planning',
+                    'shown_frame_steps': extra.get('shown_frame_steps'),
+                    'max_shown_gap_steps': gap,
+                    'turns_covered': extra.get('turns_covered'),
+                }
+            )
+
+    assert rows
+    assert sum(ndtw_vals) / len(ndtw_vals) == pytest.approx(1.0)
+    for row in rows:
+        assert row['shown_frame_steps']
+        assert row['turns_covered'] is not None
+
+
 def test_class4_templates_match_taxonomy_wording():
     from cm_benchmark.generation.constructs import pick_template_index, template_count
 
     route = select_template('route_knowledge')
     assert isinstance(route, str)
     assert '{source}' in route and '{goal}' in route
+    assert '{source_frame}' in route and '{goal_frame}' in route
+    assert 'retrace the route you walked' in route.lower()
     assert 'move_ahead' not in route
     assert 'which of these' not in route.lower()
 
-    assert template_count('survey_based_route_planning') == 2
-    t0 = select_template('survey_based_route_planning', index=0)
-    t1 = select_template('survey_based_route_planning', index=1)
-    assert t0 != t1
-    assert 'move_ahead' not in t0 and 'move_ahead' not in t1
-    assert pick_template_index('survey_based_route_planning', None, 'a', 'b') == (
-        pick_template_index('survey_based_route_planning', None, 'a', 'b')
-    )
+    assert template_count('survey_based_route_planning') == 1
+    survey = select_template('survey_based_route_planning', index=0)
+    assert '{source_frame}' in survey and '{goal_frame}' in survey
+    assert 'a route to your' in survey.lower()
+    assert 'shortest' not in survey.lower()
+    assert 'move_ahead' not in survey
+    assert pick_template_index('survey_based_route_planning', None, 'a', 'b') == 0
 
 
 def test_class4_slide_panel_shows_source_goal_path_and_scoring():
@@ -2201,7 +2331,8 @@ def test_class4_slide_panel_shows_source_goal_path_and_scoring():
     assert 'n0' not in route['path'] and 'n3' not in route['path']
     assert '↑' in route['path'] and '←' in route['path']
     assert 'bbox center' in route['actions']
-    assert 'validity' in route['scoring']
+    assert 'SDTW' in route['scoring']
+    assert 'diagnostic' in route['scoring']
 
     survey = class4_slide_panel(
         'survey_based_route_planning',
@@ -2211,7 +2342,8 @@ def test_class4_slide_panel_shows_source_goal_path_and_scoring():
     assert 'Plan' in survey['task']
     assert 'Door' in survey['task'] and 'Window' in survey['task']
     assert 'viewed' in survey['graph']
-    assert 'unwalked' in survey['scoring']
+    assert 'success' in survey['scoring']
+    assert 'diagnostic' in survey['scoring']
     assert '↑' in survey['path'] and '→' in survey['path']
 
 

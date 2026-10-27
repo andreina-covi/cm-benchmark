@@ -420,7 +420,7 @@ def _sample_steps_evenly(
     """Even sample of ``pool``, always keeping ``required``.
 
     Returns None when a required step is missing from the pool or the required
-    set is larger than ``n``.
+    set is larger than ``n``. Prefer ``_sample_class4_frames`` for route/survey.
     """
     ordered = sorted({int(s) for s in pool})
     need = sorted({int(s) for s in required})
@@ -448,6 +448,144 @@ def _sample_steps_evenly(
     return sorted(have)
 
 
+def _is_rotate_action(action) -> bool:
+    name = str(action or '').strip().casefold().replace(' ', '_').replace('-', '_')
+    return 'rotate' in name or name in {'turn_left', 'turn_right'}
+
+
+def _rotation_action_steps(episode: dict, t0: int, t1: int) -> list[int]:
+    """Successful rotate actions with ``t0 < step <= t1`` (arrival convention)."""
+    lo, hi = int(t0), int(t1)
+    if hi < lo:
+        lo, hi = hi, lo
+    out: list[int] = []
+    for rec in episode.get('agent_actions') or []:
+        try:
+            step = int(rec.get('step'))
+        except (TypeError, ValueError):
+            continue
+        if step <= lo or step > hi:
+            continue
+        if rec.get('action_success') is False:
+            continue
+        if _is_rotate_action(rec.get('action')):
+            out.append(step)
+    return out
+
+
+def _rotation_neighbor_frames(
+    pool: Sequence[int], rotation_steps: Sequence[int]
+) -> list[int]:
+    """FOV frames immediately before and after each rotation step."""
+    ordered = sorted({int(s) for s in pool})
+    if not ordered:
+        return []
+    need: set[int] = set()
+    for rot in rotation_steps:
+        r = int(rot)
+        before = [s for s in ordered if s < r]
+        after = [s for s in ordered if s >= r]
+        if before:
+            need.add(before[-1])
+        if after:
+            need.add(after[0])
+    return sorted(need)
+
+
+def _max_gap_steps(shown: Sequence[int]) -> int:
+    steps = [int(s) for s in shown]
+    if len(steps) < 2:
+        return 0
+    return max(steps[i + 1] - steps[i] for i in range(len(steps) - 1))
+
+
+def _sample_class4_frames(
+    pool: Sequence[int],
+    n: int,
+    required: Sequence[int],
+    *,
+    max_gap: int,
+    straight_pool: Optional[Sequence[int]] = None,
+) -> Optional[list[int]]:
+    """Class-4 frame pick: lock required, close gaps, fill straight parts evenly.
+
+    Returns None when required steps are missing, exceed ``n``, or the max gap
+    between consecutive shown frames cannot be met within the budget.
+    """
+    ordered = sorted({int(s) for s in pool})
+    need = sorted({int(s) for s in required})
+    gap_limit = max(1, int(max_gap))
+    if n < 1 or not ordered or any(step not in ordered for step in need):
+        return None
+    if len(need) > n:
+        return None
+    chosen: set[int] = set(need)
+    straight = {
+        int(s)
+        for s in (straight_pool if straight_pool is not None else ordered)
+        if int(s) in set(ordered)
+    }
+
+    def _insert_into_largest_gap(prefer_straight: bool) -> bool:
+        sorted_chosen = sorted(chosen)
+        best: Optional[tuple[int, int, int]] = None  # (gap, lo, hi)
+        for lo, hi in zip(sorted_chosen, sorted_chosen[1:]):
+            gap = hi - lo
+            if gap <= 1:
+                continue
+            mid_candidates = [s for s in ordered if lo < s < hi]
+            if prefer_straight:
+                mid_candidates = [s for s in mid_candidates if s in straight] or mid_candidates
+            if not mid_candidates:
+                continue
+            key = (gap, lo, hi)
+            if best is None or key > best:
+                best = key
+        if best is None:
+            return False
+        _gap, lo, hi = best
+        mid_candidates = [s for s in ordered if lo < s < hi]
+        if prefer_straight:
+            mid_candidates = [s for s in mid_candidates if s in straight] or mid_candidates
+        mid = min(mid_candidates, key=lambda s: (abs(s - (lo + hi) / 2.0), s))
+        chosen.add(mid)
+        return True
+
+    # Prefer closing gaps that exceed the limit, then fill remaining budget.
+    while len(chosen) < n:
+        sorted_chosen = sorted(chosen)
+        oversized = any(
+            sorted_chosen[i + 1] - sorted_chosen[i] > gap_limit
+            for i in range(len(sorted_chosen) - 1)
+        )
+        if oversized:
+            if not _insert_into_largest_gap(prefer_straight=False):
+                break
+            continue
+        # Remaining budget: even fill on straight segments (else any unused).
+        unused_straight = [s for s in ordered if s not in chosen and s in straight]
+        unused = unused_straight or [s for s in ordered if s not in chosen]
+        if not unused:
+            break
+        # Pick the unused step farthest from its nearest chosen neighbor.
+        def _spread_key(step: int) -> tuple:
+            nearest = min(abs(step - c) for c in chosen)
+            return (nearest, -step)
+
+        chosen.add(max(unused, key=_spread_key))
+
+    shown = sorted(chosen)
+    if any(shown[i + 1] - shown[i] > gap_limit for i in range(len(shown) - 1)):
+        return None
+    return shown
+
+
+def _class4_frame_label(index_1based: int, n: int, step: int, role: str) -> str:
+    """Human/model label: ``frame i of n, step s`` plus an optional role tag."""
+    base = f'frame {int(index_1based)} of {int(n)}, step {int(step)}'
+    return f'{base} · {role}' if role else base
+
+
 def _class4_role_images(
     episode: dict,
     steps: Sequence[int],
@@ -456,9 +594,10 @@ def _class4_role_images(
     t_src: int,
     t_goal: int,
 ) -> tuple[list[str], list[str]]:
-    """Frame paths for the sampled steps, with source and goal labels."""
+    """Frame paths for the sampled steps, labeled ``frame i of n, step s``."""
     pairs: list[tuple[list[str], str]] = []
-    for step_idx in steps:
+    n = len(steps)
+    for i, step_idx in enumerate(steps, start=1):
         if step_idx == t_src and step_idx == t_goal:
             role = f'source/goal · {source} → {goal}'
         elif step_idx == t_src:
@@ -467,8 +606,25 @@ def _class4_role_images(
             role = f'goal · {goal}'
         else:
             role = 'walk'
-        pairs.append((_img(step_by_index(episode, int(step_idx))), role))
+        label = _class4_frame_label(i, n, int(step_idx), role)
+        pairs.append((_img(step_by_index(episode, int(step_idx))), label))
     return merge_role_images(pairs)
+
+
+def _shown_frame_numbers(
+    shown: Sequence[int], source_step: int, goal_step: int
+) -> Optional[tuple[int, int]]:
+    """1-based indices of source/goal sightings in ``shown`` (image order).
+
+    None when a required sighting is missing from the sampled frame list.
+    """
+    steps = [int(s) for s in shown]
+    try:
+        i = steps.index(int(source_step)) + 1
+        j = steps.index(int(goal_step)) + 1
+    except ValueError:
+        return None
+    return i, j
 
 
 def _node_xyz(graph: nx.Graph, node_id: str) -> Optional[tuple[float, float, float]]:
@@ -3883,17 +4039,31 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
 
             margin = int(_cfg().class4.route.context_margin_steps)
             pool = _fov_step_indices(episode, t_src - margin, t_goal + margin)
-            shown = _sample_steps_evenly(
-                pool, int(_cfg().class4.n_frames), [t_src, t_goal]
+            max_gap = int(_cfg().class4.max_frame_gap_steps)
+            rot_steps = _rotation_action_steps(episode, t_src, t_goal)
+            rot_frames = _rotation_neighbor_frames(pool, rot_steps)
+            required = [t_src, t_goal, *rot_frames]
+            straight = [s for s in pool if s not in set(rot_frames)]
+            shown = _sample_class4_frames(
+                pool,
+                int(_cfg().class4.n_frames),
+                required,
+                max_gap=max_gap,
+                straight_pool=straight,
             )
             if not shown:
-                rejects['frames_exceed_n'] += 1
+                rejects['frames_exceed_n_or_gap'] += 1
                 continue
+            frame_nums = _shown_frame_numbers(shown, t_src, t_goal)
+            if frame_nums is None:
+                rejects['frames_exceed_n_or_gap'] += 1
+                continue
+            source_frame, goal_frame = frame_nums
             images, image_roles = _class4_role_images(
                 episode, shown, source, goal, t_src, t_goal
             )
             if len(images) != len(shown):
-                rejects['frames_exceed_n'] += 1
+                rejects['frames_exceed_n_or_gap'] += 1
                 continue
             geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
             fact = (
@@ -3913,9 +4083,14 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'goal': goal,
                         'A': source,
                         'B': goal,
+                        'source_frame': source_frame,
+                        'goal_frame': goal_frame,
                         'source_landmark_id': src_id,
                         'goal_landmark_id': goal_id,
                         'shown_frame_steps': shown,
+                        'max_shown_gap_steps': _max_gap_steps(shown),
+                        'rotation_neighbor_steps': rot_frames,
+                        'turns_covered': len(rot_steps),
                         'source_mark': _object_mark_at(
                             episode,
                             int(meta[src_id]['first_seen_step']),
@@ -3939,7 +4114,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'goal_pos': list(_xyz_tuple(arrival_pos) or _xyz_tuple(meta[goal_id]['position']) or []),
                         'traversed_edges': traversed_edge_list,
                         'answer_format': 'action_sequence',
-                        'scoring': 'success_validity_efficiency',
+                        'scoring': 'success_spl_sdtw',
                         'graph_scope': 'traversed',
                         'object_type': goal,
                         'frame_of_reference': 'egocentric',
@@ -4403,19 +4578,32 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         if covers is None:
             rejects['path_not_in_frames'] += 1
             continue
-        shown = _sample_steps_evenly(
+        max_gap = int(_cfg().class4.max_frame_gap_steps)
+        rot_steps = _rotation_action_steps(episode, min(t0, t1), max(t0, t1))
+        rot_frames = _rotation_neighbor_frames(walk, rot_steps)
+        required = [t0, t1, *covers, *rot_frames]
+        straight = [s for s in walk if s not in set(rot_frames) and s not in set(covers)]
+        shown = _sample_class4_frames(
             walk,
             int(_cfg().class4.n_frames),
-            list(covers) + [t0, t1],
+            required,
+            max_gap=max_gap,
+            straight_pool=straight,
         )
         if not shown:
-            rejects['frames_exceed_n'] += 1
+            # Covers / rotation neighbors did not fit, or max gap unmet.
+            rejects['frames_exceed_n_or_gap'] += 1
             continue
+        frame_nums = _shown_frame_numbers(shown, t0, t1)
+        if frame_nums is None:
+            rejects['frames_exceed_n_or_gap'] += 1
+            continue
+        source_frame, goal_frame = frame_nums
         images, image_roles = _class4_role_images(
             episode, shown, source, goal, t0, t1
         )
         if len(images) != len(shown):
-            rejects['frames_exceed_n'] += 1
+            rejects['frames_exceed_n_or_gap'] += 1
             continue
         hops = len(path) - 1
         turn_count = int(ref['turn_count'])
@@ -4442,12 +4630,18 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'goal': goal,
                     'A': source,
                     'B': goal,
+                    'source_frame': source_frame,
+                    'goal_frame': goal_frame,
                     'template_index': pick_template_index(
                         'survey_based_route_planning', None, src_id, goal_id
                     ),
                     'source_landmark_id': src_id,
                     'goal_landmark_id': goal_id,
                     'shown_frame_steps': shown,
+                    'max_shown_gap_steps': _max_gap_steps(shown),
+                    'rotation_neighbor_steps': rot_frames,
+                    'path_cover_steps': list(covers),
+                    'turns_covered': len(rot_steps),
                     'source_mark': _object_mark_at(episode, t0, src_id),
                     'goal_mark': _object_mark_at(episode, t1, goal_id),
                     'source_node': n0,
@@ -4464,7 +4658,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'viewed_edges': viewed_edge_list,
                     'view_radius_m': view_radius,
                     'answer_format': 'action_sequence',
-                    'scoring': 'success_validity_efficiency',
+                    'scoring': 'success_spl',
                     'graph_scope': 'viewed',
                     'object_type': goal,
                     'frame_of_reference': 'allocentric',

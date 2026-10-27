@@ -89,20 +89,19 @@ CONSTRUCT_TEMPLATES = {
     ],
     'route_knowledge': [
         (
-            'List the actions you took from where you saw the {source} '
-            'to where you saw the {goal}.'
+            'In frame {source_frame} you see the {source}; in frame {goal_frame} '
+            'you see the {goal}. Starting from your position and facing direction '
+            'in frame {source_frame}, list the actions that retrace the route you '
+            'walked to your position in frame {goal_frame}.'
         ),
     ],
     'survey_based_route_planning': [
         (
-            "Using your knowledge of the environment's layout, list the "
-            'actions that take you from where you saw the {source} '
-            'to where you saw the {goal}.'
-        ),
-        (
-            "Based on what you've seen of this space, list the actions, "
-            'in order, that go from where you saw the {source} '
-            'to where you saw the {goal}.'
+            'In frame {source_frame} you see the {source}; in frame {goal_frame} '
+            'you see the {goal}. Starting from your position and facing direction '
+            'in frame {source_frame}, list the actions of a route to your '
+            'position in frame {goal_frame}, using what you have seen of '
+            'the layout.'
         ),
     ],
 }

@@ -161,16 +161,16 @@ the scene’s own typical landmark-pair length; a detour ratio of at least this
 scene’s typical geo/eucl (capped at 1.1 for route, 1.05 for survey); emit the
 hardest surviving pairs. Route also requires real turns. Constants: `planner.py`.
 
-Class-4 frames: an even sample of at most `class4.n_frames` (default 16;
-`--n_frames` overrides for one run). Route = FOV walk from the source
-sighting minus `class4.route.context_margin_steps` through the goal sighting
-plus that margin. Survey = FOV walk from the start of the episode through the
-query, always including one frame per planned-path edge (both endpoints within
-the view radius of that frame). Both always keep the source and goal
-sightings. The item is dropped when the required set does not fit. Letter
-markers on source/goal still apply when those frames need them. Evaluation
-uses the item’s `image_paths`: unmarked originals when `disambiguation` is
-`none` or `proximity`, and the colour-dot copies when it is `mark`.
+Class-4 frames: at most `class4.n_frames` (default 16; `--n_frames` overrides
+for one run). Lock source/goal sightings and the FOV frames just before/after
+every rotation between them; survey also locks frames covering the unwalked
+planned-path edges. Fill remaining budget evenly on straight segments.
+Consecutive shown frames must be at most `class4.max_frame_gap_steps` apart
+(default 5); drop the item if that cannot be met. Every shown frame is labeled
+`frame i of n, step s` for models and reviewers. Letter markers on source/goal
+still apply when those frames need them. Evaluation uses the item’s
+`image_paths`: unmarked originals when `disambiguation` is `none` or
+`proximity`, and the colour-dot copies when it is `mark`.
 
 Spatial updating and spatial working memory show every FOV frame from the
 sighting through the query, in time order (including a turn in place).
@@ -251,7 +251,8 @@ Upload message (also written to `chat_upload_message.txt`):
 The attached file prompt.txt contains your instructions and the question.
 The attached images are the only visual information: they are frames from a camera,
 named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the
-highest number is the current view).
+highest number is the current view). prompt.txt labels each as
+"frame i of n, step s".
 
 Read prompt.txt and answer the question it contains, following its answer format
 exactly. Base your answer only on these images and the text in prompt.txt, plus

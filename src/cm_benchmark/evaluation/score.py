@@ -83,6 +83,16 @@ def _edges_for_score(item, graph, episode, key: str) -> list:
     return _rebuild_edges(item, graph, episode, key)
 
 
+def _reference_actions(item: Optional[dict[str, Any]]):
+    """Stored gold action sequence for nDTW, when present."""
+    extra = _item_extra(item)
+    rec = item or {}
+    seq = extra.get('action_sequence')
+    if seq is None:
+        seq = rec.get('action_sequence')
+    return seq
+
+
 def score_route_knowledge(
     item: Optional[dict[str, Any]],
     graph,
@@ -91,13 +101,14 @@ def score_route_knowledge(
     episode: Optional[dict[str, Any]] = None,
     **kwargs,
 ) -> dict:
-    """Score a route_knowledge reply: success, validity, SPL, route SPL.
+    """Score a route_knowledge reply: success, SPL, nDTW/SDTW; validity diagnostic.
 
     When the item has no ``traversed_edges``, pass ``episode`` so the walked
     edges are rebuilt from the trajectory and the SPOC graph.
     """
     source_node, goal_node, heading, start_pos, goal_pos = _nav_endpoints(item)
     graph = _graph_for_item(item, graph, episode)
+    kwargs.setdefault('reference_actions', _reference_actions(item))
     return score_route_action_sequence(
         graph,
         source_node,
@@ -119,13 +130,14 @@ def score_survey_based_route_planning(
     episode: Optional[dict[str, Any]] = None,
     **kwargs,
 ) -> dict:
-    """Score a survey reply on viewed_edges with a required untraversed hop.
+    """Score a survey reply: success (headline) and SPL; validity is diagnostic.
 
     When the item omits edge dumps, pass ``episode`` to rebuild them from the
     trajectory, ``view_radius_m``, and the SPOC graph.
     """
     source_node, goal_node, heading, start_pos, goal_pos = _nav_endpoints(item)
     graph = _graph_for_item(item, graph, episode)
+    kwargs.setdefault('reference_actions', _reference_actions(item))
     return score_survey_action_sequence(
         graph,
         source_node,

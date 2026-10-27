@@ -51,6 +51,8 @@ CHAT_SYSTEM_INSTRUCTION = (
     'You are a robot exploring a house with a front-facing camera. The images are '
     'frames from your camera in chronological order: the first image is the earliest '
     'and the last image is your current view ("now"). One step is one action you took. '
+    'Each shown frame is labeled "frame i of n, step s" (i = 1-based index among the '
+    'attached images; s = agent step index). '
     'Answer using only the images and text in this message. '
     'Directions ("left", "right", "ahead", "behind") are relative to where you are '
     'facing in the last image, unless the question asks you to imagine another position. '
@@ -70,7 +72,8 @@ CHAT_UPLOAD_MESSAGE = (
     'The attached file prompt.txt contains your instructions and the question.\n'
     'The attached images are the only visual information: they are frames from a camera,\n'
     'named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the\n'
-    'highest number is the current view).\n'
+    'highest number is the current view). prompt.txt labels each as '
+    '"frame i of n, step s".\n'
     '\n'
     'Read prompt.txt and answer the question it contains, following its answer format\n'
     'exactly. Base your answer only on these images and the text in prompt.txt, plus\n'
@@ -107,6 +110,27 @@ def gold_for_answers(item: dict) -> str:
     return '' if item.get('answer') is None else str(item.get('answer'))
 
 
+def _frame_labels(item: dict) -> list[str]:
+    """``frame i of n, step s`` lines aligned with ``image_paths``."""
+    paths = item.get('image_paths') or []
+    n = len(paths)
+    if n == 0:
+        return []
+    ctx = item.get('context') or {}
+    roles = item.get('image_roles') or ctx.get('image_roles') or []
+    steps = ctx.get('shown_frame_steps') or []
+    labels: list[str] = []
+    for i in range(n):
+        if i < len(roles) and str(roles[i]).startswith('frame '):
+            labels.append(str(roles[i]))
+            continue
+        step = int(steps[i]) if i < len(steps) else i
+        role = str(roles[i]) if i < len(roles) else ''
+        base = f'frame {i + 1} of {n}, step {step}'
+        labels.append(f'{base} · {role}' if role else base)
+    return labels
+
+
 def build_prompt(item: dict, *, blind: bool) -> str:
     """Exact text to paste into a chat app. Never includes the gold answer."""
     parts = [CHAT_SYSTEM_INSTRUCTION.strip(), '']
@@ -115,6 +139,13 @@ def build_prompt(item: dict, *, blind: bool) -> str:
             'No images are available for this item. Answer from the question text alone.'
         )
         parts.append('')
+    elif is_nav(item):
+        labels = _frame_labels(item)
+        if labels:
+            parts.append('Attached frames (chronological):')
+            for i, label in enumerate(labels, start=1):
+                parts.append(f'  frame_{i:02d}: {label}')
+            parts.append('')
     question = (item.get('question') or '').strip()
     parts.append(question)
     if not is_nav(item):
