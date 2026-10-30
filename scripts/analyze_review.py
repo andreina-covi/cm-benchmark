@@ -15,6 +15,9 @@ success. Practice rows are ignored. Gold / private items come from
 With ``--vlm-kit``, score a filled VLM chat-kit results CSV against
 ``answers.csv`` (MC letter match; class-4 via the route/survey scorers) and
 optionally compare to human accuracy on the same items.
+
+``--json-out`` writes a machine-readable summary for plotting
+(``scripts/plot_review_report.py``). ``--txt-out`` saves the printed text.
 """
 
 from __future__ import annotations
@@ -217,13 +220,13 @@ def _row_correct(
     return _correct_mc(meta, row.get('answer') or '')
 
 
-def analyze(
+def collect_human_analysis(
     manifest: dict,
     rows: list[dict],
     *,
     package: Path | None = None,
-) -> str:
-    """Text report for one merged set of reviews."""
+) -> dict:
+    """Structured human-review summary (JSON-serializable)."""
     items = manifest.get('items') or {}
     checks = list(manifest.get('check_item_ids') or [])
     by_key = {(row['reviewer_id'], row['item_id']): row for row in rows}
@@ -237,10 +240,7 @@ def analyze(
             continue
         study_rows[meta.get('construct') or row['construct']].append(row)
 
-    lines = [
-        f'{"construct":<32} {"reviews":>8} {"accuracy":>16} {"alpha":>8} '
-        f'{"flag_rate":>10} {"mean_spl":>10} {"mean_ndtw":>10} {"mean_sdtw":>10}',
-    ]
+    constructs: list[dict] = []
     for construct in CONSTRUCTS:
         group = study_rows.get(construct) or []
         if not group and not any(
@@ -249,11 +249,7 @@ def analyze(
         ):
             continue
         is_nav = construct in NAV_CONSTRUCTS
-        answered = [
-            row
-            for row in group
-            if (row.get('answer') if is_nav else row.get('answer'))
-        ]
+        answered = [row for row in group if row.get('answer')]
         scored_rows: list[tuple[dict, dict]] = []
         n_correct = 0
         alpha_labels: dict[str, list[str]] = defaultdict(list)
@@ -277,67 +273,70 @@ def analyze(
                 n_correct += int(ok)
                 alpha_labels[row['item_id']].append(row['answer'])
         n_scored = len(scored_rows) if is_nav else len(answered)
-        if n_scored:
-            accuracy = f'{n_correct / n_scored:.3f} ({n_correct}/{n_scored})'
-        else:
-            accuracy = 'n/a'
         alpha = krippendorff_alpha(list(alpha_labels.values()))
-        alpha_s = 'n/a' if alpha is None else f'{alpha:.3f}'
         flagged = sum(1 for row in group if row['flags'])
-        flag_rate = f'{flagged / len(group):.3f}' if group else 'n/a'
+        entry: dict = {
+            'construct': construct,
+            'kind': 'nav' if is_nav else 'mc',
+            'n_reviews': len(group),
+            'n_scored': n_scored,
+            'n_correct': n_correct,
+            'accuracy': (n_correct / n_scored) if n_scored else None,
+            'alpha': alpha,
+            'flag_rate': (flagged / len(group)) if group else None,
+            'n_flagged': flagged,
+            'mean_spl': None,
+            'mean_ndtw': None,
+            'mean_sdtw': None,
+        }
         if is_nav and scored_rows:
-            mean_spl = sum(float(s['efficiency']) for _, s in scored_rows) / len(scored_rows)
-            mean_ndtw = sum(float(s.get('ndtw') or 0.0) for _, s in scored_rows) / len(
-                scored_rows
-            )
-            mean_sdtw = sum(float(s.get('sdtw') or 0.0) for _, s in scored_rows) / len(
-                scored_rows
-            )
-            spl_s = f'{mean_spl:.3f}'
-            ndtw_s = f'{mean_ndtw:.3f}' if construct == 'route_knowledge' else 'n/a'
-            sdtw_s = f'{mean_sdtw:.3f}' if construct == 'route_knowledge' else 'n/a'
-        else:
-            spl_s = ndtw_s = sdtw_s = 'n/a'
-        lines.append(
-            f'{construct:<32} {len(group):>8} {accuracy:>16} {alpha_s:>8} '
-            f'{flag_rate:>10} {spl_s:>10} {ndtw_s:>10} {sdtw_s:>10}'
-        )
+            entry['mean_spl'] = sum(
+                float(s['efficiency']) for _, s in scored_rows
+            ) / len(scored_rows)
+            entry['mean_ndtw'] = sum(
+                float(s.get('ndtw') or 0.0) for _, s in scored_rows
+            ) / len(scored_rows)
+            entry['mean_sdtw'] = sum(
+                float(s.get('sdtw') or 0.0) for _, s in scored_rows
+            ) / len(scored_rows)
+            if construct != 'route_knowledge':
+                entry['mean_ndtw'] = None
+                entry['mean_sdtw'] = None
+        constructs.append(entry)
 
-    lines.append('')
-    lines.append('class-4 answerable (yes/no; not a success gate)')
+    answerable: list[dict] = []
     for construct in ('route_knowledge', 'survey_based_route_planning'):
         group = study_rows.get(construct) or []
         judged = [row for row in group if row.get('answerable')]
-        if not judged:
-            lines.append(f'  {construct}: n/a')
-            continue
         n_yes = sum(1 for row in judged if row['answerable'].casefold() == 'yes')
-        lines.append(
-            f'  {construct}: yes {n_yes}/{len(judged)} '
-            f'({n_yes / len(judged):.3f})'
+        answerable.append(
+            {
+                'construct': construct,
+                'n_judged': len(judged),
+                'n_yes': n_yes,
+                'yes_rate': (n_yes / len(judged)) if judged else None,
+            }
         )
 
-    lines.append('')
-    lines.append('check-item accuracy')
+    check_accuracy: list[dict] = []
     reviewers = sorted({row['reviewer_id'] for row in rows})
-    if not checks:
-        lines.append('  no check items')
-    elif not reviewers:
-        lines.append('  no reviews')
-    else:
-        width = max(len(name) for name in reviewers)
-        for reviewer in reviewers:
-            hits = 0
-            for item_id in checks:
-                row = by_key.get((reviewer, item_id))
-                meta = items.get(item_id) or {}
-                if row and _row_correct(meta, row, package=package):
-                    hits += 1
-            lines.append(f'  {reviewer:<{width}}  {hits}/{len(checks)}')
+    for reviewer in reviewers:
+        hits = 0
+        for item_id in checks:
+            row = by_key.get((reviewer, item_id))
+            meta = items.get(item_id) or {}
+            if row and _row_correct(meta, row, package=package):
+                hits += 1
+        check_accuracy.append(
+            {
+                'reviewer_id': reviewer,
+                'n_correct': hits,
+                'n_checks': len(checks),
+                'accuracy': (hits / len(checks)) if checks else None,
+            }
+        )
 
-    lines.append('')
-    lines.append('flagged or wrong by both reviewers')
-    problems: list[tuple[str, str, bool, bool]] = []
+    problems: list[dict] = []
     by_item_rows: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         if _role(row, manifest) != 'review':
@@ -351,20 +350,117 @@ def analyze(
         meta = items[item_id]
         both_flagged = all(row['flags'] for row in group)
         answered = [row for row in group if row.get('answer')]
-        both_wrong = len(answered) >= 2 and all(
-            not _row_correct(meta, row, package=package) for row in answered
-        ) and len(answered) == len(group)
+        both_wrong = (
+            len(answered) >= 2
+            and len(answered) == len(group)
+            and all(not _row_correct(meta, row, package=package) for row in answered)
+        )
         if both_flagged or both_wrong:
-            problems.append((item_id, meta.get('construct') or '', both_flagged, both_wrong))
+            problems.append(
+                {
+                    'item_id': item_id,
+                    'construct': meta.get('construct') or '',
+                    'both_flagged': both_flagged,
+                    'both_wrong': both_wrong,
+                }
+            )
+
+    return {
+        'kind': 'human',
+        'constructs': constructs,
+        'answerable': answerable,
+        'check_accuracy': check_accuracy,
+        'problems': problems,
+        'n_check_items': len(checks),
+    }
+
+
+def format_human_analysis(data: dict) -> str:
+    """Text table for a ``collect_human_analysis`` payload."""
+    lines = [
+        f'{"construct":<32} {"reviews":>8} {"accuracy":>16} {"alpha":>8} '
+        f'{"flag_rate":>10} {"mean_spl":>10} {"mean_ndtw":>10} {"mean_sdtw":>10}',
+    ]
+    for entry in data.get('constructs') or []:
+        n_scored = int(entry.get('n_scored') or 0)
+        n_correct = int(entry.get('n_correct') or 0)
+        if n_scored:
+            accuracy = f'{n_correct / n_scored:.3f} ({n_correct}/{n_scored})'
+        else:
+            accuracy = 'n/a'
+        alpha = entry.get('alpha')
+        alpha_s = 'n/a' if alpha is None else f'{float(alpha):.3f}'
+        flag_rate = entry.get('flag_rate')
+        flag_s = 'n/a' if flag_rate is None else f'{float(flag_rate):.3f}'
+        spl = entry.get('mean_spl')
+        ndtw = entry.get('mean_ndtw')
+        sdtw = entry.get('mean_sdtw')
+        spl_s = 'n/a' if spl is None else f'{float(spl):.3f}'
+        ndtw_s = 'n/a' if ndtw is None else f'{float(ndtw):.3f}'
+        sdtw_s = 'n/a' if sdtw is None else f'{float(sdtw):.3f}'
+        lines.append(
+            f'{entry["construct"]:<32} {int(entry.get("n_reviews") or 0):>8} '
+            f'{accuracy:>16} {alpha_s:>8} {flag_s:>10} '
+            f'{spl_s:>10} {ndtw_s:>10} {sdtw_s:>10}'
+        )
+
+    lines.append('')
+    lines.append('class-4 answerable (yes/no; not a success gate)')
+    for entry in data.get('answerable') or []:
+        judged = int(entry.get('n_judged') or 0)
+        if not judged:
+            lines.append(f'  {entry["construct"]}: n/a')
+            continue
+        n_yes = int(entry.get('n_yes') or 0)
+        lines.append(
+            f'  {entry["construct"]}: yes {n_yes}/{judged} '
+            f'({n_yes / judged:.3f})'
+        )
+
+    lines.append('')
+    lines.append('check-item accuracy')
+    checks = int(data.get('n_check_items') or 0)
+    check_rows = data.get('check_accuracy') or []
+    if not checks:
+        lines.append('  no check items')
+    elif not check_rows:
+        lines.append('  no reviews')
+    else:
+        width = max(len(row['reviewer_id']) for row in check_rows)
+        for row in check_rows:
+            lines.append(
+                f'  {row["reviewer_id"]:<{width}}  '
+                f'{int(row["n_correct"])}/{int(row["n_checks"])}'
+            )
+
+    lines.append('')
+    lines.append('flagged or wrong by both reviewers')
+    problems = data.get('problems') or []
     if not problems:
         lines.append('  none')
     else:
-        lines.append(f'  {"item_id":<44} {"construct":<32} {"both_flagged":>13} {"both_wrong":>11}')
-        for item_id, construct, flagged, wrong in problems:
+        lines.append(
+            f'  {"item_id":<44} {"construct":<32} '
+            f'{"both_flagged":>13} {"both_wrong":>11}'
+        )
+        for problem in problems:
             lines.append(
-                f'  {item_id:<44} {construct:<32} {str(flagged):>13} {str(wrong):>11}'
+                f'  {problem["item_id"]:<44} {problem["construct"]:<32} '
+                f'{str(problem["both_flagged"]):>13} {str(problem["both_wrong"]):>11}'
             )
     return '\n'.join(lines)
+
+
+def analyze(
+    manifest: dict,
+    rows: list[dict],
+    *,
+    package: Path | None = None,
+) -> str:
+    """Text report for one merged set of reviews."""
+    return format_human_analysis(
+        collect_human_analysis(manifest, rows, package=package)
+    )
 
 
 def _csv_paths(package: Path, extra: list[Path]) -> list[Path]:
@@ -523,14 +619,14 @@ def human_accuracy_by_construct(
     }
 
 
-def analyze_vlm(
+def collect_vlm_analysis(
     kit: Path,
     *,
     results_path: Path | None = None,
     answers_path: Path | None = None,
     human_package: Path | None = None,
-) -> str:
-    """Per construct × condition accuracy, chance, human comparison, flags."""
+) -> dict:
+    """Structured VLM-kit summary (JSON-serializable)."""
     answers_file = answers_path or (kit / 'answers.csv')
     if results_path is None:
         cand = kit / 'results.csv'
@@ -545,7 +641,7 @@ def analyze_vlm(
     # (construct, condition) → answered outcomes
     tallies: dict[tuple[str, str], list[bool]] = defaultdict(list)
     cant_tell: dict[tuple[str, str], int] = defaultdict(int)
-    item_ids = set()
+    item_ids: set[str] = set()
     for row in rows:
         item_id = row['item_id']
         item_ids.add(item_id)
@@ -574,11 +670,8 @@ def analyze_vlm(
         else {}
     )
 
-    rates: dict[tuple[str, str], float] = {}
-    lines = [
-        f'{"construct":<32} {"cond":>6} {"n":>4} {"accuracy":>16} '
-        f'{"cant_tell":>10} {"chance":>8} {"human":>8}',
-    ]
+    results: list[dict] = []
+    flags: list[str] = []
     for construct in CONSTRUCTS:
         for condition in ('vision', 'blind'):
             group = tallies.get((construct, condition)) or []
@@ -586,38 +679,98 @@ def analyze_vlm(
                 continue
             n_ok = sum(1 for hit in group if hit)
             rate = n_ok / len(group)
-            rates[(construct, condition)] = rate
             n_ct = cant_tell.get((construct, condition), 0)
-            ct = f'{n_ct / len(group):.3f} ({n_ct})'
-            chance = f'{MC_CHANCE:.2f}' if construct not in NAV_CONSTRUCTS else 'n/a'
-            human_s = f'{human[construct]:.3f}' if construct in human else 'n/a'
-            acc = f'{rate:.3f} ({n_ok}/{len(group)})'
-            lines.append(
-                f'{construct:<32} {condition:>6} {len(group):>4} {acc:>16} '
-                f'{ct:>10} {chance:>8} {human_s:>8}'
+            results.append(
+                {
+                    'construct': construct,
+                    'condition': condition,
+                    'n': len(group),
+                    'n_correct': n_ok,
+                    'accuracy': rate,
+                    'cant_tell_rate': n_ct / len(group),
+                    'n_cant_tell': n_ct,
+                    'chance': None if construct in NAV_CONSTRUCTS else MC_CHANCE,
+                    'human_accuracy': human.get(construct),
+                }
             )
-
-    lines.append('')
-    lines.append('flags')
-    flagged = False
-    for construct in CONSTRUCTS:
-        blind = rates.get((construct, 'blind'))
-        vision = rates.get((construct, 'vision'))
-        if blind is not None and construct not in NAV_CONSTRUCTS and blind >= BLIND_ABOVE_CHANCE:
-            lines.append(
-                f'  {construct}: blind accuracy {blind:.3f} is well above chance '
+        blind = None
+        vision = None
+        for row in results:
+            if row['construct'] != construct:
+                continue
+            if row['condition'] == 'blind':
+                blind = row['accuracy']
+            elif row['condition'] == 'vision':
+                vision = row['accuracy']
+        if (
+            blind is not None
+            and construct not in NAV_CONSTRUCTS
+            and blind >= BLIND_ABOVE_CHANCE
+        ):
+            flags.append(
+                f'{construct}: blind accuracy {blind:.3f} is well above chance '
                 f'({MC_CHANCE:.2f}) — question may be solvable without images'
             )
-            flagged = True
         if vision is not None and vision >= VISION_NEAR_CEILING:
-            lines.append(
-                f'  {construct}: vision accuracy {vision:.3f} is near ceiling — '
+            flags.append(
+                f'{construct}: vision accuracy {vision:.3f} is near ceiling — '
                 'items may be too easy'
             )
-            flagged = True
-    if not flagged:
+
+    return {
+        'kind': 'vlm',
+        'results': results,
+        'flags': flags,
+        'mc_chance': MC_CHANCE,
+    }
+
+
+def format_vlm_analysis(data: dict) -> str:
+    """Text table for a ``collect_vlm_analysis`` payload."""
+    lines = [
+        f'{"construct":<32} {"cond":>6} {"n":>4} {"accuracy":>16} '
+        f'{"cant_tell":>10} {"chance":>8} {"human":>8}',
+    ]
+    for row in data.get('results') or []:
+        n = int(row['n'])
+        n_ok = int(row['n_correct'])
+        n_ct = int(row['n_cant_tell'])
+        ct = f'{n_ct / n:.3f} ({n_ct})'
+        chance = 'n/a' if row.get('chance') is None else f'{float(row["chance"]):.2f}'
+        human = row.get('human_accuracy')
+        human_s = 'n/a' if human is None else f'{float(human):.3f}'
+        acc = f'{n_ok / n:.3f} ({n_ok}/{n})'
+        lines.append(
+            f'{row["construct"]:<32} {row["condition"]:>6} {n:>4} {acc:>16} '
+            f'{ct:>10} {chance:>8} {human_s:>8}'
+        )
+    lines.append('')
+    lines.append('flags')
+    flags = data.get('flags') or []
+    if not flags:
         lines.append('  none')
+    else:
+        for flag in flags:
+            lines.append(f'  {flag}')
     return '\n'.join(lines)
+
+
+def analyze_vlm(
+    kit: Path,
+    *,
+    results_path: Path | None = None,
+    answers_path: Path | None = None,
+    human_package: Path | None = None,
+) -> str:
+    """Per construct × condition accuracy, chance, human comparison, flags."""
+    return format_vlm_analysis(
+        collect_vlm_analysis(
+            kit,
+            results_path=results_path,
+            answers_path=answers_path,
+            human_package=human_package,
+        )
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -652,11 +805,24 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help='Reviewer CSVs for --package. Default: every CSV under the package',
     )
+    parser.add_argument(
+        '--json-out',
+        type=Path,
+        default=None,
+        help='Write structured analysis JSON (for scripts/plot_review_report.py)',
+    )
+    parser.add_argument(
+        '--txt-out',
+        type=Path,
+        default=None,
+        help='Also write the printed text report to this file',
+    )
     args = parser.parse_args(argv)
     if args.vlm_kit is None and args.package is None:
         parser.error('provide --package and/or --vlm-kit')
     try:
         chunks: list[str] = []
+        payload: dict = {'sections': []}
         if args.package is not None:
             manifest_path = (
                 args.package / 'manifest.json' if args.package.is_dir() else args.package
@@ -667,18 +833,28 @@ def main(argv: list[str] | None = None) -> int:
             if not paths:
                 print('no CSV files', file=sys.stderr)
                 return 1
-            chunks.append(
-                analyze(manifest, load_rows(paths), package=package_root)
+            human = collect_human_analysis(
+                manifest, load_rows(paths), package=package_root
             )
+            payload['sections'].append(human)
+            chunks.append(format_human_analysis(human))
         if args.vlm_kit is not None:
-            chunks.append(
-                analyze_vlm(
-                    args.vlm_kit,
-                    results_path=args.vlm_results,
-                    human_package=args.human_package or args.package,
-                )
+            vlm = collect_vlm_analysis(
+                args.vlm_kit,
+                results_path=args.vlm_results,
+                human_package=args.human_package or args.package,
             )
+            payload['sections'].append(vlm)
+            chunks.append(format_vlm_analysis(vlm))
         text = '\n\n'.join(chunks)
+        if args.json_out is not None:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+            print(f'Wrote {args.json_out}', file=sys.stderr)
+        if args.txt_out is not None:
+            args.txt_out.parent.mkdir(parents=True, exist_ok=True)
+            args.txt_out.write_text(text + '\n', encoding='utf-8')
+            print(f'Wrote {args.txt_out}', file=sys.stderr)
     except (OSError, ValueError, json.JSONDecodeError, csv.Error, KeyError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

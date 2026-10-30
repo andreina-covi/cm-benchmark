@@ -264,6 +264,122 @@ def test_analyze_accuracy_alpha_and_both_wrong(tmp_path: Path):
     assert loaded[2]['answerable'] == 'yes'
     assert 'move_ahead' in loaded[2]['answer']
 
+    data = analyze.collect_human_analysis(manifest, rows, package=tmp_path)
+    assert data['kind'] == 'human'
+    ego = next(c for c in data['constructs'] if c['construct'] == 'egocentric_encoding')
+    assert ego['accuracy'] == 0.5
+    assert ego['n_correct'] == 2 and ego['n_scored'] == 4
+    assert any(p['item_id'] == 'bad1' and p['both_wrong'] for p in data['problems'])
+    payload = {'sections': [data]}
+    json_path = tmp_path / 'analysis.json'
+    json_path.write_text(json.dumps(payload))
+    txt_path = tmp_path / 'analysis.txt'
+    txt_path.write_text(analyze.format_human_analysis(data) + '\n')
+    blob = json.loads(json_path.read_text())
+    assert blob['sections'][0]['kind'] == 'human'
+    assert '0.500 (2/4)' in txt_path.read_text()
+
+
+def test_plot_review_report_from_json(tmp_path: Path):
+    import pytest
+
+    pytest.importorskip('matplotlib')
+    plot = _load('plot_review_report.py')
+    payload = {
+        'sections': [
+            {
+                'kind': 'human',
+                'constructs': [
+                    {
+                        'construct': 'egocentric_encoding',
+                        'kind': 'mc',
+                        'n_reviews': 4,
+                        'n_scored': 4,
+                        'n_correct': 2,
+                        'accuracy': 0.5,
+                        'alpha': 0.0,
+                        'flag_rate': 0.5,
+                        'n_flagged': 2,
+                        'mean_spl': None,
+                        'mean_ndtw': None,
+                        'mean_sdtw': None,
+                    },
+                    {
+                        'construct': 'route_knowledge',
+                        'kind': 'nav',
+                        'n_reviews': 2,
+                        'n_scored': 2,
+                        'n_correct': 1,
+                        'accuracy': 0.5,
+                        'alpha': 1.0,
+                        'flag_rate': 0.0,
+                        'n_flagged': 0,
+                        'mean_spl': 0.8,
+                        'mean_ndtw': 0.7,
+                        'mean_sdtw': 0.6,
+                    },
+                ],
+                'answerable': [],
+                'check_accuracy': [
+                    {
+                        'reviewer_id': 'reviewer_01',
+                        'n_correct': 1,
+                        'n_checks': 1,
+                        'accuracy': 1.0,
+                    }
+                ],
+                'problems': [
+                    {
+                        'item_id': 'bad1',
+                        'construct': 'egocentric_encoding',
+                        'both_flagged': True,
+                        'both_wrong': True,
+                    }
+                ],
+                'n_check_items': 1,
+            },
+            {
+                'kind': 'vlm',
+                'results': [
+                    {
+                        'construct': 'egocentric_encoding',
+                        'condition': 'vision',
+                        'n': 2,
+                        'n_correct': 1,
+                        'accuracy': 0.5,
+                        'cant_tell_rate': 0.0,
+                        'n_cant_tell': 0,
+                        'chance': 0.25,
+                        'human_accuracy': 0.5,
+                    },
+                    {
+                        'construct': 'egocentric_encoding',
+                        'condition': 'blind',
+                        'n': 2,
+                        'n_correct': 0,
+                        'accuracy': 0.0,
+                        'cant_tell_rate': 0.0,
+                        'n_cant_tell': 0,
+                        'chance': 0.25,
+                        'human_accuracy': 0.5,
+                    },
+                ],
+                'flags': [],
+                'mc_chance': 0.25,
+            },
+        ]
+    }
+    json_path = tmp_path / 'review_analysis.json'
+    json_path.write_text(json.dumps(payload))
+    out = tmp_path / 'plots'
+    assert plot.main([str(json_path), '-o', str(out)]) == 0
+    assert (out / 'human_accuracy.png').is_file()
+    assert (out / 'human_agreement.png').is_file()
+    assert (out / 'human_nav_metrics.png').is_file()
+    assert (out / 'human_checks.png').is_file()
+    assert (out / 'human_problems.png').is_file()
+    assert (out / 'vlm_accuracy.png').is_file()
+
 
 def test_class4_study_total_respects_per_reviewer_budget():
     build = _load('build_review_package.py')
