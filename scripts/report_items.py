@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""Print ok and unsupported counts, scenes, and answer distributions.
+"""Summarize how many questions ``generate_items`` produced.
 
-Reads ``items_*.json`` under a generation output folder. Concise items are
-the facts; a verbose partner is not counted again.
+Reads ``items_*.json`` under a generation ``--output_path`` (or one file).
+Counts concise facts only (a verbose partner is not counted again).
+
+Prints:
+  - grand totals (ok / thin / unsupported)
+  - per-scene counts
+  - per-construct counts
+  - answer-label distributions for concise ok items
+
+Write the same text with ``-o path/to/report.txt``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -20,9 +29,13 @@ def _load(root: Path) -> list[dict]:
     for path in paths:
         blob = json.loads(path.read_text())
         rows = blob if isinstance(blob, list) else blob.get('items') or []
+        scene_from_file = path.stem.removeprefix('items_') if path.stem.startswith('items_') else ''
         for row in rows:
-            if isinstance(row, dict):
-                items.append(row)
+            if not isinstance(row, dict):
+                continue
+            if not row.get('scene_id') and scene_from_file:
+                row = {**row, 'scene_id': scene_from_file}
+            items.append(row)
     return items
 
 
@@ -40,50 +53,99 @@ def _label_and_letter(item: dict) -> tuple[str, str | None]:
     return str(answer), None
 
 
-def report(items: list[dict]) -> str:
-    """Text table of concise facts."""
+def _status_counts(rows: list[dict]) -> Counter:
+    c: Counter = Counter()
+    for item in rows:
+        status = item.get('status') or 'unknown'
+        c[status] += 1
+    return c
+
+
+def report(items: list[dict], *, items_dir: Path | None = None) -> str:
+    """Text summary of concise facts: totals, by scene, by construct, labels."""
     rows = _concise(items)
-    constructs: list[str] = []
-    ok_n: Counter = Counter()
-    unsup_n: Counter = Counter()
-    scenes: dict[str, set[str]] = defaultdict(set)
+    totals = _status_counts(rows)
+
+    by_scene: dict[str, Counter] = defaultdict(Counter)
+    by_construct: dict[str, Counter] = defaultdict(Counter)
+    scenes_ok: dict[str, set[str]] = defaultdict(set)
     labels: dict[str, Counter] = defaultdict(Counter)
     letters: dict[str, Counter] = defaultdict(Counter)
     freeform: dict[str, Counter] = defaultdict(Counter)
+    constructs: list[str] = []
+
     for item in rows:
-        construct = item.get('construct') or ''
-        if construct not in ok_n and construct not in unsup_n:
+        construct = str(item.get('construct') or '?')
+        scene = str(item.get('scene_id') or '?')
+        status = str(item.get('status') or 'unknown')
+        by_scene[scene][status] += 1
+        by_construct[construct][status] += 1
+        if construct not in constructs:
             constructs.append(construct)
-        status = item.get('status')
         if status == 'ok':
-            ok_n[construct] += 1
-            scene = item.get('scene_id') or ''
-            if scene:
-                scenes[construct].add(str(scene))
+            scenes_ok[construct].add(scene)
             label, letter = _label_and_letter(item)
             if letter:
                 labels[construct][label] += 1
                 letters[construct][letter] += 1
             else:
                 freeform[construct][label] += 1
-        elif status == 'unsupported':
-            unsup_n[construct] += 1
-    for construct in ok_n:
+
+    for construct in sorted(by_construct):
         if construct not in constructs:
             constructs.append(construct)
-    lines = [
-        f'{"construct":<32} {"ok":>5} {"unsupported":>12} {"scenes":>7}',
-    ]
+
+    lines: list[str] = []
+    if items_dir is not None:
+        lines.append(f'Items root: {items_dir}')
+    n_scenes = len(by_scene)
+    lines.append(f'Scenes with items: {n_scenes}')
+    lines.append('')
+    lines.append('TOTAL (concise)')
+    for key in ('ok', 'thin', 'unsupported'):
+        lines.append(f'  {key:<12} {totals.get(key, 0):>6}')
+    other = sum(v for k, v in totals.items() if k not in {'ok', 'thin', 'unsupported'})
+    if other:
+        lines.append(f'  {"other":<12} {other:>6}')
+    lines.append(f'  {"all":<12} {len(rows):>6}')
+    lines.append('')
+
+    lines.append('By scene (concise)')
+    header = f'{"scene":<28} {"ok":>5} {"thin":>5} {"unsupported":>12} {"all":>5}'
+    lines.append(header)
+    scene_ok = scene_thin = scene_un = scene_all = 0
+    for scene in sorted(by_scene):
+        c = by_scene[scene]
+        ok = c.get('ok', 0)
+        thin = c.get('thin', 0)
+        un = c.get('unsupported', 0)
+        n = sum(c.values())
+        scene_ok += ok
+        scene_thin += thin
+        scene_un += un
+        scene_all += n
+        lines.append(f'{scene:<28} {ok:>5} {thin:>5} {un:>12} {n:>5}')
+    lines.append(
+        f'{"TOTAL":<28} {scene_ok:>5} {scene_thin:>5} {scene_un:>12} {scene_all:>5}'
+    )
+    lines.append('')
+
+    lines.append('By construct (concise)')
+    lines.append(f'{"construct":<32} {"ok":>5} {"thin":>5} {"unsupported":>12} {"scenes":>7}')
     for construct in constructs:
+        c = by_construct[construct]
         lines.append(
-            f'{construct:<32} {ok_n[construct]:>5} {unsup_n[construct]:>12} '
-            f'{len(scenes[construct]):>7}'
+            f'{construct:<32} {c.get("ok", 0):>5} {c.get("thin", 0):>5} '
+            f'{c.get("unsupported", 0):>12} {len(scenes_ok[construct]):>7}'
         )
     lines.append('')
-    lines.append('labels and letters (concise ok)')
+
+    lines.append('Labels and letters (concise ok)')
+    any_ok = False
     for construct in constructs:
-        if ok_n[construct] == 0:
+        if by_construct[construct].get('ok', 0) == 0:
             continue
+        any_ok = True
         lines.append(construct)
         if labels[construct]:
             total = sum(labels[construct].values())
@@ -101,13 +163,16 @@ def report(items: list[dict]) -> str:
             ]
             if extra:
                 letter_bits = (letter_bits + '  ' + '  '.join(extra)).strip()
-            lines.append(f'  letters  {letter_bits}')
+            if letter_bits:
+                lines.append(f'  letters  {letter_bits}')
         if freeform[construct]:
             n_actions = sum(freeform[construct].values())
             lines.append(
                 f'  action sequences: {n_actions} ({len(freeform[construct])} distinct)'
             )
-    return '\n'.join(lines)
+    if not any_ok:
+        lines.append('  (none)')
+    return '\n'.join(lines) + '\n'
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,10 +182,22 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help='Folder of items_<scene>.json files, or one such file',
     )
+    parser.add_argument(
+        '-o',
+        '--output',
+        type=Path,
+        default=None,
+        help='Write the report to this file (also printed)',
+    )
     args = parser.parse_args(argv)
     if not args.items_dir.exists():
         parser.error(f'not found: {args.items_dir}')
-    print(report(_load(args.items_dir)))
+    text = report(_load(args.items_dir), items_dir=args.items_dir)
+    print(text, end='')
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text)
+        print(f'Wrote {args.output}', file=sys.stderr)
     return 0
 
 
