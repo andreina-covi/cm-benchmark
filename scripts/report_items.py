@@ -10,12 +10,16 @@ Prints:
   - per-construct counts
   - answer-label distributions for concise ok items
 
-Write the same text with ``-o path/to/report.txt``.
+``--json-out`` writes structured data for plots/tables.
+``-o`` / ``--txt-out`` saves the printed text.
+``--tables-dir`` writes CSV tables (totals, by scene, by construct, labels).
+Plot with ``scripts/plot_review_report.py <json> -o <plots_dir>``.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from collections import Counter, defaultdict
@@ -29,7 +33,9 @@ def _load(root: Path) -> list[dict]:
     for path in paths:
         blob = json.loads(path.read_text())
         rows = blob if isinstance(blob, list) else blob.get('items') or []
-        scene_from_file = path.stem.removeprefix('items_') if path.stem.startswith('items_') else ''
+        scene_from_file = (
+            path.stem.removeprefix('items_') if path.stem.startswith('items_') else ''
+        )
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -61,8 +67,12 @@ def _status_counts(rows: list[dict]) -> Counter:
     return c
 
 
-def report(items: list[dict], *, items_dir: Path | None = None) -> str:
-    """Text summary of concise facts: totals, by scene, by construct, labels."""
+def collect_items_summary(
+    items: list[dict],
+    *,
+    items_dir: Path | None = None,
+) -> dict:
+    """Structured generation summary (JSON-serializable)."""
     rows = _concise(items)
     totals = _status_counts(rows)
 
@@ -95,84 +105,230 @@ def report(items: list[dict], *, items_dir: Path | None = None) -> str:
         if construct not in constructs:
             constructs.append(construct)
 
+    other = sum(v for k, v in totals.items() if k not in {'ok', 'thin', 'unsupported'})
+    scene_rows = []
+    for scene in sorted(by_scene):
+        c = by_scene[scene]
+        scene_rows.append(
+            {
+                'scene': scene,
+                'ok': c.get('ok', 0),
+                'thin': c.get('thin', 0),
+                'unsupported': c.get('unsupported', 0),
+                'all': sum(c.values()),
+            }
+        )
+    construct_rows = []
+    for construct in constructs:
+        c = by_construct[construct]
+        construct_rows.append(
+            {
+                'construct': construct,
+                'ok': c.get('ok', 0),
+                'thin': c.get('thin', 0),
+                'unsupported': c.get('unsupported', 0),
+                'n_scenes_ok': len(scenes_ok[construct]),
+            }
+        )
+    label_rows = []
+    for construct in constructs:
+        total = sum(labels[construct].values())
+        for label, count in labels[construct].most_common():
+            label_rows.append(
+                {
+                    'construct': construct,
+                    'kind': 'mc_label',
+                    'label': label,
+                    'count': count,
+                    'share': (count / total) if total else None,
+                }
+            )
+        letter_total = sum(letters[construct].values())
+        for letter, count in sorted(letters[construct].items()):
+            label_rows.append(
+                {
+                    'construct': construct,
+                    'kind': 'mc_letter',
+                    'label': letter,
+                    'count': count,
+                    'share': (count / letter_total) if letter_total else None,
+                }
+            )
+        n_actions = sum(freeform[construct].values())
+        if n_actions:
+            label_rows.append(
+                {
+                    'construct': construct,
+                    'kind': 'action_sequences',
+                    'label': 'action_sequence',
+                    'count': n_actions,
+                    'share': 1.0,
+                    'n_distinct': len(freeform[construct]),
+                }
+            )
+
+    return {
+        'kind': 'items',
+        'items_dir': str(items_dir) if items_dir is not None else None,
+        'n_scenes': len(by_scene),
+        'totals': {
+            'ok': totals.get('ok', 0),
+            'thin': totals.get('thin', 0),
+            'unsupported': totals.get('unsupported', 0),
+            'other': other,
+            'all': len(rows),
+        },
+        'by_scene': scene_rows,
+        'by_construct': construct_rows,
+        'labels': label_rows,
+    }
+
+
+def format_items_summary(data: dict) -> str:
+    """Text tables for a ``collect_items_summary`` payload."""
     lines: list[str] = []
-    if items_dir is not None:
+    items_dir = data.get('items_dir')
+    if items_dir:
         lines.append(f'Items root: {items_dir}')
-    n_scenes = len(by_scene)
-    lines.append(f'Scenes with items: {n_scenes}')
+    lines.append(f'Scenes with items: {int(data.get("n_scenes") or 0)}')
     lines.append('')
+    totals = data.get('totals') or {}
     lines.append('TOTAL (concise)')
     for key in ('ok', 'thin', 'unsupported'):
-        lines.append(f'  {key:<12} {totals.get(key, 0):>6}')
-    other = sum(v for k, v in totals.items() if k not in {'ok', 'thin', 'unsupported'})
+        lines.append(f'  {key:<12} {int(totals.get(key, 0)):>6}')
+    other = int(totals.get('other') or 0)
     if other:
         lines.append(f'  {"other":<12} {other:>6}')
-    lines.append(f'  {"all":<12} {len(rows):>6}')
+    lines.append(f'  {"all":<12} {int(totals.get("all", 0)):>6}')
     lines.append('')
 
     lines.append('By scene (concise)')
-    header = f'{"scene":<28} {"ok":>5} {"thin":>5} {"unsupported":>12} {"all":>5}'
-    lines.append(header)
+    lines.append(f'{"scene":<28} {"ok":>5} {"thin":>5} {"unsupported":>12} {"all":>5}')
     scene_ok = scene_thin = scene_un = scene_all = 0
-    for scene in sorted(by_scene):
-        c = by_scene[scene]
-        ok = c.get('ok', 0)
-        thin = c.get('thin', 0)
-        un = c.get('unsupported', 0)
-        n = sum(c.values())
+    for row in data.get('by_scene') or []:
+        ok = int(row['ok'])
+        thin = int(row['thin'])
+        un = int(row['unsupported'])
+        n = int(row['all'])
         scene_ok += ok
         scene_thin += thin
         scene_un += un
         scene_all += n
-        lines.append(f'{scene:<28} {ok:>5} {thin:>5} {un:>12} {n:>5}')
+        lines.append(f'{row["scene"]:<28} {ok:>5} {thin:>5} {un:>12} {n:>5}')
     lines.append(
         f'{"TOTAL":<28} {scene_ok:>5} {scene_thin:>5} {scene_un:>12} {scene_all:>5}'
     )
     lines.append('')
 
     lines.append('By construct (concise)')
-    lines.append(f'{"construct":<32} {"ok":>5} {"thin":>5} {"unsupported":>12} {"scenes":>7}')
-    for construct in constructs:
-        c = by_construct[construct]
+    lines.append(
+        f'{"construct":<32} {"ok":>5} {"thin":>5} {"unsupported":>12} {"scenes":>7}'
+    )
+    for row in data.get('by_construct') or []:
         lines.append(
-            f'{construct:<32} {c.get("ok", 0):>5} {c.get("thin", 0):>5} '
-            f'{c.get("unsupported", 0):>12} {len(scenes_ok[construct]):>7}'
+            f'{row["construct"]:<32} {int(row["ok"]):>5} {int(row["thin"]):>5} '
+            f'{int(row["unsupported"]):>12} {int(row["n_scenes_ok"]):>7}'
         )
     lines.append('')
 
     lines.append('Labels and letters (concise ok)')
-    any_ok = False
-    for construct in constructs:
-        if by_construct[construct].get('ok', 0) == 0:
-            continue
-        any_ok = True
-        lines.append(construct)
-        if labels[construct]:
-            total = sum(labels[construct].values())
-            for label, count in labels[construct].most_common():
-                lines.append(f'  {label:<20} {count:>4}  {count / total:>5.0%}')
-            letter_bits = '  '.join(
-                f'{letter} {letters[construct][letter]}'
-                for letter in ('A', 'B', 'C', 'D')
-                if letters[construct][letter]
-            )
-            extra = [
-                f'{letter} {count}'
-                for letter, count in sorted(letters[construct].items())
-                if letter not in {'A', 'B', 'C', 'D'}
-            ]
-            if extra:
-                letter_bits = (letter_bits + '  ' + '  '.join(extra)).strip()
-            if letter_bits:
-                lines.append(f'  letters  {letter_bits}')
-        if freeform[construct]:
-            n_actions = sum(freeform[construct].values())
-            lines.append(
-                f'  action sequences: {n_actions} ({len(freeform[construct])} distinct)'
-            )
-    if not any_ok:
+    by_construct: dict[str, list[dict]] = defaultdict(list)
+    for row in data.get('labels') or []:
+        by_construct[row['construct']].append(row)
+    if not by_construct:
         lines.append('  (none)')
+    else:
+        for construct, rows in by_construct.items():
+            lines.append(construct)
+            mc_labels = [r for r in rows if r.get('kind') == 'mc_label']
+            letters = [r for r in rows if r.get('kind') == 'mc_letter']
+            actions = [r for r in rows if r.get('kind') == 'action_sequences']
+            for row in mc_labels:
+                share = row.get('share')
+                share_s = f'{float(share):>5.0%}' if share is not None else '  n/a'
+                lines.append(f'  {row["label"]:<20} {int(row["count"]):>4}  {share_s}')
+            if letters:
+                letter_bits = '  '.join(
+                    f'{row["label"]} {int(row["count"])}'
+                    for row in letters
+                    if row['label'] in {'A', 'B', 'C', 'D'}
+                )
+                extra = [
+                    f'{row["label"]} {int(row["count"])}'
+                    for row in letters
+                    if row['label'] not in {'A', 'B', 'C', 'D'}
+                ]
+                if extra:
+                    letter_bits = (letter_bits + '  ' + '  '.join(extra)).strip()
+                if letter_bits:
+                    lines.append(f'  letters  {letter_bits}')
+            for row in actions:
+                distinct = row.get('n_distinct')
+                extra = f' ({distinct} distinct)' if distinct is not None else ''
+                lines.append(f'  action sequences: {int(row["count"])}{extra}')
     return '\n'.join(lines) + '\n'
+
+
+def report(items: list[dict], *, items_dir: Path | None = None) -> str:
+    """Text summary of concise facts: totals, by scene, by construct, labels."""
+    return format_items_summary(collect_items_summary(items, items_dir=items_dir))
+
+
+def write_tables(data: dict, tables_dir: Path) -> list[Path]:
+    """Write CSV tables used in a generation report."""
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    totals_path = tables_dir / 'totals.csv'
+    with totals_path.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=['ok', 'thin', 'unsupported', 'other', 'all']
+        )
+        writer.writeheader()
+        writer.writerow(data.get('totals') or {})
+    written.append(totals_path)
+
+    scenes_path = tables_dir / 'by_scene.csv'
+    with scenes_path.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=['scene', 'ok', 'thin', 'unsupported', 'all']
+        )
+        writer.writeheader()
+        for row in data.get('by_scene') or []:
+            writer.writerow(row)
+    written.append(scenes_path)
+
+    constructs_path = tables_dir / 'by_construct.csv'
+    with constructs_path.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=['construct', 'ok', 'thin', 'unsupported', 'n_scenes_ok'],
+        )
+        writer.writeheader()
+        for row in data.get('by_construct') or []:
+            writer.writerow(row)
+    written.append(constructs_path)
+
+    labels_path = tables_dir / 'labels.csv'
+    with labels_path.open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=['construct', 'kind', 'label', 'count', 'share', 'n_distinct'],
+        )
+        writer.writeheader()
+        for row in data.get('labels') or []:
+            writer.writerow(
+                {
+                    'construct': row.get('construct'),
+                    'kind': row.get('kind'),
+                    'label': row.get('label'),
+                    'count': row.get('count'),
+                    'share': row.get('share'),
+                    'n_distinct': row.get('n_distinct', ''),
+                }
+            )
+    written.append(labels_path)
+    return written
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -185,19 +341,42 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         '-o',
         '--output',
+        '--txt-out',
+        dest='txt_out',
         type=Path,
         default=None,
-        help='Write the report to this file (also printed)',
+        help='Write the text report to this file (also printed)',
+    )
+    parser.add_argument(
+        '--json-out',
+        type=Path,
+        default=None,
+        help='Write structured JSON for scripts/plot_review_report.py',
+    )
+    parser.add_argument(
+        '--tables-dir',
+        type=Path,
+        default=None,
+        help='Write CSV tables (totals, by_scene, by_construct, labels)',
     )
     args = parser.parse_args(argv)
     if not args.items_dir.exists():
         parser.error(f'not found: {args.items_dir}')
-    text = report(_load(args.items_dir), items_dir=args.items_dir)
+    data = collect_items_summary(_load(args.items_dir), items_dir=args.items_dir)
+    text = format_items_summary(data)
     print(text, end='')
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(text)
-        print(f'Wrote {args.output}', file=sys.stderr)
+    if args.txt_out is not None:
+        args.txt_out.parent.mkdir(parents=True, exist_ok=True)
+        args.txt_out.write_text(text, encoding='utf-8')
+        print(f'Wrote {args.txt_out}', file=sys.stderr)
+    if args.json_out is not None:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {'sections': [data]}
+        args.json_out.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+        print(f'Wrote {args.json_out}', file=sys.stderr)
+    if args.tables_dir is not None:
+        for path in write_tables(data, args.tables_dir):
+            print(f'Wrote {path}', file=sys.stderr)
     return 0
 
 

@@ -120,12 +120,17 @@ python -m cm_benchmark.generation.generate_items \
 items/house_007514/items_house_007514.json
 ```
 
-After generation, summarize question counts (totals, per scene, per construct):
+After generation, summarize question counts (text, JSON, CSV tables) and plot:
 
 ```bash
 python scripts/report_items.py \
   src/cm_benchmark/storage/ai2thor/items \
-  -o reports/items_summary.txt
+  -o reports/items_summary.txt \
+  --json-out reports/items_summary.json \
+  --tables-dir reports/items_tables
+
+python scripts/plot_review_report.py reports/items_summary.json \
+  -o reports/items_plots
 ```
 
 Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--n_frames`. A single scene
@@ -220,7 +225,25 @@ Raise the class-4 cap when you have more route/survey items, e.g.
 
 ```bash
 python scripts/analyze_review.py \
-  --package /path/to/review_package
+  --package /path/to/review_package \
+  --json-out reports/review_analysis.json \
+  --txt-out  reports/review_analysis.txt
+```
+
+Pass reviewer CSVs as positional args when they live outside the package:
+
+```bash
+python scripts/analyze_review.py \
+  --package /path/to/review_package \
+  /path/to/csvs/*.csv \
+  --json-out reports/review_analysis.json
+```
+
+Plot the JSON for a short report (PNGs under ``reports/review_analysis_plots/`` by default):
+
+```bash
+python scripts/plot_review_report.py reports/review_analysis.json \
+  -o reports/review_analysis_plots
 ```
 
 Process and checklist: [`Evaluation_process_manual.md`](../Evaluation_process_manual.md).
