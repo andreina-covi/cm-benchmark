@@ -120,6 +120,14 @@ python -m cm_benchmark.generation.generate_items \
 items/house_007514/items_house_007514.json
 ```
 
+After generation, summarize question counts (totals, per scene, per construct):
+
+```bash
+python scripts/report_items.py \
+  src/cm_benchmark/storage/ai2thor/items \
+  -o reports/items_summary.txt
+```
+
 Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--n_frames`. A single scene
 database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
