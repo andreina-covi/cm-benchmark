@@ -76,3 +76,6 @@ src/cm_benchmark/storage/ai2thor/output/
 
 # --- Presentation build helper (optional local venv) ---
 .venv-pptx/
+
+# --- Claude Code (personal) ---
+.claude/settings.local.json
