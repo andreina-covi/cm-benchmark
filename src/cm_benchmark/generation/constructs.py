@@ -616,6 +616,42 @@ def bbox_not_border_scrape(
     return True
 
 
+ASSET_SUBPART_MARK = '___'
+
+
+def is_asset_subpart(obj_id: Optional[str]) -> bool:
+    """True for a composite-asset sub-part id (``parent___k``).
+
+    A sub-part has no asset of its own and its type may not match what is seen
+    (a TV stand's top is typed ``DiningTable``), so it is never named.
+    """
+    return ASSET_SUBPART_MARK in str(obj_id or '')
+
+
+def frame_fraction_ok(
+    odata: Optional[dict],
+    image_wh: Optional[tuple[int, int]] = None,
+    min_frame_fraction: Optional[float] = None,
+) -> bool:
+    """Mask pixels cover at least ``min_frame_fraction`` of the frame.
+
+    Without a ``visible_pixels`` value (legacy fixtures) nothing is rejected.
+    """
+    cfg = get_generation_config()
+    if min_frame_fraction is None:
+        min_frame_fraction = cfg.visibility.named_min_frame_fraction
+    if not min_frame_fraction or not isinstance(odata, dict):
+        return True
+    pix = odata.get('visible_pixels')
+    if pix is None:
+        return True
+    w, h = image_wh or (cfg.episode_gt.frame_w, cfg.episode_gt.frame_h)
+    try:
+        return float(pix) >= float(min_frame_fraction) * float(w) * float(h)
+    except (TypeError, ValueError):
+        return False
+
+
 def fov_metrics_ok(
     odata: Optional[dict],
     *,
@@ -625,6 +661,7 @@ def fov_metrics_ok(
     image_wh: Optional[tuple[int, int]] = None,
     min_extent_if_clipped: Optional[float] = None,
     model: Any = None,
+    min_frame_fraction: Optional[float] = None,
 ) -> bool:
     """True if FOV detection is distinguishable enough to name / encode.
 
@@ -635,6 +672,7 @@ def fov_metrics_ok(
     When no bbox metrics are present (legacy fixtures), do not invent a reject
     from floors; still apply border-scrape when bbox + image size exist.
     Optional ``image_wh`` rejects thin border-clipped scrapes either way.
+    The ``named_min_frame_fraction`` floor applies either way too.
     """
     query = get_generation_config().visibility.query
     if min_bbox_area is None:
@@ -644,6 +682,8 @@ def fov_metrics_ok(
     if min_visible_pixels is None:
         min_visible_pixels = query.min_visible_pixels
     if not isinstance(odata, dict):
+        return False
+    if not frame_fraction_ok(odata, image_wh, min_frame_fraction):
         return False
 
     if model is not None:

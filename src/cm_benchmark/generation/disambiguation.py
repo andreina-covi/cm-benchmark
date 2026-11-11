@@ -19,6 +19,7 @@ from cm_benchmark.generation.constructs import (
     camera_size_wh,
     fov_metrics_ok,
     is_fov_step,
+    is_asset_subpart,
     object_type_from_id,
     step_by_index,
     xyz_as_dict,
@@ -497,11 +498,13 @@ def _try_proximity(
         for oid, odata in vis.items():
             if oid in seen or oid == target_id or oid in siblings:
                 continue
+            if is_asset_subpart(oid):
+                continue
             if objects_are_confusable(episode, oid, target_id, odata, None):
                 continue
             if not group_is_unique(episode, oid, pool):
                 continue
-            if not fov_metrics_ok(odata, model=model):
+            if not fov_metrics_ok(odata, image_wh=camera_size_wh(episode), model=model):
                 continue
             seen.add(oid)
             candidates.append(oid)

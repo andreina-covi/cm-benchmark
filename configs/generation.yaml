@@ -9,6 +9,9 @@ visibility:
   proba_low: 0.3  # none found (b6fc1ca); fallback when a bundle has no band
   proba_high: 0.7  # none found (b6fc1ca)
   degenerate_band_half_width: 0.05  # none found ("small margin" around a one-point band)
+  # Hard floor for every named object (target, landmark, PT A/B/C, receptacle,
+  # displaced prop), applied with or without the DecisionTree.
+  named_min_frame_fraction: 0.01  # calibrated: review round 1 (43 MC items); wrong rate 0.74 below vs 0.49 above; ReVSI uses 0.05
   static:
     min_bbox_area: 100.0  # none found (b418bda; drop speck detections)
     min_side: 8.0  # none found (b418bda)

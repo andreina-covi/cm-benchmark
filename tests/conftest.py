@@ -17,3 +17,26 @@ def _disable_default_visibility_model_candidates(monkeypatch):
         (),
     )
     monkeypatch.delenv('CM_VISIBILITY_FILTER_MODEL', raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_named_frame_fraction(request):
+    """Fixtures use small synthetic pixel counts to test other gates.
+
+    The ``named_min_frame_fraction`` floor is off here; ``test_named_visibility``
+    turns it on explicitly.
+    """
+    if request.node.get_closest_marker('frame_fraction_floor'):
+        yield
+        return
+    from dataclasses import replace
+
+    from cm_benchmark.generation.config import (
+        get_generation_config,
+        use_generation_config,
+    )
+
+    cfg = get_generation_config()
+    off = replace(cfg, visibility=replace(cfg.visibility, named_min_frame_fraction=0.0))
+    with use_generation_config(off):
+        yield

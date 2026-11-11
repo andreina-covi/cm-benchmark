@@ -2545,9 +2545,13 @@ def test_generate_items_reads_nav_json_root(folder_episode, tmp_path):
         dest.write_text(json.dumps(episode))
 
     out = tmp_path / 'items'
+    # Tiny fixture objects sit below the 1% named-object floor; this test is about file layout.
+    no_floor = tmp_path / 'no_floor.yaml'
+    no_floor.write_text('visibility:\n  named_min_frame_fraction: 0.0\n')
     main([
         '--episode_json', str(nav),
         '--output_path', str(out),
+        '--config', str(no_floor),
         '--constructs', 'egocentric_encoding',
         '--max_per_construct', '1',
         '--styles', 'concise',

@@ -34,6 +34,7 @@ from cm_benchmark.generation.constructs import (
     camera_size_wh,
     find_ego_edge,
     fov_metrics_ok,
+    is_asset_subpart,
     is_fov_step,
     humanize_receptacle,
     imagined_perspective_label,
@@ -924,9 +925,10 @@ def _distinguishable_encoding_sighting(
     When a DecisionTree visibility model is attached on the episode, that model
     decides distinguishability (static ``min_*`` floors are ignored). Otherwise
     the static floors apply. Thin border-clipped scrapes are always rejected
-    when ``episode_meta.camera`` size is available.
+    when ``episode_meta.camera`` size is available. Composite sub-parts are
+    never named.
     """
-    if not is_fov_step(episode, step_idx):
+    if is_asset_subpart(obj_id) or not is_fov_step(episode, step_idx):
         return False
     step = step_by_index(episode, int(step_idx))
     if step is None:
@@ -1594,7 +1596,7 @@ def _id_encode_sighting(episode: dict, step_idx: int, obj_id: str) -> bool:
     ``visible_objects``. Encode still uses the raw frame and the soft floors,
     so a later hide can open a window.
     """
-    if not is_fov_step(episode, step_idx):
+    if is_asset_subpart(obj_id) or not is_fov_step(episode, step_idx):
         return False
     step = step_by_index(episode, step_idx)
     if step is None:
@@ -1962,6 +1964,8 @@ def _dest_clearly_visible(episode: dict, obj_id: str, step_idx: int) -> bool:
 
     A border sliver or a detection below the query floors does not count.
     """
+    if is_asset_subpart(obj_id):
+        return False
     step = step_by_index(episode, step_idx)
     if step is None:
         return False

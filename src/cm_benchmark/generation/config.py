@@ -70,6 +70,7 @@ class VisibilityConfig:
     proba_low: float
     proba_high: float
     degenerate_band_half_width: float
+    named_min_frame_fraction: float
     static: VisibilityFloors
     query: VisibilityFloors
     border: VisibilityBorder
@@ -372,6 +373,7 @@ def generation_config_from_mapping(
             proba_low=float(vis['proba_low']),
             proba_high=float(vis['proba_high']),
             degenerate_band_half_width=float(vis['degenerate_band_half_width']),
+            named_min_frame_fraction=float(vis['named_min_frame_fraction']),
             static=_floors(vis['static'], extra=True),
             query=_floors(vis['query']),
             border=VisibilityBorder(
