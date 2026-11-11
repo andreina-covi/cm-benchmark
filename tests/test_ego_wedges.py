@@ -92,13 +92,19 @@ def test_angular_width_rejects_sector_boundary():
     )
 
 
+def _no_margin(cfg):
+    from dataclasses import replace
+
+    return replace(cfg, directions=replace(cfg.directions, label_margin_deg=0.0))
+
+
 def test_bbox_edges_cross_sector_wide_doorway():
     """house_000436 door|2|3: bbox spans most of a 396-wide frame.
 
     Legacy center±ang_width (bearing≈294.6°, width≈90°) missed the 340°
     boundary by ~0.4° and kept 'to your left'. Edge angles must refuse.
     """
-    cfg = load_generation_config()
+    cfg = _no_margin(load_generation_config())  # legacy near-miss is measured without the label margin
     with use_generation_config(cfg):
         bbox = [169.0, 0.0, 395.0, 223.0]
         frame_w = 396.0
@@ -117,7 +123,7 @@ def test_bbox_edges_cross_sector_wide_doorway():
 
 def test_doorway_visible_bbox_refuses_ego_label():
     """Visible doorway with wide 2D bbox must not get a direction answer."""
-    cfg = load_generation_config()
+    cfg = _no_margin(load_generation_config())  # legacy near-miss is measured without the label margin
     episode = {
         'camera': {'width': 396, 'height': 224, 'fov_vertical_deg': 59},
         'episode_meta': {

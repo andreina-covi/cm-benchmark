@@ -67,14 +67,16 @@ CONSTRUCT_TEMPLATES = {
         # k is stored on the item for analysis; the probe is destination tracking, not delay.
         'recall_direction': [
             (
-                'While out of view, the {object_type}{disambiguator} was moved onto {new_location}. '
-                'Where is it relative to you now?'
+                'While the {object_type}{disambiguator} was out of your view, someone moved it onto '
+                '{new_location}. Nothing else was moved. '
+                'Where is the {object_type} relative to you now?'
             ),
         ],
         'swap': [
             (
-                'The {object_type}{disambiguator} was moved to where the {other_object_type} used to be. '
-                'Where is the {object_type} relative to you now?'
+                'While they were out of your view, the {object_type}{disambiguator} and the '
+                '{other_object_type} swapped places, so the {object_type} was moved to where the '
+                '{other_object_type} used to be. Where is the {object_type} relative to you now?'
             ),
         ],
     },
@@ -341,6 +343,7 @@ def angular_span_crosses_sector(
         return False
     if half <= 0.0 or math.isnan(half) or math.isinf(half):
         return False
+    half += get_generation_config().directions.label_margin_deg
     bearing = float(bearing_deg) % 360.0
     for boundary in _sector_boundaries_deg(ahead_half_width):
         delta = abs((boundary - bearing + 180.0) % 360.0 - 180.0)
@@ -354,19 +357,22 @@ def bearings_cross_sector(
     *,
     ahead_half_width: Optional[float] = None,
 ) -> bool:
-    """True when the bearings do not all fall in one ego sector."""
-    if not get_generation_config().directions.refuse_straddling_objects:
+    """True when the bearings, each widened by ``label_margin_deg``, do not all
+    fall in one ego sector. One bearing alone is refused near a sector edge."""
+    dcfg = get_generation_config().directions
+    if not dcfg.refuse_straddling_objects:
         return False
     if ahead_half_width is None:
-        ahead_half_width = get_generation_config().directions.ahead_half_width_full_deg
+        ahead_half_width = dcfg.ahead_half_width_full_deg
+    margin = float(dcfg.label_margin_deg)
     labels: set[str] = set()
     for bearing in bearings_deg:
         try:
-            labels.add(
-                angle_to_ego_label(float(bearing), ahead_half_width=ahead_half_width)
-            )
+            b = float(bearing)
         except (TypeError, ValueError):
             continue
+        for probe in (b - margin, b, b + margin):
+            labels.add(angle_to_ego_label(probe, ahead_half_width=ahead_half_width))
         if len(labels) > 1:
             return True
     return False

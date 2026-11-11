@@ -105,7 +105,7 @@ def aabb_corners_cross_sector(
 ) -> bool:
     """True when AABB corners do not all share one ego sector (hidden objects)."""
     bearings = aabb_corner_bearings(agent_pos, agent_rot, aabb_min, aabb_max)
-    if len(bearings) < 2:
+    if not bearings:
         return False
     return bearings_cross_sector(bearings, ahead_half_width=ahead_half_width)
 
@@ -155,9 +155,11 @@ def direction_extent_crosses_sector(
         )
 
     if bearing_deg is not None:
-        return angular_span_crosses_sector(
-            bearing_deg, ang_width_deg, ahead_half_width=ahead_half_width
-        )
+        if ang_width_deg is not None:
+            return angular_span_crosses_sector(
+                bearing_deg, ang_width_deg, ahead_half_width=ahead_half_width
+            )
+        return bearings_cross_sector((bearing_deg,), ahead_half_width=ahead_half_width)
     return False
 
 

@@ -59,6 +59,16 @@ _VERBOSE_SCENE_DETAIL_CONSTRUCTS = frozenset(
 )
 
 
+def _definite(place: str) -> str:
+    """'Dresser' / 'on/in the Dresser' -> 'the Dresser'; 'the floor near …' unchanged."""
+    text = str(place).strip()
+    if text.startswith('on/in '):
+        text = text[len('on/in '):]
+    if text.startswith(('the ', 'a ', 'an ')):
+        return text
+    return f'the {text}'
+
+
 def _shuffle_options(
     correct: str,
     pool: list[str],
@@ -198,7 +208,7 @@ def _core_question(fact: PlannedFact) -> str:
         k = max(1, int(fact.query_step) - int(fact.encoding_step))
     k = max(1, int(k or 1))
     object_category = extra.get('object_category') or object_type
-    new_location = extra.get('new_location') or extra.get('to_receptacle') or 'a surface'
+    new_location = _definite(extra.get('new_location') or extra.get('to_receptacle') or 'a surface')
     other_object_type = extra.get('other_object_type') or 'another object'
     condition = extra.get('condition') or 'a passage is closed'
     relation = extra.get('relation') or 'left'

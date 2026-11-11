@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -84,11 +85,13 @@ class DirectionsConfig:
     pt_back_deg: float
     pt_boundary_margin_deg: float
     refuse_straddling_objects: bool
+    label_margin_deg: float
 
 
 @dataclass(frozen=True)
 class OptionsConfig:
     n_options: int
+    n_options_visible: int
     shuffle_seed: int
     max_label_share: float
 
@@ -115,8 +118,18 @@ class DisambiguationConfig:
         return self.settings[self.proximity_setting]
 
 
+NO_CAP = sys.maxsize
+
+
+def _cap(value: Any) -> int:
+    """A budget count; ``None`` (YAML ``null``) means unlimited."""
+    return NO_CAP if value is None else int(value)
+
+
 @dataclass(frozen=True)
 class BudgetConfig:
+    """Item caps. ``null`` in YAML means no cap (stored as ``NO_CAP``)."""
+
     max_per_construct: int
     max_per_scene: int
     candidate_pool: int
@@ -388,9 +401,11 @@ def generation_config_from_mapping(
             pt_back_deg=float(raw['directions']['pt_back_deg']),
             pt_boundary_margin_deg=float(raw['directions']['pt_boundary_margin_deg']),
             refuse_straddling_objects=bool(raw['directions']['refuse_straddling_objects']),
+            label_margin_deg=float(raw['directions']['label_margin_deg']),
         ),
         options=OptionsConfig(
             n_options=int(raw['options']['n_options']),
+            n_options_visible=int(raw['options']['n_options_visible']),
             shuffle_seed=int(raw['options']['shuffle_seed']),
             max_label_share=float(raw['options']['max_label_share']),
         ),
@@ -403,9 +418,9 @@ def generation_config_from_mapping(
             settings={k: _proximity(v) for k, v in (dis.get('settings') or {}).items()},
         ),
         budget=BudgetConfig(
-            max_per_construct=int(raw['budget']['max_per_construct']),
-            max_per_scene=int(raw['budget']['max_per_scene']),
-            candidate_pool=int(raw['budget']['candidate_pool']),
+            max_per_construct=_cap(raw['budget']['max_per_construct']),
+            max_per_scene=_cap(raw['budget']['max_per_scene']),
+            candidate_pool=_cap(raw['budget']['candidate_pool']),
         ),
         spatial_working_memory=SpatialWorkingMemoryConfig(
             min_delay=int(raw['spatial_working_memory']['min_delay']),

@@ -732,27 +732,34 @@ def _mode_seed(mode: str, label: str) -> str:
     return f'{mode}::{label}'
 
 
-def _ego_pool_with_diagnostics(correct: str, *extra_labels: str) -> tuple[list[str], list[str]]:
-    """Build a 4-way ego direction pool from real labels + opposite/orthogonal."""
+def _ego_pool_with_diagnostics(
+    correct: str, *extra_labels: str, visible_only: bool = False
+) -> tuple[list[str], list[str]]:
+    """Build an ego direction pool from real labels + opposite/orthogonal.
+
+    ``visible_only``: the object is in the shown frame, so "behind you" is
+    never offered and the pool has ``options.n_options_visible`` labels.
+    """
+    allowed = [lab for lab in EGO_DIRECTION_OPTIONS if not (visible_only and lab == 'behind you')]
     pool: list[str] = []
     seeds: list[str] = []
     for lab in (correct, *extra_labels):
-        if lab and lab not in pool:
+        if lab and lab in allowed and lab not in pool:
             pool.append(lab)
-    if correct in OPPOSITE:
+    if correct in OPPOSITE and OPPOSITE[correct] in allowed:
         opp = OPPOSITE[correct]
         if opp not in pool:
             pool.append(opp)
         seeds.append('opposite_direction')
         seeds.append(_mode_seed('opposite_direction', opp))
-    if correct in ORTHOGONAL:
+    if correct in ORTHOGONAL and ORTHOGONAL[correct] in allowed:
         orth = ORTHOGONAL[correct]
         if orth not in pool:
             pool.append(orth)
         seeds.append('orthogonal_direction')
         seeds.append(_mode_seed('orthogonal_direction', orth))
-    n = _n_options()
-    for filler in EGO_DIRECTION_OPTIONS:
+    n = _cfg().options.n_options_visible if visible_only else _n_options()
+    for filler in allowed:
         if len(pool) >= n:
             break
         if filler not in pool:
@@ -1040,10 +1047,12 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
             )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
+            if label == 'behind you':
+                continue  # in the shown frame, so never behind (e.g. standing in a doorway)
             disambiguator = _referring_disambiguator(episode, step_idx, obj_id)
             if disambiguator is None:
                 continue
-            pool, seeds = _ego_pool_with_diagnostics(label)
+            pool, seeds = _ego_pool_with_diagnostics(label, visible_only=True)
             out.append(
                 PlannedFact(
                     construct='egocentric_encoding',
@@ -1172,6 +1181,8 @@ def plan_spatial_working_memory(
             )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
+            if label == 'behind you':
+                continue  # in the shown frame, so never behind (e.g. standing in a doorway)
 
             # Diagnostic: current-view answer if something else is at that bearing now
             current_view_lab = None
@@ -1190,7 +1201,7 @@ def plan_spatial_working_memory(
                     break
 
             pool, seeds = _ego_pool_with_diagnostics(
-                label, current_view_lab or ''
+                label, current_view_lab or '', visible_only=True
             )
             if current_view_lab:
                 seeds.append(_mode_seed('current_view_answer', current_view_lab))

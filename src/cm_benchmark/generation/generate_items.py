@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import random
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional, Union
 
-from cm_benchmark.generation.config import load_generation_config
+from cm_benchmark.generation.config import NO_CAP, load_generation_config
 from cm_benchmark.generation.episode_io import (
     items_output_file,
     list_nav_episode_jsons,
@@ -139,7 +140,7 @@ def balance_scene_items(
     """
     scenes = [(name, _dedupe_items(items)) for name, items in scenes]
     n_scenes = max(1, len(scenes))
-    target = max(1, max_per_construct * n_scenes)
+    target = max(1, min(max_per_construct * n_scenes, NO_CAP))
     by_id = {
         item['item_id']: item
         for _name, items in scenes
@@ -237,9 +238,26 @@ def _report(scene_name: str, items: list[dict], path: Path) -> None:
     )
 
 
-def _report_straddle_drops() -> None:
+def _scene_job(job) -> tuple[str, list[dict], dict[str, int]]:
+    """One scene in a worker process: ``(scene, items, straddle drops)``."""
+    args, source, constructs, styles = job
+    reset_straddle_drop_counts()
+    scene_name = scene_id_from_nav_json(source)
+    episode = load_episode(episode_json=source)
+    items = _generate_one(
+        args,
+        episode,
+        constructs,
+        styles,
+        marked_root=args.output_path / scene_name / 'marked',
+    )
+    return scene_name, items, straddle_drop_counts()
+
+
+def _report_straddle_drops(drops: Optional[dict[str, int]] = None) -> None:
     """Print answer labels refused because the object straddled a direction sector."""
-    drops = straddle_drop_counts()
+    if drops is None:
+        drops = straddle_drop_counts()
     if not drops:
         print('Straddle drops: none')
         return
@@ -338,6 +356,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         help='Question styles: concise,verbose',
     )
     parser.add_argument(
+        '--workers',
+        type=int,
+        default=1,
+        help='Scenes generated in parallel processes (output is the same as with 1)',
+    )
+    parser.add_argument(
         '--paraphrase',
         action='store_true',
         help='Optional LLM paraphrase of question text only (no-op without provider)',
@@ -414,28 +438,36 @@ def main(argv: Optional[list[str]] = None) -> None:
     sources = list_nav_episode_jsons(args.episode_json)
     failures = []
     gathered: list[tuple[str, list[dict]]] = []
-    for source in sources:
-        scene_name = scene_id_from_nav_json(source)
-        try:
-            episode = load_episode(episode_json=source)
-            items = _generate_one(
-                args,
-                episode,
-                constructs,
-                styles,
-                marked_root=args.output_path / scene_name / 'marked',
-            )
-            gathered.append((scene_name, items))
-        except Exception as exc:
-            print(f'Failed {source}: {exc}')
-            failures.append((source, exc))
+    drops: Counter = Counter()
+    jobs = [(args, source, constructs, styles) for source in sources]
+    if args.workers > 1:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futures = [(job[1], pool.submit(_scene_job, job)) for job in jobs]
+            results = []
+            for source, future in futures:
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    print(f'Failed {source}: {exc}')
+                    failures.append((source, exc))
+    else:
+        results = []
+        for job in jobs:
+            try:
+                results.append(_scene_job(job))
+            except Exception as exc:
+                print(f'Failed {job[1]}: {exc}')
+                failures.append((job[1], exc))
+    for scene_name, items, scene_drops in results:
+        gathered.append((scene_name, items))
+        drops.update(scene_drops)
     built = []
     for scene_name, items in _balance_generated(gathered, cfg):
         path = write_items(items, items_output_file(args.output_path, scene_name))
         _report(scene_name, items, path)
         built.append(scene_name)
     print(f'Built items for {len(built)} scene(s): {", ".join(built) or "(none)"}')
-    _report_straddle_drops()
+    _report_straddle_drops(dict(drops))
     if failures:
         raise SystemExit(
             f'{len(failures)} scene(s) failed under {args.episode_json}'

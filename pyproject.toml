@@ -1,3 +1,6 @@
 [tool.pytest.ini_options]
 pythonpath = ["src"]
-markers = ["frame_fraction_floor: keep visibility.named_min_frame_fraction on (conftest turns it off)"]
+markers = [
+    "frame_fraction_floor: keep visibility.named_min_frame_fraction on (conftest turns it off)",
+    "label_margin: keep directions.label_margin_deg on (conftest turns it off)",
+]

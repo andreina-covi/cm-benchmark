@@ -26,9 +26,6 @@ def _disable_named_frame_fraction(request):
     The ``named_min_frame_fraction`` floor is off here; ``test_named_visibility``
     turns it on explicitly.
     """
-    if request.node.get_closest_marker('frame_fraction_floor'):
-        yield
-        return
     from dataclasses import replace
 
     from cm_benchmark.generation.config import (
@@ -37,6 +34,10 @@ def _disable_named_frame_fraction(request):
     )
 
     cfg = get_generation_config()
-    off = replace(cfg, visibility=replace(cfg.visibility, named_min_frame_fraction=0.0))
-    with use_generation_config(off):
+    if not request.node.get_closest_marker('frame_fraction_floor'):
+        cfg = replace(cfg, visibility=replace(cfg.visibility, named_min_frame_fraction=0.0))
+    if not request.node.get_closest_marker('label_margin'):
+        # Fixtures put objects a few degrees from sector edges; test_label_margin keeps it on.
+        cfg = replace(cfg, directions=replace(cfg.directions, label_margin_deg=0.0))
+    with use_generation_config(cfg):
         yield

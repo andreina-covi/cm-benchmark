@@ -495,7 +495,7 @@ def test_invisible_displacement_swap_mode(folder_episode):
     for item in swap_items:
         assert item['frame_of_reference'] == 'egocentric'
         assert item.get('displacement_event', {}).get('moved_via') == 'swap'
-        assert 'moved onto' not in item['question']
+        assert 'moved it onto' not in item['question']
         assert any(
             pid in (item.get('displacement_event') or {}).get('swap_partner_id', '')
             for pid in ('Cup|1', 'Plate|1')
@@ -531,7 +531,7 @@ def test_invisible_displacement_dual_modes(folder_episode):
         assert any('you' in lab for lab in labels)
         # Destination cue required: landmark name or partner object
         q = item['question']
-        assert 'moved onto' in q or 'moved to' in q or 'used to be' in q or 'previous location' in q
+        assert 'moved it onto' in q or 'moved to' in q or 'used to be' in q or 'previous location' in q
         assert not (
             q.strip().endswith('now?')
             and 'moved' not in q
