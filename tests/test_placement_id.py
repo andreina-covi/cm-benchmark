@@ -659,3 +659,22 @@ def test_dest_name_splits_obj_type():
     assert ok, [f.reason for f in facts]
     assert ok[0].extra.get('destination_landmark_id') == 'AlarmClock|1'
     assert 'Alarm Clock' in (ok[0].extra.get('new_location') or '')
+
+
+def test_earlier_sighting_used_when_object_is_seen_again_at_the_end():
+    """A re-sighting with no later step must not discard an earlier clear encode."""
+    from cm_benchmark.generation.planner import _id_windows_for_object
+
+    episode = _placement_episode(dest=_BEHIND)
+    last = episode['steps'][2]
+    last['visible_objects'] = dict(last['visible_objects'])
+    last['visible_objects']['Cup|1'] = _cup()
+    last['edges_egocentric'] = list(last['edges_egocentric']) + [_ego('Cup|1')]
+    seen = episode['object_state_track']['Cup|1']['entries'][2]
+    seen['visible'] = True
+    seen['in_camera_fov'] = True
+    windows = _id_windows_for_object(
+        episode, 'Cup|1', dest_pos=_BEHIND, from_pos=[0.5, 0.9, 0.5], dest_anchor_id='CounterTop|1'
+    )
+    # Step 2 is the latest sighting but has no later step; step 0 still works.
+    assert windows == [(0, 1, 1)]

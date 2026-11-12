@@ -2499,14 +2499,21 @@ def _object_mask_pixels(episode: dict, obj_id: Optional[str], step_idx: int) -> 
     return _mask_pixel_count((step.get('visible_objects') or {}).get(obj_id))
 
 
+def _id_encode_steps(episode: dict, obj_id: str) -> list[int]:
+    """Every distinguishable raw-FOV sighting of ``obj_id``, latest first."""
+    steps = [
+        int(step.get('step'))
+        for step in episode.get('steps') or []
+        if is_fov_step(episode, step.get('step'))
+        and _id_encode_sighting(episode, int(step.get('step')), obj_id)
+    ]
+    return sorted(steps, reverse=True)
+
+
 def _id_encode_step(episode: dict, obj_id: str) -> Optional[int]:
     """Latest distinguishable raw-FOV sighting of ``obj_id``."""
-    enc = None
-    for step in episode.get('steps') or []:
-        si = int(step.get('step'))
-        if is_fov_step(episode, si) and _id_encode_sighting(episode, si, obj_id):
-            enc = si
-    return enc
+    steps = _id_encode_steps(episode, obj_id)
+    return steps[0] if steps else None
 
 
 def _id_earliest_query_window(
@@ -2522,15 +2529,41 @@ def _id_earliest_query_window(
     Query is the first later FOV step where the destination anchor has no
     mask pixels, while the displaced object, its old position, and the
     destination point stay out of view from the hide through that step.
+    Every distinguishable sighting is tried as the encode, latest first, so a
+    later re-sighting of the object does not discard an earlier clear one
+    (e.g. a scripted glance). ``max_delay`` bounds each encode→query span.
     """
     fov = [
         int(step['step'])
         for step in episode.get('steps') or []
         if is_fov_step(episode, step.get('step'))
     ]
-    enc = _id_encode_step(episode, obj_id)
-    if enc is None:
-        return None
+    for enc in _id_encode_steps(episode, obj_id):
+        window = _id_query_window_from(
+            episode,
+            obj_id,
+            enc,
+            fov,
+            dest_pos=dest_pos,
+            from_pos=from_pos,
+            dest_anchor_id=dest_anchor_id,
+        )
+        if window is not None:
+            return window
+    return None
+
+
+def _id_query_window_from(
+    episode: dict,
+    obj_id: str,
+    enc: int,
+    fov: list[int],
+    *,
+    dest_pos=None,
+    from_pos=None,
+    dest_anchor_id: Optional[str] = None,
+) -> Optional[tuple[int, int, int]]:
+    """Earliest valid ``(encode, move, query)`` for one encode sighting, or None."""
     max_delay = _cfg().invisible_displacement.max_delay
     later = [
         si
@@ -2872,11 +2905,7 @@ def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedF
         enc = _id_encode_step(episode, obj_id)
         if enc is None:
             continue
-        named = _id_displaced_object_name(episode, enc, obj_id)
-        if named is None:
-            continue
-        object_type, disambiguator = named
-        from_rec = _object_current_receptacle(episode, obj_id, enc)
+        # The object does not move before the hide, so any sighting gives its pose
         from_pos = _id_from_position(episode, obj_id, enc)
         for cand in rows:
             dest = cand['position']
@@ -2890,6 +2919,12 @@ def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedF
             if window is None:
                 continue
             enc, move, query = window
+            # Name and receptacle at the encode this window uses
+            named = _id_displaced_object_name(episode, enc, obj_id)
+            if named is None:
+                continue
+            object_type, disambiguator = named
+            from_rec = _object_current_receptacle(episode, obj_id, enc)
             radius = cand.get('radius_m')
             if radius is None:
                 radius = _cfg().invisible_displacement.floor_anchor_radius_m
