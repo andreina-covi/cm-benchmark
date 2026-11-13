@@ -317,12 +317,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         help='Override budget.max_per_construct from --config (default in generation.yaml: 3)',
     )
     parser.add_argument(
-        '--n_frames',
+        '--frame_budgets',
         type=int,
+        nargs='+',
         default=None,
         help=(
-            'Override class4.n_frames from --config. Omit to keep the yaml value. '
-            'Use this when a model or machine needs a shorter or longer frame list.'
+            'Override frames.budgets from --config (e.g. 16 24 32). Omit to keep '
+            'the yaml value. Each item gets one frame list per budget it fits.'
         ),
     )
     parser.add_argument(
@@ -378,8 +379,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         ),
     )
     args = parser.parse_args(argv)
-    if args.n_frames is not None and args.n_frames < 1:
-        parser.error('--n_frames must be at least 1')
+    if args.frame_budgets is not None and min(args.frame_budgets) < 1:
+        parser.error('--frame_budgets must be positive')
     if args.episode_json is None and not (args.db_path and args.episode_id):
         parser.error('Provide --episode_json (nav_data root) or both --db_path and --episode_id')
     try:
@@ -393,7 +394,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         su_min_delay=args.su_min_delay,
         su_max_delay=args.su_max_delay,
         visibility_model_path=args.visibility_model_path,
-        n_frames=args.n_frames,
+        frame_budgets=args.frame_budgets,
     )
     args._generation_cfg = cfg
     args._plan_cap = cfg.budget.candidate_pool

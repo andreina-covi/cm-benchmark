@@ -235,7 +235,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 5. for every pair in walk order: `_class4_pair_reject_reason` (at least 2 m geodesic, ≤ 30 m, ≥ scene median, detour ratio), names for both endpoints, reject confusable endpoint pairs, `shortest_path` on walked edges, hop count, real move;
 6. recorded `agent_actions` between source and goal sightings, replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
 7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
-8. frames (`_sample_class4_frames`): within `n_frames`, lock source/goal sightings and the FOV frames just before/after every rotation between them; fill the remaining budget evenly on straight segments; enforce `max_frame_gap_steps` between consecutive shown frames (drop the item if unmet). Labels are `frame i of n, step s`;
+8. frames (`_class4_frame_variants`, once per budget in `frames.budgets`): lock source/goal sightings and the FOV frames just before/after every rotation between them; fill the remaining budget evenly on straight segments; enforce `frames.max_gap_steps` between consecutive shown frames (that budget is not offered if unmet; the item is dropped if no budget fits). Labels are `frame i of n, step s`;
 9. scoring is continuous replay: success, SPL, nDTW (`d_th = goal_success_m`), headline SDTW = success × nDTW; edge-membership validity is diagnostic only;
 10. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
 
@@ -246,7 +246,7 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 3. per pair: no path on walked edges (`path_exists`), a path on viewed edges, `_class4_pair_reject_reason` with the survey ratio cap, names for both endpoints;
 4. reference = one `continuous_bfs_to_goals` flood per source pose (quantised visited cells, action-count order) on viewed nodes, only after the geodesic gate;
 5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame; the reference must contain at least `class4.survey.min_turns` real turns;
-6. frames (`_sample_class4_frames`): within `n_frames`, lock source/goal sightings, frames covering the unwalked planned-path edges, and rotation neighbors; fill straight segments; enforce `max_frame_gap_steps` (drop if required covers/gap unmet). Labels are `frame i of n, step s`;
+6. frames (`_class4_frame_variants`, once per budget): lock source/goal sightings, frames covering the unwalked planned-path edges, and rotation neighbors; fill straight segments; enforce `frames.max_gap_steps` (a budget is not offered if required covers/gap unmet). Labels are `frame i of n, step s`;
 7. scoring: success (headline) and SPL; no answer-level validity gate (validity remains a diagnostic);
 8. ranked hardest-first like route.
 

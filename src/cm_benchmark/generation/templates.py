@@ -724,7 +724,9 @@ def _option_shuffle_key(base_id: str, fact: PlannedFact) -> str:
     return '|'.join('' if p is None else str(p) for p in parts)
 
 
-def _stable_item_id(base_id: str, fact: PlannedFact, style: str) -> str:
+def _stable_item_id(
+    base_id: str, fact: PlannedFact, style: str, *, with_variant: bool = True
+) -> str:
     """Id without the fact index, so proximity settings share the same key."""
     extra = fact.extra or {}
     parts: list = [base_id, fact.construct]
@@ -751,6 +753,8 @@ def _stable_item_id(base_id: str, fact: PlannedFact, style: str) -> str:
         val = extra.get(key)
         if val:
             parts.append(val)
+    if extra.get('frame_variant') and with_variant:
+        parts.append(extra['frame_variant'])
     parts.append(style)
     return '_'.join(str(p) for p in parts).replace('|', '_').replace(' ', '_')
 
@@ -860,6 +864,8 @@ def fact_to_items(
             disambiguation=extra.get('disambiguation') or 'none',
             disambiguation_landmark=extra.get('disambiguation_landmark'),
             marks=dict(extra.get('marks') or {}),
+            frame_budgets=list(extra['frame_budgets']) if extra.get('frame_budgets') else None,
+            frame_group_id=_stable_item_id(base_id, fact, style, with_variant=False),
         )
         _attach_schema_hooks(episode, fact, item)
         items.append(item)

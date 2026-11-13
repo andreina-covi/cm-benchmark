@@ -41,7 +41,7 @@ python -m cm_benchmark.generator.ai2thor_nav_generator \
 python -m cm_benchmark.generation.generate_items \
   --episode_json src/cm_benchmark/storage/ai2thor/nav_data \
   --output_path src/cm_benchmark/storage/ai2thor/items --max_per_construct 2
-  # optional: --constructs, --config, --swm_min_delay/--swm_max_delay, --su_*_delay, --n_frames
+  # optional: --constructs, --config, --swm_min_delay/--swm_max_delay, --su_*_delay, --frame_budgets
 
 python scripts/report_items.py src/cm_benchmark/storage/ai2thor/items   # counts by scene/construct
 

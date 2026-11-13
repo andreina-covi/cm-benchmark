@@ -117,18 +117,19 @@ def test_ablation_overlay_merges_onto_default():
     assert marks.disambiguation.proximity_setting == 'current'
 
 
-def test_n_frames_override_leaves_the_yaml_default():
+def test_frame_budgets_override_leaves_the_yaml_default():
     cfg = load_generation_config()
-    assert cfg.with_overrides().class4.n_frames == cfg.class4.n_frames
-    changed = cfg.with_overrides(n_frames=cfg.class4.n_frames + 1)
-    assert changed.class4.n_frames == cfg.class4.n_frames + 1
+    assert cfg.frames.budgets == (16, 24, 32)
+    assert cfg.with_overrides().frames.budgets == cfg.frames.budgets
+    changed = cfg.with_overrides(frame_budgets=[32, 8, 8])
+    assert changed.frames.budgets == (8, 32)
 
 
-def test_n_frames_flag_rejects_a_non_positive_budget():
+def test_frame_budgets_flag_rejects_a_non_positive_budget():
     from cm_benchmark.generation.generate_items import main
 
     with pytest.raises(SystemExit):
-        main(['--episode_json', 'unused', '--n_frames', '0'])
+        main(['--episode_json', 'unused', '--frame_budgets', '16', '0'])
 
 
 def test_legacy_constant_names_read_the_config():

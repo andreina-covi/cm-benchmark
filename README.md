@@ -169,19 +169,23 @@ gates, the class-4 frame budget, …) are read from
 [`configs/generation.yaml`](configs/generation.yaml).
 Pass `--config path/to/generation.yaml` to use another file (an ablation is
 a copy of that file with different values). These CLI flags override the
-loaded file when present: `--max_per_construct`, `--n_frames`,
+loaded file when present: `--max_per_construct`, `--frame_budgets`,
 `--swm_min_delay`, `--swm_max_delay`, `--su_min_delay`, `--su_max_delay`,
 `--visibility_model_path`. The same `--config` flag is on
 `ai2thor_nav_generator`. Each item stores `generation_config` (the file's
 `name`) and `generation_config_hash` (SHA-256 of the values that produced it).
 
-`--n_frames` is how many frames a route or survey item shows. Omit it to
-keep `class4.n_frames` (16). Class-4 frames lock source/goal sightings and
-rotation neighbors (survey also locks covers of the unwalked planned path),
-then fill straight segments within the budget and `max_frame_gap_steps`.
-The item is dropped when the required set or gap cannot be met. Pass a
-smaller or larger `--n_frames` when a model or machine needs a different
-budget, then regenerate the items. Human review class-4 load is capped
+`frames.budgets` (default `[16, 24, 32]`; `--frame_budgets 16 24 32` overrides
+it) are the image limits of the VLMs to evaluate. Every multi-frame item gets
+one frame list per budget it fits: a span that fits is shown whole, a longer
+one is sampled keeping the required frames (encode and query, frames around
+each turn; class 4 also source/goal sightings and survey path covers) with at
+most `frames.max_gap_steps` between shown frames. A budget that cannot meet
+that is not offered, and an item that fits no budget is dropped. Each item
+records `frame_budgets`; items with the same `frame_group_id` ask the same
+question with different frame lists. Evaluate a model on the items whose
+`frame_budgets` contain its limit. Change the list for larger or smaller VLMs
+and regenerate. Human review class-4 load is capped
 separately (`review.class4_per_reviewer` / `--class4-per-reviewer`; see
 [`docs/generation.md`](docs/generation.md)).
 

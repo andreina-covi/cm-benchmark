@@ -72,6 +72,10 @@ class CandidateItem:
     disambiguation: str = 'none'  # none | proximity | mark
     disambiguation_landmark: Optional[str] = None
     marks: Optional[dict[str, str]] = None
+    # Image budgets this frame list serves (frames.budgets); evaluation uses the
+    # model's budget. Items in one frame_group_id ask the same question.
+    frame_budgets: Optional[list[int]] = None
+    frame_group_id: Optional[str] = None
     blind_llm_correct: Optional[bool] = None
     caption_llm_correct: Optional[bool] = None
     vision_necessary: Optional[bool] = None

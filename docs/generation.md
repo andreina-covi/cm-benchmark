@@ -6,9 +6,9 @@ Numeric gates live in [`configs/generation.yaml`](../configs/generation.yaml)
 (see [`parameters_report.md`](parameters_report.md)). Algorithms live in
 `src/cm_benchmark/generation/planner.py` and `nav_graph.py`. Pass `--config`
 to `generate_items` or `ai2thor_nav_generator` to point at another file;
-`--swm_min_delay` / `--su_min_delay` / `--max_per_construct` / `--n_frames`
-override that file. `--n_frames` is the class-4 frame budget (route and
-survey). Omit it to keep `class4.n_frames` in the yaml. Each item records `generation_config` and `generation_config_hash`.
+`--swm_min_delay` / `--su_min_delay` / `--max_per_construct` / `--frame_budgets`
+override that file. `--frame_budgets` replaces `frames.budgets` (image limits;
+one frame list per budget for every multi-frame item). Each item records `generation_config` and `generation_config_hash`.
 
 ---
 
@@ -133,7 +133,7 @@ python scripts/plot_review_report.py reports/items_summary.json \
   -o reports/items_plots
 ```
 
-Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--n_frames`. A single scene
+Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--frame_budgets`. A single scene
 database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
@@ -174,12 +174,18 @@ the scene’s own typical landmark-pair length; a detour ratio of at least this
 scene’s typical geo/eucl (capped at 1.1 for route, 1.05 for survey); emit the
 hardest surviving pairs. Route also requires real turns. Constants: `planner.py`.
 
-Class-4 frames: at most `class4.n_frames` (default 16; `--n_frames` overrides
-for one run). Lock source/goal sightings and the FOV frames just before/after
+Frames, all multi-frame constructs: one frame list per budget in
+`frames.budgets` (default 16, 24, 32; `--frame_budgets` overrides for one run).
+A span that fits a budget is shown whole. Otherwise required frames are kept
+(SWM/SU: encode, query and the frames around each turn; ID and PT: every
+frame) and the rest fill the gaps. Each list becomes its own item with
+`frame_budgets` and a shared `frame_group_id`; ids carry `f<budget>` when a
+fact has more than one list. Class-4 frames per budget: lock source/goal sightings and the FOV frames just before/after
 every rotation between them; survey also locks frames covering the unwalked
 planned-path edges. Fill remaining budget evenly on straight segments.
-Consecutive shown frames must be at most `class4.max_frame_gap_steps` apart
-(default 5); drop the item if that cannot be met. Every shown frame is labeled
+Consecutive shown frames must be at most `frames.max_gap_steps` apart
+(default 5); a budget that cannot meet it is not offered, and the item is dropped
+when no budget can. Every shown frame is labeled
 `frame i of n, step s` for models and reviewers. Letter markers on source/goal
 still apply when those frames need them. Evaluation uses the item’s
 `image_paths`: unmarked originals when `disambiguation` is `none` or

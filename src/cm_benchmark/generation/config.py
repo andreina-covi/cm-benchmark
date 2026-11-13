@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional, Sequence
 
 import yaml
 
@@ -221,9 +221,15 @@ class Class4FallbackConfig:
 
 
 @dataclass(frozen=True)
+class FramesConfig:
+    """Image budgets for multi-frame items (one frame list per budget)."""
+
+    budgets: tuple[int, ...]
+    max_gap_steps: int
+
+
+@dataclass(frozen=True)
 class Class4Config:
-    n_frames: int
-    max_frame_gap_steps: int
     min_pair_geodesic_m: float
     max_pair_geodesic_m: float
     scene_geodesic_percentile: float
@@ -282,6 +288,7 @@ class GenerationConfig:
     landmarks: LandmarksConfig
     perspective_taking: PerspectiveTakingConfig
     templates: TemplatesConfig
+    frames: FramesConfig
     class4: Class4Config
     episode_gt: EpisodeGtConfig
     review: ReviewConfig
@@ -309,7 +316,7 @@ class GenerationConfig:
         su_min_delay: Optional[int] = None,
         su_max_delay: Optional[int] = None,
         visibility_model_path: Optional[str] = None,
-        n_frames: Optional[int] = None,
+        frame_budgets: Optional[Sequence[int]] = None,
     ) -> 'GenerationConfig':
         """Return a new frozen config with CLI overlays applied."""
         cfg = self
@@ -340,9 +347,20 @@ class GenerationConfig:
                 cfg,
                 visibility=replace(cfg.visibility, model_path=str(visibility_model_path)),
             )
-        if n_frames is not None:
-            cfg = replace(cfg, class4=replace(cfg.class4, n_frames=int(n_frames)))
+        if frame_budgets is not None:
+            cfg = replace(
+                cfg,
+                frames=replace(cfg.frames, budgets=_budgets(frame_budgets)),
+            )
         return cfg
+
+
+def _budgets(values: Sequence[int]) -> tuple[int, ...]:
+    """Sorted, unique, positive image budgets."""
+    budgets = tuple(sorted({int(v) for v in values}))
+    if not budgets or budgets[0] < 1:
+        raise ValueError('frames.budgets must list positive integers')
+    return budgets
 
 
 def _floors(raw: Mapping[str, Any], *, extra: bool = False) -> VisibilityFloors:
@@ -463,9 +481,11 @@ def generation_config_from_mapping(
         templates=TemplatesConfig(
             verbose_max_nonvisible_names=int(raw['templates']['verbose_max_nonvisible_names']),
         ),
+        frames=FramesConfig(
+            budgets=_budgets(raw['frames']['budgets']),
+            max_gap_steps=int(raw['frames']['max_gap_steps']),
+        ),
         class4=Class4Config(
-            n_frames=int(c4['n_frames']),
-            max_frame_gap_steps=int(c4['max_frame_gap_steps']),
             min_pair_geodesic_m=float(c4['min_pair_geodesic_m']),
             max_pair_geodesic_m=float(c4['max_pair_geodesic_m']),
             scene_geodesic_percentile=float(c4['scene_geodesic_percentile']),

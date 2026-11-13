@@ -612,6 +612,148 @@ def _class4_role_images(
     return merge_role_images(pairs)
 
 
+def _budget_frame_lists(
+    pool: Sequence[int],
+    required: Sequence[int],
+    *,
+    straight_pool: Optional[Sequence[int]] = None,
+) -> list[tuple[list[int], list[int]]]:
+    """``(shown_steps, budgets)`` for each distinct frame list over ``frames.budgets``.
+
+    A pool that fits a budget is shown whole. A longer pool is sampled with every
+    required step kept and consecutive frames at most ``frames.max_gap_steps``
+    apart. A budget that cannot meet that is not offered. Budgets that give the
+    same frame list share one entry. Ordered by smallest budget.
+    """
+    frames_cfg = _cfg().frames
+    ordered = sorted({int(s) for s in pool})
+    groups: dict[tuple[int, ...], list[int]] = {}
+    for budget in frames_cfg.budgets:
+        if len(ordered) <= budget:
+            shown = ordered
+        else:
+            shown = _sample_class4_frames(
+                ordered,
+                int(budget),
+                required,
+                max_gap=int(frames_cfg.max_gap_steps),
+                straight_pool=straight_pool,
+            )
+        if shown:
+            groups.setdefault(tuple(shown), []).append(int(budget))
+    return [(list(steps), budgets) for steps, budgets in groups.items()]
+
+
+def _class4_frame_variants(
+    episode: dict,
+    pool: Sequence[int],
+    required: Sequence[int],
+    straight: Sequence[int],
+    source: str,
+    goal: str,
+    t_src: int,
+    t_goal: int,
+) -> list[dict]:
+    """One class-4 frame list per image budget, with frame numbers and roles."""
+    variants: list[dict] = []
+    for shown, budgets in _budget_frame_lists(pool, required, straight_pool=straight):
+        frame_nums = _shown_frame_numbers(shown, t_src, t_goal)
+        if frame_nums is None:
+            continue
+        images, roles = _class4_role_images(episode, shown, source, goal, t_src, t_goal)
+        if len(images) != len(shown):
+            continue
+        variants.append(
+            {
+                'budgets': budgets,
+                'shown_frame_steps': shown,
+                'image_paths': images,
+                'image_roles': roles,
+                'source_frame': frame_nums[0],
+                'goal_frame': frame_nums[1],
+                'max_shown_gap_steps': _max_gap_steps(shown),
+            }
+        )
+    return variants
+
+
+# Constructs whose shown frames are each needed (curated sightings): never sampled.
+_ALL_FRAMES_REQUIRED = frozenset({'invisible_displacement', 'perspective_taking'})
+
+
+def _frame_variants_for_fact(episode: dict, fact: PlannedFact) -> list[dict]:
+    """Frame lists per image budget for an ok fact (class 4 brings its own)."""
+    extra = fact.extra or {}
+    if 'frame_variants' in extra:
+        return list(extra['frame_variants'] or [])
+    paths = list(fact.image_paths or [])
+    steps = [int(s) for s in (extra.get('shown_frame_steps') or [])]
+    if len(steps) != len(paths):
+        steps = [si for p in paths if (si := _step_for_image_path(episode, p)) is not None]
+    if not paths or len(steps) != len(paths):
+        # Frames we cannot map to steps are never sampled: offer budgets they fit.
+        budgets = [b for b in _cfg().frames.budgets if len(paths) <= b]
+        return [{'budgets': budgets, 'image_paths': paths}] if budgets else []
+    if fact.construct in _ALL_FRAMES_REQUIRED:
+        required = steps
+        rot_frames: list[int] = []
+    else:
+        rot_frames = _rotation_neighbor_frames(
+            steps, _rotation_action_steps(episode, steps[0], steps[-1])
+        )
+        required = [steps[0], steps[-1], *rot_frames]
+    rot_set = set(rot_frames)
+    straight = [s for s in steps if s not in rot_set]
+    by_step = dict(zip(steps, paths))
+    return [
+        {
+            'budgets': budgets,
+            'shown_frame_steps': shown,
+            'image_paths': [by_step[s] for s in shown],
+        }
+        for shown, budgets in _budget_frame_lists(steps, required, straight_pool=straight)
+    ]
+
+
+def _expand_frame_budgets(episode: dict, facts: list[PlannedFact]) -> list[PlannedFact]:
+    """One fact per distinct frame list over the image budgets.
+
+    Each fact records ``frame_budgets``; when a fact has more than one frame list,
+    ``frame_variant`` (``f<smallest budget>``) keeps item ids distinct. A fact
+    that fits no budget is dropped.
+    """
+    import copy
+
+    out: list[PlannedFact] = []
+    had_ok: dict[str, bool] = {}
+    kept_ok: dict[str, bool] = {}
+    for fact in facts:
+        if fact.status != 'ok':
+            out.append(fact)
+            continue
+        had_ok[fact.construct] = True
+        variants = _frame_variants_for_fact(episode, fact)
+        for variant in variants:
+            new = copy.copy(fact)
+            new.extra = dict(fact.extra or {})
+            new.extra.pop('frame_variants', None)
+            new.image_paths = list(variant['image_paths'])
+            for key in ('shown_frame_steps', 'image_roles', 'source_frame', 'goal_frame', 'max_shown_gap_steps'):
+                if key in variant:
+                    new.extra[key] = variant[key]
+            new.extra['frame_budgets'] = list(variant['budgets'])
+            if len(variants) > 1:
+                new.extra['frame_variant'] = f"f{min(variant['budgets'])}"
+            out.append(new)
+            kept_ok[fact.construct] = True
+    for construct in had_ok:
+        if not kept_ok.get(construct):
+            out.append(
+                PlannedFact(construct=construct, status='unsupported', reason='frames_exceed_budgets')
+            )
+    return out
+
+
 def _shown_frame_numbers(
     shown: Sequence[int], source_step: int, goal_step: int
 ) -> Optional[tuple[int, int]]:
@@ -4089,32 +4231,21 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
 
             margin = int(_cfg().class4.route.context_margin_steps)
             pool = _fov_step_indices(episode, t_src - margin, t_goal + margin)
-            max_gap = int(_cfg().class4.max_frame_gap_steps)
             rot_steps = _rotation_action_steps(episode, t_src, t_goal)
             rot_frames = _rotation_neighbor_frames(pool, rot_steps)
             required = [t_src, t_goal, *rot_frames]
             straight = [s for s in pool if s not in set(rot_frames)]
-            shown = _sample_class4_frames(
-                pool,
-                int(_cfg().class4.n_frames),
-                required,
-                max_gap=max_gap,
-                straight_pool=straight,
+            variants = _class4_frame_variants(
+                episode, pool, required, straight, source, goal, t_src, t_goal
             )
-            if not shown:
-                rejects['frames_exceed_n_or_gap'] += 1
+            if not variants:
+                rejects['frames_exceed_budgets_or_gap'] += 1
                 continue
-            frame_nums = _shown_frame_numbers(shown, t_src, t_goal)
-            if frame_nums is None:
-                rejects['frames_exceed_n_or_gap'] += 1
-                continue
-            source_frame, goal_frame = frame_nums
-            images, image_roles = _class4_role_images(
-                episode, shown, source, goal, t_src, t_goal
-            )
-            if len(images) != len(shown):
-                rejects['frames_exceed_n_or_gap'] += 1
-                continue
+            # The fact carries the largest frame list; _expand_frame_budgets splits it.
+            largest = variants[-1]
+            shown = largest['shown_frame_steps']
+            source_frame, goal_frame = largest['source_frame'], largest['goal_frame']
+            images, image_roles = largest['image_paths'], largest['image_roles']
             geodesic_m = _full_graph_geodesic_m(graph, n0, n1) or 0.0
             fact = (
                 PlannedFact(
@@ -4169,6 +4300,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                         'object_type': goal,
                         'frame_of_reference': 'egocentric',
                         'image_roles': image_roles,
+                        'frame_variants': variants,
                         'template_index': pick_template_index(
                             'route_knowledge', None, src_id, goal_id
                         ),
@@ -4628,33 +4760,21 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
         if covers is None:
             rejects['path_not_in_frames'] += 1
             continue
-        max_gap = int(_cfg().class4.max_frame_gap_steps)
         rot_steps = _rotation_action_steps(episode, min(t0, t1), max(t0, t1))
         rot_frames = _rotation_neighbor_frames(walk, rot_steps)
         required = [t0, t1, *covers, *rot_frames]
         straight = [s for s in walk if s not in set(rot_frames) and s not in set(covers)]
-        shown = _sample_class4_frames(
-            walk,
-            int(_cfg().class4.n_frames),
-            required,
-            max_gap=max_gap,
-            straight_pool=straight,
+        variants = _class4_frame_variants(
+            episode, walk, required, straight, source, goal, t0, t1
         )
-        if not shown:
-            # Covers / rotation neighbors did not fit, or max gap unmet.
-            rejects['frames_exceed_n_or_gap'] += 1
+        if not variants:
+            # Covers / rotation neighbors did not fit any budget, or max gap unmet.
+            rejects['frames_exceed_budgets_or_gap'] += 1
             continue
-        frame_nums = _shown_frame_numbers(shown, t0, t1)
-        if frame_nums is None:
-            rejects['frames_exceed_n_or_gap'] += 1
-            continue
-        source_frame, goal_frame = frame_nums
-        images, image_roles = _class4_role_images(
-            episode, shown, source, goal, t0, t1
-        )
-        if len(images) != len(shown):
-            rejects['frames_exceed_n_or_gap'] += 1
-            continue
+        largest = variants[-1]
+        shown = largest['shown_frame_steps']
+        source_frame, goal_frame = largest['source_frame'], largest['goal_frame']
+        images, image_roles = largest['image_paths'], largest['image_roles']
         hops = len(path) - 1
         turn_count = int(ref['turn_count'])
         if turn_count < _cfg().class4.survey.min_turns:
@@ -4713,6 +4833,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                     'object_type': goal,
                     'frame_of_reference': 'allocentric',
                     'image_roles': image_roles,
+                    'frame_variants': variants,
                 },
             )
         )
@@ -4989,7 +5110,7 @@ def plan_episode(
                 facts.extend(
                     fn(episode, max_items=max_per_construct, **delay_kwargs.get(key, {}))
                 )
-        return _apply_whole_item_names(episode, facts)
+        return _apply_whole_item_names(episode, _expand_frame_budgets(episode, facts))
     finally:
         if token is not None:
             reset_generation_config(token)

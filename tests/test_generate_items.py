@@ -1154,7 +1154,7 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
     assert score['sdtw'] == pytest.approx(1.0)
     assert score['efficiency'] == score['route_efficiency']
     assert extra.get('scoring') == 'success_spl_sdtw'
-    assert extra.get('max_shown_gap_steps', 0) <= get_generation_config().class4.max_frame_gap_steps
+    assert extra.get('max_shown_gap_steps', 0) <= get_generation_config().frames.max_gap_steps
     roles = extra.get('image_roles') or []
     assert roles and roles[0].startswith('frame 1 of ')
     assert ', step ' in roles[0]
@@ -1932,7 +1932,7 @@ def test_route_frames_include_sightings_within_budget(u_corridor_episode):
     from cm_benchmark.generation.config import get_generation_config
     from cm_benchmark.generation.planner import plan_route_knowledge
 
-    n_frames = get_generation_config().class4.n_frames
+    n_frames = max(get_generation_config().frames.budgets)
     facts = [
         f for f in plan_route_knowledge(u_corridor_episode, max_items=2) if f.status == 'ok'
     ]
@@ -1950,7 +1950,7 @@ def test_survey_frames_include_sightings_within_budget(two_room_episode):
     from cm_benchmark.generation.config import get_generation_config
     from cm_benchmark.generation.planner import plan_survey_based_route_planning
 
-    n_frames = get_generation_config().class4.n_frames
+    n_frames = max(get_generation_config().frames.budgets)
     facts = [
         f
         for f in plan_survey_based_route_planning(two_room_episode, max_items=2)
@@ -2221,7 +2221,7 @@ def test_class4_reference_answers_score_success_and_report_frames(
         plan_survey_based_route_planning,
     )
 
-    max_gap = get_generation_config().class4.max_frame_gap_steps
+    max_gap = get_generation_config().frames.max_gap_steps
     route_facts = [
         f for f in plan_route_knowledge(u_corridor_episode, max_items=2) if f.status == 'ok'
     ]

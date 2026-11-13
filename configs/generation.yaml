@@ -110,9 +110,16 @@ perspective_taking:
 templates:
   verbose_max_nonvisible_names: 4  # none found (b418bda)
 
+frames:
+  # Image budgets for multi-frame items (VLM image limits differ by model size).
+  # Each item gets one frame list per budget it fits; evaluation uses the model's
+  # budget. Required frames (encode, query, turns, class-4 sightings/path covers)
+  # are always kept; the rest fill the gaps evenly. Change the list to evaluate
+  # larger or smaller VLMs.
+  budgets: [16, 24, 32]  # literature: VSI-Bench / MMSI-Bench evaluate the same question at a per-model frame count
+  max_gap_steps: 5  # none found; max agent steps between consecutive shown frames; a budget that cannot meet it is not offered
+
 class4:
-  n_frames: 16  # none found; budget for shown frames after locking required sightings/turns
-  max_frame_gap_steps: 5  # none found; max agent steps between consecutive shown frames; drop if unmet
   min_pair_geodesic_m: 2.0  # none found; source–goal path at least 2 m (literature band was 1–30 m)
   max_pair_geodesic_m: 30.0  # literature: HM3D-OVON / GOAT-Bench / HSSD-200 (2024)
   scene_geodesic_percentile: 0.5  # none found (7a2ee6a); survey length floor, and the route/survey detour-ratio floors. Route length uses min_pair_geodesic_m only
