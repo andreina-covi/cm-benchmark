@@ -1242,15 +1242,31 @@ def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedF
 
 def _ids_seen_distinguishable(episode: dict, up_to_step: int) -> set[str]:
     """Distinct ids with a distinguishable FOV sighting ≤ ``up_to_step``."""
-    seen: set[str] = set()
-    for step in episode.get('steps') or []:
+    first = _first_distinguishable_steps(episode)
+    return {oid for oid, si in first.items() if si <= int(up_to_step)}
+
+
+def _first_distinguishable_steps(episode: dict) -> dict[str, int]:
+    """Earliest distinguishable FOV sighting step per object id.
+
+    Computed once per episode and cached on ``episode['_first_distinguishable']``
+    (keyed to the steps list, so a changed list is recomputed).
+    """
+    steps = episode.get('steps') or []
+    key = (id(steps), len(steps))
+    cached = episode.get('_first_distinguishable')
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    first: dict[str, int] = {}
+    for step in steps:
         si = int(step['step'])
-        if si > int(up_to_step):
-            continue
         for oid in step.get('visible_objects') or {}:
-            if oid not in seen and _distinguishable_encoding_sighting(episode, si, oid):
-                seen.add(oid)
-    return seen
+            if (oid not in first or si < first[oid]) and _distinguishable_encoding_sighting(
+                episode, si, oid
+            ):
+                first[oid] = si
+    episode['_first_distinguishable'] = (key, first)
+    return first
 
 
 def _count_category_seen(episode: dict, category: str, up_to_step: int) -> int:
@@ -2880,13 +2896,29 @@ def _specs_from_placement(chosen: dict, siblings: list[dict], ev: dict) -> list[
     return specs
 
 
+def _successful_placements(episode: dict) -> list[dict]:
+    """Successful ``placement_candidates`` rows, with floor rows as floor destinations.
+
+    The collector writes a floor trial with ``anchor_kind == 'floor'`` and the
+    nearby landmark as ``anchor_id``: the object lies on the floor beside that
+    landmark, not on it. Such a row gets ``anchor_id`` ``'Floor'`` (the landmark
+    id is kept in ``floor_landmark_id``), so the question reads "the floor near
+    the X" and the landmark is the one nearest to the destination point.
+    """
+    rows: list[dict] = []
+    for row in episode.get('placement_candidates') or []:
+        if not (row.get('success') and row.get('obj_id') and row.get('position') is not None):
+            continue
+        kind = str(row.get('anchor_kind') or '').lower()
+        if kind == 'floor' and not _is_floor_receptacle(row.get('anchor_id')):
+            row = {**row, 'floor_landmark_id': row.get('anchor_id'), 'anchor_id': 'Floor'}
+        rows.append(row)
+    return rows
+
+
 def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
     """Count remaining ``(obj, candidate, window)`` triples after each ID gate."""
-    successful = [
-        row
-        for row in episode.get('placement_candidates') or []
-        if row.get('success') and row.get('obj_id') and row.get('position') is not None
-    ]
+    successful = _successful_placements(episode)
     counts: list[tuple[str, int]] = [('successful_candidates', len(successful))]
     min_disp = _cfg().invisible_displacement.min_displacement_m
     by_obj: dict[str, list[dict]] = {}
@@ -3049,11 +3081,7 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
 
 def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     """Build ID items from successful ``placement_candidates`` + hidden walk windows."""
-    successful = [
-        row
-        for row in episode.get('placement_candidates') or []
-        if row.get('success') and row.get('obj_id') and row.get('position') is not None
-    ]
+    successful = _successful_placements(episode)
     if not successful:
         return [
             PlannedFact(

@@ -678,3 +678,17 @@ def test_earlier_sighting_used_when_object_is_seen_again_at_the_end():
     )
     # Step 2 is the latest sighting but has no later step; step 0 still works.
     assert windows == [(0, 1, 1)]
+
+
+def test_floor_trial_beside_a_landmark_is_worded_as_floor():
+    """``anchor_kind == 'floor'`` with a landmark id: the object is beside it, not on it."""
+    episode = _placement_episode(dest=_BEHIND, radius=8.0)
+    episode['placement_candidates'][0]['anchor_kind'] = 'floor'
+    facts = plan_invisible_displacement(episode, max_items=3)
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok, [f.reason for f in facts]
+    fact = ok[0]
+    assert fact.extra.get('to_receptacle') == 'Floor'
+    assert fact.extra.get('destination_landmark_id') is None
+    assert fact.extra.get('floor_anchor_id') == 'CounterTop|1'
+    assert fact.extra.get('floor_anchor_landmark') == 'Counter Top'

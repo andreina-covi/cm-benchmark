@@ -503,6 +503,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 continue
             rows.append({
                 'obj_id': oid,
+                'obj_kind': (
+                    row.get('obj-kind')
+                    if 'obj-kind' in row.index and pd.notna(row.get('obj-kind'))
+                    else None
+                ),
                 'anchor_id': anchor_id,
                 'anchor_kind': anchor_kind,
                 'parent_receptacle': parent_receptacle,
@@ -814,6 +819,12 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             }
             if 'obj-color' in row.index and pd.notna(row.get('obj-color')):
                 entry['obj-color'] = row.get('obj-color')
+            # THOR properties (collector exports them from 2026-11; absent before)
+            for flag in ('pickupable', 'moveable'):
+                if flag in row.index and pd.notna(row.get(flag)):
+                    entry[flag] = _as_bool(row.get(flag))
+            if 'mass' in row.index and pd.notna(row.get('mass')):
+                entry['mass'] = float(row.get('mass'))
             dict_objects[obj_id] = entry
         return dict_objects
 
@@ -1051,6 +1062,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 rec['aabb_min'] = amin
             if amax is not None:
                 rec['aabb_max'] = amax
+            for key in ('pickupable', 'moveable', 'mass'):
+                if entry.get(key) is not None:
+                    rec[key] = entry[key]
             recs = entry.get('receptacleObjectIds') or []
             if recs:
                 rec['parent_receptacle'] = recs[0]

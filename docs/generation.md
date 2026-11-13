@@ -28,7 +28,9 @@ SPOC collection folder:
 
 `placement_candidates-{scene}*.csv` may also live in a sibling `placement_trials/`
 folder. Objects CSV now includes `obj-synset`, `assetId`, `room-id`, `room-type`,
-and AABB min/max. Navigation has `action_success` and per-object
+and AABB min/max. Collections from 2026-11 on also have the THOR properties
+`pickupable`, `moveable` and `mass` there; they are copied into
+`object_catalog` when present. Navigation has `action_success` and per-object
 `obj-room` / `obj-room-type` (the object's room at that sighting).
 Verbose questions name that object room, not the agent's
 `current-room-type`. `episode_meta.fov_stride` (or
@@ -42,6 +44,19 @@ require `parent_receptacle == anchor_id` (missing parent is dropped); floor
 dests (`anchor-kind==floor` or Floor/Wall/Ceiling/Room `anchor-id`) skip that
 parent check. Failed and rejected rows are not written to episode GT / nav JSON.
 A per-scene kept / dropped count prints on stdout during ingest.
+
+Placement trials cover every pickupable and light `moveable` objects (chairs,
+plants, lamps, bins). Each kept row carries `obj_kind` (`pickupable` or
+`moveable`; null in older CSVs). A row with `anchor-kind` `floor` means the
+object lies on the floor beside the landmark in `anchor-id`, not on it; the
+planner words it as "the floor near the X". Objaverse assets report a mass of
+1.0, so `mass` does not tell how large they are; use the AABB.
+
+During the walk the collector glances at nearby movable objects that are out
+of view (a few 45° turns toward the object, then back). Those frames have
+`scripted-glance` true in `navigation-*.csv`. cm-benchmark does not read that
+column yet: glance frames are ordinary steps, they can be shown frames, and the
+turns are part of `agent_actions`.
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \
@@ -133,8 +148,22 @@ python scripts/plot_review_report.py reports/items_summary.json \
   -o reports/items_plots
 ```
 
-Optional `--constructs`, `--swm_min_delay`, `--su_min_delay`, `--frame_budgets`. A single scene
-database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
+Optional flags:
+
+| Flag | Effect |
+|------|--------|
+| `--constructs a,b` | generate only these constructs |
+| `--config FILE` | partial or full config merged onto `configs/generation.yaml` (e.g. `configs/generation_max.yaml`) |
+| `--max_per_construct N` | overrides `budget.max_per_construct` |
+| `--frame_budgets 16 24 32` | overrides `frames.budgets` |
+| `--swm_min_delay`, `--swm_max_delay` | override the `spatial_working_memory` delays |
+| `--su_min_delay`, `--su_max_delay` | override the `spatial_updating` delays |
+| `--styles concise,verbose` | question styles to write (default both) |
+| `--workers N` | scenes generated in parallel processes; the output is the same as with 1 |
+| `--visibility_model_path FILE` | DecisionTree bundle applied to every scene |
+| `--paraphrase` | optional LLM rewording of the question text only; off by default |
+
+A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
 - Temporal wording is `{k} steps ago` / `now` — not a bundled “time order” cue.

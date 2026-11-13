@@ -857,7 +857,12 @@ def resolve_referring_disambiguator(
 
 def step_by_index(episode: dict, step_idx: int) -> Optional[dict]:
     """The episode step whose ``step`` equals ``step_idx``, or None."""
-    for step in episode.get('steps') or []:
+    steps = episode.get('steps') or []
+    idx = int(step_idx)
+    # Steps are normally stored in order with ``step`` == position: O(1) lookup.
+    if 0 <= idx < len(steps) and int(steps[idx].get('step')) == idx:
+        return steps[idx]
+    for step in steps:
         if int(step.get('step')) == int(step_idx):
             return step
     return None

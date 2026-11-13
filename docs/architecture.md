@@ -33,8 +33,9 @@ episode GT fields and the item records which fields in `answer_source`.
 
 **`episode_paths.py`** finds the files of one episode. A collection folder
 holds `navigation-<scene>.csv` and `objects-<scene>.csv` (required) plus
-optional logs: object state, displacement events and candidates, passage
-state, region trajectory, world layout, nav graph and `episode_meta`. It also
+optional logs: object state, placement candidates, displacement events and
+candidates (older collections), passage state, region trajectory, world
+layout, nav graph and `episode_meta`. It also
 says which object types are structural (Wall, Floor, Ceiling, Room); those
 never become question targets.
 
@@ -53,7 +54,9 @@ detections never enter `visible_objects`, and stores per object: world pose,
 the catalog axis-aligned bounding-box (AABB) centre (`bbox_center`), the 2D
 pixel box, and visibility metrics (box area, shortest side, visible pixels,
 angular width). Displaced objects use the live pose from the object-state log
-instead of the catalog pose. It then attaches the displacement events,
+instead of the catalog pose. The catalog also carries the THOR properties
+`pickupable`, `moveable` and `mass` when the collector exported them, and each
+placement candidate carries `obj_kind` (`pickupable` or `moveable`). It then attaches the displacement events,
 successful `placement_candidates` (failed trials and receptacle rows whose
 `parent_receptacle` is not the `anchor_id` are dropped at CSV read),
 world layout, nav graph and camera size. JSON is written with
@@ -192,14 +195,39 @@ items with off-by-one distractors, encoded at `_first_step_with_category`.
 
 ### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Nothing else was moved. Where is the X now?"
 
-1. `plan_invisible_displacement` iterates `displacement_events` with `hidden_during`;
+`plan_invisible_displacement` uses the episode's `placement_candidates` when it
+has any (`_plan_id_from_placements`), and the older `displacement_events`
+otherwise (`_plan_id_from_events`).
+
+**Placement path.** The collector trial-places each movable object and puts it
+back, so nothing moves during the walk: the move is hypothetical and the item
+asks where the object would be. Movable objects are every pickupable and light
+`moveable` objects such as chairs, plants and lamps (`obj_kind`). During the
+walk the collector also glances at those objects when they are close but out
+of view, which gives the clear sighting the encode needs. Glance frames are
+ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
+
+1. `successful_candidates`: `_successful_placements` keeps the successful rows. A row with `anchor_kind == 'floor'` becomes a floor destination (`anchor_id` `'Floor'`, the landmark kept in `floor_landmark_id`), because the object lies beside that landmark, not on it;
+2. `encode_hidden_query_window`: `_id_encode_step` needs a distinguishable sighting of the object, and `_id_earliest_query_window` needs a later step within `invisible_displacement.max_delay` where the object, its old position and the destination stay out of view. Every distinguishable sighting is tried as the encode, latest first;
+3. `displaced_object_nameable`: `_id_displaced_object_name` names the object at the encode step;
+4. `min_displacement`: the destination is at least `invisible_displacement.min_displacement_m` from the old position;
+5. `dest_not_current_receptacle`: the destination is not the receptacle the object is already on;
+6. `receptacle_parent_eq_anchor`: after a receptacle place, that receptacle is the object's parent;
+7. `dest_outside_frustum`: the destination point is outside the camera view from the move through the query;
+8. `anchor_nameable`: the destination can be named from the shown frames (`_id_shown_frames`, `_anchor_in_frames`). A floor destination is named by the nearest clearly seen landmark within the trial radius ("the floor near the Sofa");
+9. `swap_partner_ok`: `_placement_swap_decision`. When another object already occupies the destination point, the item is a swap if that partner is pickupable and has a clear sighting. If the partner fails, a receptacle or floor placement stays a plain move and any other placement is dropped;
+10. `diagnostic_options`: `_try_ego_direction_fact` needs the answer plus at least `invisible_displacement.min_diagnostic_labels` distinct bearings among the object's other candidates (`_specs_from_placement`).
+
+**Event path (older collections).**
+
+1. `_plan_id_from_events` iterates `displacement_events` with `hidden_during`;
 2. `_last_distinguishable_sighting` with the soft `ID_ENCODE_FOV_*` floors (props are small);
 3. `_id_displaced_object_name` → `_display_name_parts` names the object at that step;
 4. `_candidates_for_event` + `_option_specs_for_event` — the true destination, the original location, a nearby receptacle and a salient decoy (from the collector's teleport trials);
 5. `_pick_best_id_query_step` — among steps where the object stays hidden (`_hidden_query_candidates`), the one whose options give the most distinct bearings;
 6. `_object_hidden_through`, `_has_real_move_between`;
 7. swap events: the partner must also be distinguishable before and hidden after (`_partner_event`, `_object_distinguishable_in_frames`);
-   direct moves: the destination must be named — `_landmark_display_in_frames`, or for floor destinations `_nearest_floor_anchor` + `humanize_receptacle` ("the floor near the Sofa");
+   direct moves: the destination must be named — `_landmark_display_in_frames`, or for floor destinations `_nearest_floor_anchor` + `humanize_receptacle` ("the floor near the Sofa"). A placement row with `anchor_kind == 'floor'` is a floor destination even when its `anchor_id` is the nearby landmark (`_successful_placements`): the object lies beside that landmark, not on it;
 8. `_try_ego_direction_fact` → `_ego_pool_from_specs` (45° wedge at the query pose) + `_pad_id_ego_options`.
    Shown frames run from the earlier of the object encode and the latest
    pre-query sighting where the destination passes the question-visibility
