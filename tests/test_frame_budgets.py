@@ -68,3 +68,28 @@ def test_expand_makes_one_fact_per_frame_list_with_distinct_ids():
 def test_fact_with_no_budget_becomes_unsupported():
     facts = _expand_frame_budgets({}, [_fact(frame_variants=[])])
     assert [(f.status, f.reason) for f in facts] == [('unsupported', 'frames_exceed_budgets')]
+
+
+def test_max_frame_span_is_the_longest_span_a_budget_can_show():
+    from cm_benchmark.generation.planner import max_frame_span_steps
+
+    span = max_frame_span_steps()
+    gap = get_generation_config().frames.max_gap_steps
+    # Reachable when the required frames already sit max_gap apart...
+    assert _budget_frame_lists(range(span + 1), list(range(0, span + 1, gap)))
+    # ...and no span beyond it fits any budget.
+    assert _budget_frame_lists(range(span + 2), [0, span + 1]) == []
+    assert _budget_frame_lists(range(span + 2), list(range(0, span + 1, gap)) + [span + 1]) == []
+
+
+def test_sighting_search_stops_at_max_span(monkeypatch):
+    from cm_benchmark.generation import planner
+
+    episode = {'steps': [{'step': i} for i in range(50)]}
+    monkeypatch.setattr(
+        planner, '_distinguishable_encoding_sighting', lambda ep, si, oid, **kw: si in (5, 30)
+    )
+    assert planner._last_distinguishable_sighting(episode, 'o', 40) == 30
+    assert planner._last_distinguishable_sighting(episode, 'o', 30) == 5
+    assert planner._last_distinguishable_sighting(episode, 'o', 30, max_span=20) is None
+    assert planner._last_distinguishable_sighting(episode, 'o', 30, max_span=25) == 5

@@ -178,7 +178,7 @@ Relation mode (most of the budget):
 
 1. `plan_spatial_working_memory` walks query steps; candidates are `non_visible_objects` that were never displaced;
 2. `_last_distinguishable_sighting` picks the encoding step (latest clear sighting, not the last weak scrape);
-3. `_delay_is_allowed` (`--swm_min_delay` / `--swm_max_delay`);
+3. `_delay_is_allowed` (`--swm_min_delay` / `--swm_max_delay`), with max delay capped at `max_frame_span_steps()` = `(max(frames.budgets) - 1) * frames.max_gap_steps` (a longer span fits no budget). Step 2 searches backwards only that far;
 4. `_has_real_move_between` — the delay must contain a floor-plane move;
 5. `_ego_label_at` at the encoding pose (20° wedge);
 6. a "current view" distractor: the label of another object visible now;

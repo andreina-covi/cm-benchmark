@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -838,6 +839,22 @@ def validate_delay_window(name: str, min_delay: int, max_delay: Optional[int]) -
         raise ValueError(f'{name} max_delay must be greater than or equal to min_delay')
 
 
+def max_frame_span_steps() -> int:
+    """Longest encode-to-query span (steps) any image budget can show.
+
+    ``n`` frames at most ``frames.max_gap_steps`` apart cover at most
+    ``(n - 1) * max_gap_steps`` steps, so a longer span gets no frame list.
+    """
+    frames_cfg = _cfg().frames
+    return (max(frames_cfg.budgets) - 1) * int(frames_cfg.max_gap_steps)
+
+
+def _span_limited_delay(max_delay: Optional[int]) -> int:
+    """``max_delay`` capped at :func:`max_frame_span_steps` (null means the cap)."""
+    span = max_frame_span_steps()
+    return span if max_delay is None else min(int(max_delay), span)
+
+
 def _delay_is_allowed(k: int, min_delay: int, max_delay: Optional[int]) -> bool:
     """True if a delay of ``k`` steps lies in ``[min_delay, max_delay]``."""
     return k >= min_delay and (max_delay is None or k <= max_delay)
@@ -1269,6 +1286,7 @@ def plan_spatial_working_memory(
     edge), not ``last_seen_step`` alone (which may be a weak FOV scrape).
     """
     validate_delay_window('SWM', min_delay, max_delay)
+    max_delay = _span_limited_delay(max_delay)
 
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
@@ -1296,7 +1314,9 @@ def plan_spatial_working_memory(
             if obj_id in displaced:
                 continue
             # Encode at last distinguishable sighting, not last FOV scrape.
-            enc_idx = _last_distinguishable_sighting(episode, obj_id, step_idx)
+            enc_idx = _last_distinguishable_sighting(
+                episode, obj_id, step_idx, max_span=max_delay
+            )
             if enc_idx is None or step_idx <= enc_idx:
                 continue
             k = step_idx - enc_idx
@@ -1832,17 +1852,23 @@ def _last_distinguishable_sighting(
     min_bbox_area: Optional[float] = None,
     min_side: Optional[float] = None,
     min_visible_pixels: Optional[float] = None,
+    max_span: Optional[int] = None,
 ) -> Optional[int]:
     """Latest step < before_step where the object is FOV-distinguishable.
 
     Uses ``_distinguishable_encoding_sighting`` (size metrics + ego edge), not
     merely membership in ``visible_objects`` / ``last_seen_step`` (which can be
     a weak scrape of a large mesh). Pass softer thresholds for ID props.
+    Searches backwards and stops ``max_span`` steps before ``before_step``
+    (None searches the whole walk). Steps are ordered by ``step``.
     """
-    best = None
-    for step in episode.get('steps') or []:
-        si = int(step['step'])
-        if si >= int(before_step):
+    steps = episode.get('steps') or []
+    before = int(before_step)
+    floor = None if max_span is None else before - int(max_span)
+    end = bisect.bisect_left(steps, before, key=lambda st: int(st['step']))
+    for i in range(end - 1, -1, -1):
+        si = int(steps[i]['step'])
+        if floor is not None and si < floor:
             break
         if _distinguishable_encoding_sighting(
             episode,
@@ -1852,8 +1878,8 @@ def _last_distinguishable_sighting(
             min_side=min_side,
             min_visible_pixels=min_visible_pixels,
         ):
-            best = si
-    return best
+            return si
+    return None
 
 
 def _candidates_for_event(episode: dict, event_id, obj_id: str) -> list[dict]:
@@ -3273,6 +3299,7 @@ def plan_spatial_updating(
     (object, encode) pairs with identical answers across query steps are dropped.
     """
     validate_delay_window('spatial_updating', min_delay, max_delay)
+    max_delay = _span_limited_delay(max_delay)
 
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
@@ -3289,7 +3316,9 @@ def plan_spatial_updating(
             if obj_id in displaced:
                 continue
             # Encode at last distinguishable sighting, not last FOV scrape.
-            enc_idx = _last_distinguishable_sighting(episode, obj_id, step_idx)
+            enc_idx = _last_distinguishable_sighting(
+                episode, obj_id, step_idx, max_span=max_delay
+            )
             if enc_idx is None or step_idx <= enc_idx:
                 continue
             k = step_idx - enc_idx

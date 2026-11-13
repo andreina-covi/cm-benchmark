@@ -73,14 +73,14 @@ budget:
 
 spatial_working_memory:
   min_delay: 2  # none found
-  max_delay: null
+  max_delay: null  # derived cap: (max(frames.budgets) - 1) * frames.max_gap_steps (155); a longer span fits no budget
   delay_steps: [2, 5, 10, 20]  # none found; sample k from this set when the episode has it
   count_divisor: 3  # none found (5c7eb3c; max(1, max_items // divisor))
   count_min_instances: 2  # derived: n=1 has no memory load
 
 spatial_updating:
   min_delay: 2  # none found
-  max_delay: null
+  max_delay: null  # derived cap: (max(frames.budgets) - 1) * frames.max_gap_steps (155); a longer span fits no budget
   delay_steps: [2, 5, 10, 20]  # none found; sample k from this set when the episode has it
   min_pos_change_m: 0.1  # none found (05535fa)
   min_heading_change_deg: 5.0  # none found (05535fa)
