@@ -2408,7 +2408,7 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     )
     assert phrase == ' close to the Bread'
 
-    # Tiny margin only — proximity fails, colour-dot mark is the fallback
+    # Tiny margin only — proximity fails, numbered mark is the fallback
     tight = {
         'visible_objects': {
             'Chair|1': _vis('Chair', [0.0, 0.0, 1.0]),
@@ -2416,8 +2416,8 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
             'Bread|1': _vis('Bread', [0.1, 0.0, 1.0]),
         }
     }
-    assert resolve_referring_disambiguator(tight, 'Chair|1') == (
-        ' marked with a magenta dot'
+    assert resolve_referring_disambiguator(tight, 'Chair|1') in (
+        ' marked with the number 1', ' marked with the number 2'
     )
 
     # Landmark too small in FOV — proximity fails, mark fallback
@@ -2428,8 +2428,8 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
             'Bread|1': _vis('Bread', [0.1, 0.0, 1.0], area=50, side=5, pix=20),
         }
     }
-    assert resolve_referring_disambiguator(tiny_lm, 'Chair|1') == (
-        ' marked with a magenta dot'
+    assert resolve_referring_disambiguator(tiny_lm, 'Chair|1') in (
+        ' marked with the number 1', ' marked with the number 2'
     )
 
     # No unique landmark → mark (not a landmark-relative direction)
@@ -2439,8 +2439,8 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
             'Chair|2': _vis('Chair', [2.0, 0.0, 1.0]),
         }
     }
-    assert resolve_referring_disambiguator(bare_dups, 'Chair|1') == (
-        ' marked with a magenta dot'
+    assert resolve_referring_disambiguator(bare_dups, 'Chair|1') in (
+        ' marked with the number 1', ' marked with the number 2'
     )
 
     no_point = {
@@ -2451,7 +2451,7 @@ def test_resolve_referring_disambiguator_unique_and_duplicate():
     }
     assert resolve_referring_disambiguator(no_point, 'Chair|1') is None
 
-    # More instances than palette colours → skip
+    # More instances than mark_max_ids → skip
     overflow = {
         'visible_objects': {
             f'Chair|{i}': _vis('Chair', [float(i), 0.0, 1.0]) for i in range(1, 9)

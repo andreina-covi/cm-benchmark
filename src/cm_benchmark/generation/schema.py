@@ -71,7 +71,7 @@ class CandidateItem:
     context: Optional[dict[str, Any]] = None
     disambiguation: str = 'none'  # none | proximity | mark
     disambiguation_landmark: Optional[str] = None
-    marks: Optional[dict[str, str]] = None
+    marks: Optional[dict[str, int]] = None
     # Image budgets this frame list serves (frames.budgets); evaluation uses the
     # model's budget. Items in one frame_group_id ask the same question.
     frame_budgets: Optional[list[int]] = None

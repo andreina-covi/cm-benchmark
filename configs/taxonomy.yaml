@@ -37,8 +37,8 @@ shared_rules:
     # object may be extended with either
     # (1) proximity to ONE unique, co-visible landmark ("the Chair close to
     # the Bread") when the 3D AABB gap and 2D pixel-bbox gap are obvious,
-    # or (2) a colour-dot mark on every visible instance of that type
-    # ("the Chair marked with a magenta dot"). This is a referring
+    # or (2) a numbered mark on every visible instance of that type
+    # ("the Chair marked with the number 2"). This is a referring
     # expression, not the tested relation — it must never use a
     # landmark-relative direction ("left of the Bread"). If neither
     # proximity nor a mark is available, the object is excluded.

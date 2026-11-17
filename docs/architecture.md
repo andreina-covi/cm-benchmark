@@ -108,7 +108,7 @@ the perspective-taking rule (`imagined_perspective_label`), the pixel-size
 visibility gates (`fov_metrics_ok`, `bbox_not_border_scrape`), the object
 naming rule (`object_type_from_id`), and a thin referring-phrase wrapper
 (`resolve_referring_disambiguator`). Whole-item duplicate detection,
-AABB proximity, colour-dot marks, and the 2D bbox check live in
+AABB proximity, numbered marks, and the 2D bbox check live in
 `disambiguation.py`. Landmark-relative directions are never used.
 
 **`geometry.py`** turns an agent pose plus a world point into an ego label
@@ -157,7 +157,7 @@ All planners are called from `plan_episode` in the order of `--constructs`.
 "Named" below always means `_referring_display_name` (or the ID variant),
 then a whole-item re-resolve across every shown frame
 (`resolve_named_objects`): unique type, else proximity to a unique
-co-visible landmark, else a colour-dot mark. Landmark-relative
+co-visible landmark, else a numbered mark. Landmark-relative
 directions are never used.
 
 ### egocentric_encoding (class 1) — "Where is the X relative to you right now?"

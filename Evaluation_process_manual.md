@@ -37,10 +37,10 @@ Runs on every candidate item before it's eligible for human review. This is the 
   relative to the live navigation stream (online sequential protocol). Do **not** require
   a bundled multi-image “time order” cue. Flag as bug if temporal reference is ambiguous.
 - `image_paths` are non-empty and resolvable to real files. When
-  `disambiguation` is `mark`, these are the colour-dot copies (not the
+  `disambiguation` is `mark`, these are the numbered-badge copies (not the
   unmarked collection frames). Reviewers must judge the marked frames
-  the model will see. The phrase in the question (`marked with a
-  {colour} dot`) must match the dots on those copies.
+  the model will see. The phrase in the question (`marked with the
+  number {n}`) must match the badges on those copies.
 - No duplicate `item_id`.
 
 ### 2.2 Answer recomputation (per construct)

@@ -56,7 +56,7 @@ CHAT_SYSTEM_INSTRUCTION = (
     'Answer using only the images and text in this message. '
     'Directions ("left", "right", "ahead", "behind") are relative to where you are '
     'facing in the last image, unless the question asks you to imagine another position. '
-    'An object "marked with a <colour> dot" is the object under that dot in the images. '
+    'An object "marked with the number <n>" is the object under that numbered badge in the images. '
     'Your actions: move_ahead (0.2 m forward), move_back (0.2 m backward), '
     'rotate_left (turn 45° left), rotate_right (turn 45° right). '
     'Multiple-choice questions: on the first line, answer with only the option letter '

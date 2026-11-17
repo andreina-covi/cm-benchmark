@@ -46,10 +46,12 @@ options:
 
 disambiguation:
   proximity_setting: current  # none found; ablation: sr3d / vsi / current / strict
-  all_marks: false  # true = colour-dot marks only (ablation reference)
+  all_marks: false  # true = numbered marks only (ablation reference)
   ratio_2d: 1.5  # none found; sibling 2D gap must be ≥ this × target gap
   min_gap_2d_frac: 0.10  # none found; plus this fraction of image width
-  mark_palette: [magenta, cyan, lime, yellow, orange, blue, purple]  # none found; colours are assigned per item, only to instances in that item's shown frames; skip the type if those frames have more instances than colours
+  mark_max_ids: 7  # none found; numbers 1..n (seeded permutation) go only to instances in the item's shown frames; skip the type if those frames have more instances than this
+  mark_radius_frac: 0.02  # none found; badge radius as a fraction of image width (≈8 px at 396 px), kept small so it hides little of a 1%-floor object
+  mark_min_radius_px: 7  # none found; smallest radius at which a digit stays legible
   settings:
     current:
       margin_m: 0.6  # none found (b418bda; "obvious in the image")

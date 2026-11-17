@@ -173,8 +173,9 @@ A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `-
 - Same-type objects are named across **every shown frame** (not only the
   encode step). Unique type → no extra phrase. Else proximity
   (`the Chair close to the Bread`) when the floor-plane AABB gap and the
-  2D pixel-bbox gap are obvious, else a colour-dot mark on the exported
-  mask point (`mark-x` / `mark-y`; `the Chair marked with a magenta dot`).
+  2D pixel-bbox gap are obvious, else a numbered badge (white digit on a black
+  disc) on the exported mask point (`mark-x` / `mark-y`; `the Chair marked
+  with the number 2`). Numbers are a seeded permutation per confusable group.
   A required mark with no point drops the item. Questions never contain
   landmark-relative directions. When marks are used, `image_paths` point
   at copies under `<output_path>/<scene>/marked/<item_id>/` — evaluate
@@ -218,7 +219,7 @@ when no budget can. Every shown frame is labeled
 `frame i of n, step s` for models and reviewers. Letter markers on source/goal
 still apply when those frames need them. Evaluation uses the item’s
 `image_paths`: unmarked originals when `disambiguation` is `none` or
-`proximity`, and the colour-dot copies when it is `mark`.
+`proximity`, and the numbered-badge copies when it is `mark`.
 
 Spatial updating and spatial working memory show every FOV frame from the
 sighting through the query, in time order (including a turn in place).

@@ -12,7 +12,7 @@ A spatial-cognition QA benchmark for vision-language models. Each item is a mult
 2. Generation, validation and scoring are deterministic code. No LLM judges answers. `paraphrase.py` may reword a question but never its answer, and it is off by default.
 3. FREEZE is one-way: evaluation never edits or regenerates items. Frozen items require `vision_necessary == true`.
 4. Questions never state the answer, a direction or a move. Verbose preambles must not leak the answer.
-5. Confusable objects (the `obj-synset` rule) are disambiguated by proximity to a unique landmark or by a colour-dot mark, never by a direction.
+5. Confusable objects (the `obj-synset` rule) are disambiguated by proximity to a unique landmark or by a numbered mark, never by a direction.
 6. Every quality-affecting number lives in `configs/generation.yaml`. Never hardcode one. Partial configs (e.g. `configs/ablations/*.yaml`, `configs/generation_max.yaml`) are merged onto it by `load_generation_config`, and are passed with `--config`.
 
 ## How to work (from `.cursor/rules/benchmark.mdc`)
@@ -54,7 +54,7 @@ Human-review tooling: `scripts/build_review_package.py`, `scripts/analyze_review
 
 ## Related repository: spoc-robot-training
 
-`spoc-robot-training` (a sibling repo, usually `../spoc-robot-training`) runs AI2-THOR and writes the collection folders that stage 1 reads. Its `collector.py` exports, per step and per visible object, `visible-pixels` (the instance-mask pixel count inside the 2D box), `bbox`, `occupancy`, `mark-x`/`mark-y` (colour-dot mark position), the expected 3D-projected box and angular size. `objects-*.csv` also has `pickupable`, `moveable` and `mass`. Placement trials (`placement_candidates-*.csv`, column `obj-kind`) cover pickupables and light `moveable` objects (chairs, plants, lamps); a row with `anchor-kind` `floor` means the object lies on the floor beside `anchor-id`, not on it. During the walk the agent glances at those same movable objects when they are near but out of view; glance frames have `scripted-glance` true in `navigation-*.csv`, which cm-benchmark does not read yet. Frames are 396×224 (`utils/constants/stretch_initialization_utils.py`). If a quality fix needs a field the export lacks, change it there, then re-collect. Don't approximate it here.
+`spoc-robot-training` (a sibling repo, usually `../spoc-robot-training`) runs AI2-THOR and writes the collection folders that stage 1 reads. Its `collector.py` exports, per step and per visible object, `visible-pixels` (the instance-mask pixel count inside the 2D box), `bbox`, `occupancy`, `mark-x`/`mark-y` (mark position), the expected 3D-projected box and angular size. `objects-*.csv` also has `pickupable`, `moveable` and `mass`. Placement trials (`placement_candidates-*.csv`, column `obj-kind`) cover pickupables and light `moveable` objects (chairs, plants, lamps); a row with `anchor-kind` `floor` means the object lies on the floor beside `anchor-id`, not on it. During the walk the agent glances at those same movable objects when they are near but out of view; glance frames have `scripted-glance` true in `navigation-*.csv`, which cm-benchmark does not read yet. Frames are 396×224 (`utils/constants/stretch_initialization_utils.py`). If a quality fix needs a field the export lacks, change it there, then re-collect. Don't approximate it here.
 
 ## Architecture
 

@@ -1,11 +1,11 @@
-"""Confusable grouping, word-split types, and mark colours by group."""
+"""Confusable grouping, word-split types, and mark numbers by group."""
 
 from __future__ import annotations
 
 import pytest
 
 from cm_benchmark.generation.constructs import object_type_from_id, words_from_obj_type
-from cm_benchmark.generation.disambiguation import episode_mark_colours, resolve_named_objects
+from cm_benchmark.generation.disambiguation import episode_mark_numbers, resolve_named_objects
 from cm_benchmark.generation.synsets import are_confusable, confusable_group_of, objects_are_confusable
 
 
@@ -50,7 +50,7 @@ def test_wordnet_hypernym_or_skip():
     assert are_confusable('chair.n.01', 'furniture.n.01')
 
 
-def test_mark_colours_group_by_confusable_synset():
+def test_mark_numbers_group_by_confusable_synset():
     episode = {
         'object_catalog': {
             'Chair|1': {'category': 'Chair', 'synset': 'straight_chair.n.01'},
@@ -68,9 +68,9 @@ def test_mark_colours_group_by_confusable_synset():
             }
         ],
     }
-    colours = episode_mark_colours(episode)
-    assert colours['Chair|1'] != colours['Armchair|1']
-    assert 'Cup|1' not in colours
+    numbers = episode_mark_numbers(episode)
+    assert numbers['Chair|1'] != numbers['Armchair|1']
+    assert 'Cup|1' not in numbers
 
 
 def test_resolve_named_objects_uses_confusable_not_type_string():

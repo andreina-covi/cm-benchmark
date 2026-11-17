@@ -1,4 +1,4 @@
-# Overlay — never proximity; colour-dot marks for every duplicated type.
+# Overlay — never proximity; numbered marks for every duplicated type.
 name: all_marks
 disambiguation:
   all_marks: true

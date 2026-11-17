@@ -73,7 +73,8 @@ value in that range is better.
 | `MIN_DISAMBIG_MARGIN_RATIO` | 1.5 | `constructs.py:422` | sibling distance must also be ≥ ratio × target distance | same | higher → fewer proximity phrases | none found (b418bda) | none, 1.5, 2.0 | `disambiguation.settings.current.ratio` |
 | landmark-relative direction fallback | 20° wedge, landmark → target in agent yaw | removed | "the X left of the Y" when proximity fails | — | — | none found | **removed** (questions must not contain landmark-relative directions) | — |
 | AABB proximity + 2D bbox check | setting-specific margin / ratio; 2D `ratio_2d=1.5`, `min_gap_2d_frac=0.10` | `disambiguation.py` | whole-item duplicate naming on AABB min/max gap; 2D fail → mark, not skip | every named object | stricter → more marks, fewer proximity phrases | literature: sr3d 0.20 m; VSI-Bench 0.15 / 0.30 m split at 40 m². Exported regions have no area, so the large margin is used | `sr3d` / `vsi` / `current` / `strict` / `all_marks` | `disambiguation.*` |
-| mark palette | magenta, cyan, lime, yellow, orange, blue, purple | `disambiguation.mark_palette` | colours assigned per item, only to instances in that item's shown frames; skip the type if those frames have more instances than colours | same | fewer colours → more skipped duplicates | none found | 3–7 colours | `disambiguation.mark_palette` |
+| mark ids | 7 | `disambiguation.mark_max_ids` | numbers 1..n (seeded permutation per confusable group) assigned only to instances in that item's shown frames; skip the type if those frames have more instances than this | same | lower → more skipped duplicates | none found; numbers replace colour names after round-1 reviewers could not name or tell apart cyan / lime / magenta (Set-of-Mark, Yang et al. 2023, uses numeric IDs) | 3–9 | `disambiguation.mark_max_ids` |
+| mark radius | 0.02 × width, min 7 px | `disambiguation.mark_radius_frac`, `mark_min_radius_px` | badge size (white bold digit, black disc, white ring) | same | larger → more legible, hides more of small objects | none found; ≈8 px at 396 px keeps a 1%-floor (~30×30 px) object mostly visible | 0.015–0.03 | `disambiguation.mark_radius_frac` |
 
 ## 4. Per construct
 
@@ -205,7 +206,7 @@ generation. They stay with the nav generator and are listed for completeness.
     (`CounterTop|9` ≈ any CounterTop) is not used. Confusable siblings are
     objects with mask pixels > 0 in a shown frame and a confusable
     `obj-synset`; the target is marked (or proximity) and only
-    visibility-passing siblings receive a drawn dot.
+    visibility-passing siblings receive a drawn badge.
 11. **`build_route` label mismatch.** `get_distance_text` returns
     `"within reach"`, but `build_route` filters on `'within_reach'`, so route
     landmarks only ever include "nearby" objects. `episode['route']` is not

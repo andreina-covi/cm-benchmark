@@ -111,7 +111,9 @@ class DisambiguationConfig:
     all_marks: bool
     ratio_2d: float
     min_gap_2d_frac: float
-    mark_palette: tuple[str, ...]
+    mark_max_ids: int
+    mark_radius_frac: float
+    mark_min_radius_px: int
     settings: Mapping[str, ProximitySetting]
 
     def active_proximity(self) -> ProximitySetting:
@@ -432,7 +434,9 @@ def generation_config_from_mapping(
             all_marks=bool(dis['all_marks']),
             ratio_2d=float(dis['ratio_2d']),
             min_gap_2d_frac=float(dis['min_gap_2d_frac']),
-            mark_palette=tuple(dis['mark_palette']),
+            mark_max_ids=int(dis['mark_max_ids']),
+            mark_radius_frac=float(dis['mark_radius_frac']),
+            mark_min_radius_px=int(dis['mark_min_radius_px']),
             settings={k: _proximity(v) for k, v in (dis.get('settings') or {}).items()},
         ),
         budget=BudgetConfig(

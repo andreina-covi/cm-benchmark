@@ -1,4 +1,4 @@
-"""Whole-item duplicate detection, proximity, and colour-dot marks."""
+"""Whole-item duplicate detection, proximity, and numbered marks."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from cm_benchmark.generation.disambiguation import (
     aabb_minmax_gap_xz,
     active_margin_m,
     draw_marked_frames,
-    episode_mark_colours,
+    episode_mark_numbers,
     pixel_bbox_gap,
     resolve_named_objects,
 )
@@ -200,7 +200,7 @@ def test_questions_have_no_landmark_relative_direction():
         assert 'left of the' not in (item.get('question') or '')
 
 
-def test_mark_colours_follow_shown_frames_only():
+def test_mark_numbers_follow_shown_frames_only():
     """Colours are assigned inside one item's frames and may be reused later."""
     episode = {
         'steps': [
@@ -221,17 +221,18 @@ def test_mark_colours_follow_shown_frames_only():
             ),
         ]
     }
-    chairs = episode_mark_colours(episode, [0])
-    tables = episode_mark_colours(episode, [1])
+    chairs = episode_mark_numbers(episode, [0])
+    tables = episode_mark_numbers(episode, [1])
     assert set(chairs) == {'Chair|1', 'Chair|2'}
     assert set(tables) == {'Table|1', 'Table|2'}
-    assert chairs['Chair|1'] == tables['Table|1']
+    assert sorted(chairs.values()) == [1, 2]
+    assert sorted(tables.values()) == [1, 2]
     names = resolve_named_objects(episode, [0], ['Chair|1'])
     assert names is not None
     assert 'Table|1' not in names['Chair|1'].marks
 
 
-def test_same_object_id_same_colour_across_items():
+def test_same_object_id_same_number_across_items():
     episode = {
         'steps': [
             _step(
@@ -243,19 +244,19 @@ def test_same_object_id_same_colour_across_items():
             )
         ]
     }
-    colours = episode_mark_colours(episode)
-    assert colours['Chair|1'] != colours['Chair|2']
+    numbers = episode_mark_numbers(episode)
+    assert numbers['Chair|1'] != numbers['Chair|2']
     a = resolve_named_objects(episode, [0], ['Chair|1'])
     b = resolve_named_objects(episode, [0], ['Chair|2'])
     assert a is not None and b is not None
     assert a['Chair|1'].marks['Chair|1'] == b['Chair|2'].marks['Chair|1']
-    assert a['Chair|1'].marks['Chair|1'] == colours['Chair|1']
+    assert a['Chair|1'].marks['Chair|1'] == numbers['Chair|1']
 
 
 def test_no_mark_on_failed_visibility_frame(tmp_path):
     from PIL import Image
 
-    bg = (10, 10, 10)
+    bg = (120, 120, 120)
     w, h = 200, 100
     p0 = tmp_path / 'f0.png'
     p1 = tmp_path / 'f1.png'
@@ -282,13 +283,14 @@ def test_no_mark_on_failed_visibility_frame(tmp_path):
     }
     dest = tmp_path / 'marked'
     copies = draw_marked_frames(
-        episode, [str(p0), str(p1)], [0, 1], {'Chair|1': 'magenta'}, dest
+        episode, [str(p0), str(p1)], [0, 1], {'Chair|1': 3}, dest
     )
     marked = Image.open(copies[0]).convert('RGB')
     hidden = Image.open(copies[1]).convert('RGB')
     # Exported mask point. The old bbox top-centre (60, 29) stays background.
-    px = marked.getpixel((50, 55))
-    assert px[0] > 200 and px[1] < 80
+    disc = [marked.getpixel((x, y)) for x in range(42, 59) for y in range(47, 64)]
+    assert (0, 0, 0) in disc  # black badge
+    assert (255, 255, 255) in disc  # white ring / digit
     assert marked.getpixel((60, 29)) == bg
     # Hidden frame: visibility filter failed, so the copy stays the background.
     assert hidden.getpixel((60, 29)) == bg
@@ -330,7 +332,7 @@ def test_all_marks_skips_proximity():
         names = resolve_named_objects(episode, [0], ['Chair|1'])
     assert names is not None
     assert names['Chair|1'].mode == 'mark'
-    assert 'magenta' in names['Chair|1'].phrase
+    assert 'marked with the number' in names['Chair|1'].phrase
 
 
 def test_item_id_stable_across_proximity_settings():
@@ -416,7 +418,7 @@ def test_unique_objects_have_none_disambiguation():
 
 
 def test_pixel_sibling_marks_target_only():
-    """A confusable sibling with mask pixels but failing visibility is not dotted."""
+    """A confusable sibling with mask pixels but failing visibility is not marked."""
     target = _vis('Chair', [0.0, 0.0, 1.0], mark_xy=(40, 30))
     sibling = _vis('Chair', [3.0, 0.0, 1.0], area=40, side=4, pix=20, mark_xy=(80, 30))
     step = _step(0, {'Chair|1': target})

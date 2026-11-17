@@ -1,4 +1,4 @@
-"""Whole-item object naming: proximity, colour-dot marks, no landmark directions.
+"""Whole-item object naming: proximity, numbered marks, no landmark directions.
 
 Duplicate detection uses every shown frame. Proximity uses 3D AABB gap on the
 floor plane, then a 2D pixel-bbox check. Marks are the fallback (and the
@@ -10,6 +10,7 @@ directions.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -34,17 +35,6 @@ from cm_benchmark.generation.synsets import (
 )
 from cm_benchmark.generator.visibility_filters import visibility_model_from_episode
 
-MARK_RGB = {
-    'magenta': (255, 0, 200),
-    'cyan': (0, 220, 255),
-    'lime': (80, 220, 36),
-    'yellow': (255, 220, 0),
-    'orange': (255, 128, 0),
-    'blue': (1 << 4, 96, 255),
-    'purple': (168, 50, 216),
-}
-
-
 @dataclass
 class NameResult:
     """How one object is referred to in the item."""
@@ -54,7 +44,7 @@ class NameResult:
     phrase: str
     mode: str  # none | proximity | mark
     landmark_id: Optional[str] = None
-    marks: dict[str, str] = field(default_factory=dict)
+    marks: dict[str, int] = field(default_factory=dict)
 
     @property
     def display_name(self) -> str:
@@ -112,9 +102,9 @@ def pixel_bbox_gap(box_a, box_b) -> Optional[float]:
     return math.hypot(dx, dy)
 
 
-def format_mark_phrase(colour: str) -> str:
-    """Leading-space phrase for templates: `` marked with a magenta dot``."""
-    return f' marked with a {colour} dot'
+def format_mark_phrase(number: int) -> str:
+    """Leading-space phrase for templates: `` marked with the number 2``."""
+    return f' marked with the number {int(number)}'
 
 
 def format_proximity_phrase(landmark_type: str) -> str:
@@ -195,22 +185,26 @@ def passing_objects_in_frames(
     return out
 
 
-def episode_mark_colours(
+def episode_mark_numbers(
     episode: dict,
     frame_steps: Optional[list[int]] = None,
     also_ids: Optional[list[str]] = None,
-) -> dict[str, str]:
-    """Stable ``objectId → colour`` for duplicated types in the item's frames.
+) -> dict[str, int]:
+    """Stable ``objectId → mark number`` for duplicated types in the item's frames.
 
-    Instances in ``frame_steps`` are coloured, plus ``also_ids`` (confusable
+    Instances in ``frame_steps`` are numbered, plus ``also_ids`` (confusable
     endpoints that are not in those frames). When frames are omitted, every
-    FOV step is used. Two items may reuse a palette colour
-    for different objects. A sibling passed in ``also_ids`` is coloured even
+    FOV step is used. A sibling passed in ``also_ids`` is numbered even
     when it is outside the shown frames, so the shown endpoint can be marked.
-    Types with more in-frame instances than palette colours get no assignment.
-    Assignment is sorted by objectId so it is deterministic.
+    Types with more in-frame instances than ``mark_max_ids`` get no assignment.
+    Numbers 1..n are a permutation seeded by ``options.shuffle_seed``, the
+    scene and the group's objectIds, so they are deterministic, the same in
+    every frame and every item showing that group, and never track the answer.
     """
-    palette = list(get_generation_config().disambiguation.mark_palette)
+    cfg = get_generation_config()
+    max_ids = int(cfg.disambiguation.mark_max_ids)
+    seed = cfg.options.shuffle_seed
+    scene = episode.get('scene') or episode.get('episode_id') or ''
     if frame_steps is None:
         steps = [
             step
@@ -232,7 +226,7 @@ def episode_mark_colours(
     for oid in also_ids or []:
         if oid:
             seen.add(oid)
-    colours: dict[str, str] = {}
+    numbers: dict[str, int] = {}
     extra = {oid for oid in (also_ids or []) if oid}
     for group in confusable_components(episode, seen):
         if len(group) < 2:
@@ -242,11 +236,13 @@ def episode_mark_colours(
         )
         if not drawable:
             drawable = sorted(group)
-        if len(drawable) > len(palette):
+        if len(drawable) > max_ids:
             continue
-        for i, oid in enumerate(drawable):
-            colours[oid] = palette[i]
-    return colours
+        order = list(range(1, len(drawable) + 1))
+        random.Random(f'{seed}:marks:{scene}:{"|".join(drawable)}').shuffle(order)
+        for oid, number in zip(drawable, order):
+            numbers[oid] = number
+    return numbers
 
 
 def resolve_named_objects(
@@ -260,7 +256,7 @@ def resolve_named_objects(
     """Name every ``object_id`` across ``frame_steps``, or None to skip.
 
     Unique types → ``none``. Duplicates try proximity (unless ``all_marks``),
-    then a colour-dot mark. One failure skips the whole candidate.
+    then a numbered mark. One failure skips the whole candidate.
     """
     ids = [oid for oid in object_ids if oid]
     if not ids:
@@ -271,7 +267,7 @@ def resolve_named_objects(
     pixel_pool.update(extra)
     if model is None:
         model = visibility_model_from_episode(episode)
-    colours = episode_mark_colours(episode, frame_steps, also_ids=extra)
+    numbers = episode_mark_numbers(episode, frame_steps, also_ids=extra)
     cfg = get_generation_config().disambiguation
     out: dict[str, NameResult] = {}
     for oid in ids:
@@ -285,7 +281,7 @@ def resolve_named_objects(
         drawable = [
             sib
             for sib in siblings
-            if any(sib in vis for vis in frames.values()) and sib in colours
+            if any(sib in vis for vis in frames.values()) and sib in numbers
         ]
         result = None
         if not cfg.all_marks:
@@ -293,7 +289,7 @@ def resolve_named_objects(
                 episode, frames, oid, typ, siblings, model=model
             )
         if result is None:
-            result = _try_mark(oid, typ, drawable, colours)
+            result = _try_mark(oid, typ, drawable, numbers)
         if result is not None and result.mode == 'mark':
             if not _shown_marks_have_points(frames, result.marks, oid):
                 result = None
@@ -313,7 +309,7 @@ def aggregate_disambiguation(results: dict[str, NameResult]) -> dict[str, Any]:
     else:
         mode = 'none'
     landmark = next((r.landmark_id for r in results.values() if r.landmark_id), None)
-    marks: dict[str, str] = {}
+    marks: dict[str, int] = {}
     for r in results.values():
         marks.update(r.marks)
     return {
@@ -327,7 +323,7 @@ def draw_marked_frames(
     episode: dict,
     image_paths: list[str],
     frame_steps: list[int],
-    marks: dict[str, str],
+    marks: dict[str, int],
     dest_dir: Path,
 ) -> list[str]:
     """Write marked copies of ``image_paths``; return the copy paths.
@@ -341,6 +337,7 @@ def draw_marked_frames(
     dest_dir.mkdir(parents=True, exist_ok=True)
     frames = passing_objects_in_frames(episode, frame_steps)
     image_wh = camera_size_wh(episode)
+    cfg = get_generation_config().disambiguation
     out: list[str] = []
     for i, (path, si) in enumerate(zip(image_paths, frame_steps)):
         vis = frames.get(int(si)) or {}
@@ -353,7 +350,7 @@ def draw_marked_frames(
             continue
         draw = ImageDraw.Draw(im)
         w, h = im.size
-        for oid, colour in marks.items():
+        for oid, number in marks.items():
             odata = vis.get(oid)
             if not isinstance(odata, dict):
                 continue
@@ -361,7 +358,7 @@ def draw_marked_frames(
             if pt is None:
                 continue
             xy = _scale_px(pt, image_wh or (w, h), (w, h))
-            _draw_dot(draw, xy, MARK_RGB.get(colour, (255, 0, 200)), w)
+            _draw_badge(draw, xy, int(number), w, cfg.mark_radius_frac, cfg.mark_min_radius_px)
         im.save(dst)
         out.append(str(dst))
     return out
@@ -606,19 +603,19 @@ def _try_mark(
     target_id: str,
     target_type: str,
     siblings: list[str],
-    colours: dict[str, str],
+    numbers: dict[str, int],
 ) -> Optional[NameResult]:
-    if target_id not in colours:
+    if target_id not in numbers:
         return None
-    colour = colours[target_id]
-    marks = {target_id: colour}
+    number = numbers[target_id]
+    marks = {target_id: number}
     for oid in siblings:
-        if oid in colours:
-            marks[oid] = colours[oid]
+        if oid in numbers:
+            marks[oid] = numbers[oid]
     return NameResult(
         target_id,
         target_type,
-        format_mark_phrase(colour),
+        format_mark_phrase(number),
         'mark',
         marks=marks,
     )
@@ -655,7 +652,7 @@ def _scale_px(
 
 def _shown_marks_have_points(
     frames: dict[int, dict[str, dict]],
-    marks: dict[str, str],
+    marks: dict[str, int],
     target_id: str,
 ) -> bool:
     """The target, and every marked sibling on screen, has a mask point."""
@@ -671,9 +668,36 @@ def _shown_marks_have_points(
     return saw_target
 
 
-def _draw_dot(draw, xy: tuple[int, int], rgb: tuple[int, int, int], image_w: int) -> None:
-    r = max(4, int(round(0.02 * image_w)))
+def _draw_badge(
+    draw,
+    xy: tuple[int, int],
+    number: int,
+    image_w: int,
+    radius_frac: float,
+    min_radius_px: int,
+) -> None:
+    """White bold digit on a black disc with a white ring, centred on ``xy``."""
+    r = max(int(min_radius_px), int(round(radius_frac * image_w)))
     x, y = xy
-    lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-    outline = (0, 0, 0) if lum > 140 else (255, 255, 255)
-    draw.ellipse((x - r, y - r, x + r, y + r), fill=rgb, outline=outline, width=max(1, r // 4))
+    draw.ellipse((x - r, y - r, x + r, y + r), fill=(0, 0, 0), outline=(255, 255, 255), width=1)
+    font = _badge_font(max(6, int(round(1.6 * r))))
+    draw.text((x, y), str(number), fill=(255, 255, 255), font=font, anchor='mm')
+
+
+_BADGE_FONTS = (
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+)
+
+
+def _badge_font(size: int):
+    """DejaVu Sans Bold at ``size`` if installed, else Pillow's default font."""
+    from PIL import ImageFont
+
+    for name in _BADGE_FONTS:
+        if Path(name).is_file():
+            return ImageFont.truetype(name, size=size)
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1 has no sized default font
+        return ImageFont.load_default()
