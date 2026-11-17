@@ -115,6 +115,101 @@ perspective_taking:
   # its television, objects resting on A) scored 1/16; the 6 stable ones 5/10.
   footprint_grid: 3  # none found
 
+naming:
+  # Display names in questions. Keys are the exported obj-type (Obja prefix
+  # stripped). Objaverse types are often the first WordNet lemma, which reviewers
+  # did not know (round 1: "lima", "cal", "Silla de Terraza", "Placard", "Icon").
+  # Values are everyday names chosen from the obj-synset gloss. Types that map to
+  # the same name are confusable, so they are disambiguated like duplicates.
+  rename:
+    TVStand: TV Stand
+    ArmChair: Armchair
+    Armchair: Armchair
+    CounterTop: Countertop
+    Refrigerator: Fridge
+    MicrowaveOven: Microwave
+    Ashcan: Trash Can
+    GarbageCan: Trash Can
+    Placard: Poster
+    Icon: Picture
+    PictorialMatter: Picture
+    Framing: Picture Frame
+    Waggon: Wagon
+    CoasterWagon: Toy Wagon
+    Teakettle: Kettle
+    Fireplug: Fire Hydrant
+    Pickax: Pickaxe
+    AutomaticWasher: Washing Machine
+    TelephoneSet: Telephone
+    Crapper: Toilet
+    Cuke: Cucumber
+    AlligatorPear: Avocado
+    AlliumSativum: Garlic
+    BrassicaOleraceaBotrytis: Cauliflower
+    Cocoanut: Coconut
+    Orangeness: Orange
+    Capsicum: Pepper
+    Chilli: Chili Pepper
+    AlimentaryPaste: Pasta
+    Jambon: Ham
+    Crisp: Potato Chip
+    Poriferan: Sponge
+    Membranophone: Drum
+    CalculatingMachine: Calculator
+    Igniter: Lighter
+    Torch: Flashlight
+    DarkGlasses: Sunglasses
+    Specs: Glasses
+    Mag: Magazine
+    Volume: Book
+    Hardback: Book
+    Clayware: Pottery
+    Ewer: Pitcher
+    Eggwhisk: Whisk
+    Swayer: Ruler
+    Rule: Ruler
+    Pipage: Pipe
+    Tubing: Tube
+    TransmissionLine: Cable
+    Orb: Ball
+    Flora: Plant
+    Blossom: Flower
+    PotPlant: Potted Plant
+    Flowerpot: Flower Pot
+    CellularTelephone: Cell Phone
+    CellPhone: Cell Phone
+    WeighingMachine: Scale
+    Carryall: Tote Bag
+    IceChest: Cooler
+    Cannister: Canister
+    RegularHexahedron: Cube
+    Coatrack: Coat Rack
+    Handcart: Hand Cart
+    Handbasket: Basket
+    Phonebook: Phone Book
+    Chiffonier: Dresser
+    ChestOfDrawers: Dresser
+    Hobbyhorse: Hobby Horse
+    BasketBall: Basketball
+    GlobalPositioningSystem: GPS Device
+    IdentityCard: ID Card
+    ShortPants: Shorts
+    PairOfPliers: Pliers
+    Grapevine: Grapes
+    PineapplePlant: Pineapple
+    BananaTree: Banana
+    MemorialTablet: Plaque
+    Brass: Plaque
+    TinCan: Can
+    TravelingBag: Suitcase
+  # Never named (not as target, landmark, receptacle or proximity anchor): the
+  # type is a vague hypernym or an abstract label that does not say what the
+  # object looks like.
+  unnamed: [Machine, Container, Collectible, Toy, Plaything, Tool, Weapon, Figure,
+    Clothing, Cloth, Fabric, Game, ComputerGame, Case, Token, Label, Tag, Card,
+    Control, Console, Disk, Bow, Club, LightSource, OpticalIllusion, PowderStore,
+    Exhibit, Swatch]
+
 templates:
   verbose_max_nonvisible_names: 4  # none found (b418bda)
 

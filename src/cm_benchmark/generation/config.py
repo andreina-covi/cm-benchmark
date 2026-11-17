@@ -187,6 +187,14 @@ class PerspectiveTakingConfig:
 
 
 @dataclass(frozen=True)
+class NamingConfig:
+    """Display-name overrides (``rename``) and never-named types (``unnamed``)."""
+
+    rename: Mapping[str, str]
+    unnamed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TemplatesConfig:
     verbose_max_nonvisible_names: int
 
@@ -290,6 +298,7 @@ class GenerationConfig:
     invisible_displacement: InvisibleDisplacementConfig
     landmarks: LandmarksConfig
     perspective_taking: PerspectiveTakingConfig
+    naming: NamingConfig
     templates: TemplatesConfig
     frames: FramesConfig
     class4: Class4Config
@@ -483,6 +492,10 @@ def generation_config_from_mapping(
             top_n_per_region=int(raw['perspective_taking']['top_n_per_region']),
             max_total=int(raw['perspective_taking']['max_total']),
             footprint_grid=int(raw['perspective_taking']['footprint_grid']),
+        ),
+        naming=NamingConfig(
+            rename={str(k): str(v) for k, v in (raw.get('naming', {}).get('rename') or {}).items()},
+            unnamed=tuple(str(t) for t in (raw.get('naming', {}).get('unnamed') or [])),
         ),
         templates=TemplatesConfig(
             verbose_max_nonvisible_names=int(raw['templates']['verbose_max_nonvisible_names']),

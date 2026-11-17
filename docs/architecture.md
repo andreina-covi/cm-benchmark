@@ -106,7 +106,10 @@ question templates per construct, the bearing → label rule
 AABB corners / `angular_span_crosses_sector` fallback),
 the perspective-taking rule (`imagined_perspective_label`), the pixel-size
 visibility gates (`fov_metrics_ok`, `bbox_not_border_scrape`), the object
-naming rule (`object_type_from_id`), and a thin referring-phrase wrapper
+naming rule (`object_type_from_id`: `naming.rename` maps rare exported types to
+everyday names, e.g. `Ashcan` → Trash Can, else the type is word-split;
+`never_named` blocks `___` sub-parts and `naming.unnamed` vague types at every
+naming gate), and a thin referring-phrase wrapper
 (`resolve_referring_disambiguator`). Whole-item duplicate detection,
 AABB proximity, numbered marks, and the 2D bbox check live in
 `disambiguation.py`. Landmark-relative directions are never used.

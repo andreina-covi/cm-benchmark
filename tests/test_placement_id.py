@@ -691,4 +691,4 @@ def test_floor_trial_beside_a_landmark_is_worded_as_floor():
     assert fact.extra.get('to_receptacle') == 'Floor'
     assert fact.extra.get('destination_landmark_id') is None
     assert fact.extra.get('floor_anchor_id') == 'CounterTop|1'
-    assert fact.extra.get('floor_anchor_landmark') == 'Counter Top'
+    assert fact.extra.get('floor_anchor_landmark') == 'Countertop'

@@ -170,6 +170,10 @@ A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `-
 - Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).
+- Names come from the exported `obj-type`, with `naming.rename` replacing rare
+  WordNet words (`Placard` → Poster, `Fireplug` → Fire Hydrant). Types in
+  `naming.unnamed` (Machine, Container, Toy …) are never named. Two types
+  with the same display name count as duplicates.
 - Same-type objects are named across **every shown frame** (not only the
   encode step). Unique type → no extra phrase. Else proximity
   (`the Chair close to the Bread`) when the floor-plane AABB gap and the

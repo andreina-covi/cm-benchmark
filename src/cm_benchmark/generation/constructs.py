@@ -211,10 +211,37 @@ def object_type_from_id(obj_id: str, visible_or_memory: Optional[dict] = None) -
         if _category_usable(cat):
             cleaned = _strip_obja_asset_prefix(str(cat).strip())
             if cleaned:
-                return words_from_obj_type(cleaned)
+                return _display_type(cleaned)
     stem = str(obj_id).split('|')[0].strip()
     cleaned = _strip_obja_asset_prefix(stem) if stem else ''
-    return words_from_obj_type(cleaned or stem or str(obj_id))
+    return _display_type(cleaned or stem or str(obj_id))
+
+
+def _display_type(raw_type: str) -> str:
+    """``naming.rename`` entry for the raw type, else its word split."""
+    renamed = get_generation_config().naming.rename.get(raw_type)
+    return renamed if renamed else words_from_obj_type(raw_type)
+
+
+def raw_object_type(episode: Optional[dict], obj_id: str, odata: Optional[dict] = None) -> str:
+    """Exported obj-type with the Obja prefix stripped (catalog, else id stem)."""
+    cat = None
+    if isinstance(odata, dict):
+        cat = odata.get('category') or odata.get('obj-type')
+    if not _category_usable(cat):
+        rec = ((episode or {}).get('object_catalog') or {}).get(obj_id) or {}
+        cat = rec.get('category') or rec.get('obj-type')
+    if not _category_usable(cat):
+        cat = str(obj_id).split('|')[0]
+    return _strip_obja_asset_prefix(str(cat).strip())
+
+
+def never_named(episode: Optional[dict], obj_id: Optional[str], odata: Optional[dict] = None) -> bool:
+    """Composite sub-parts and ``naming.unnamed`` types are never named in a question."""
+    if is_asset_subpart(obj_id):
+        return True
+    unnamed = get_generation_config().naming.unnamed
+    return bool(unnamed) and raw_object_type(episode, str(obj_id), odata) in unnamed
 
 
 def angle_to_ego_label(angle_deg: float, ahead_half_width: Optional[float] = None) -> str:

@@ -1212,9 +1212,9 @@ def test_survey_emits_hardest_pairs_first(two_room_episode):
         graph, landmarks, max_distance_m=ROUTE_LANDMARK_SNAP_M
     )
     ids = [lm['obj_id'] for lm in landmarks if lm['obj_id'] in id_to_node]
-    from cm_benchmark.generation.constructs import words_from_obj_type
+    from cm_benchmark.generation.constructs import object_type_from_id
 
-    position = {words_from_obj_type(oid.split('|')[0]): i for i, oid in enumerate(ids)}
+    position = {object_type_from_id(oid): i for i, oid in enumerate(ids)}
 
     def enumeration_key(fact):
         def _key(name: str) -> int:
@@ -1748,7 +1748,7 @@ def test_perspective_taking_requires_one_shared_frame():
     assert ok[0].image_paths == ['/img_0.png']
     assert ok[0].extra.get('shown_frame_steps') == [0]
     named = {ok[0].extra.get('A'), ok[0].extra.get('B'), ok[0].extra.get('C')}
-    assert named == {'Sofa', 'Bed', 'Coatrack'}
+    assert named == {'Sofa', 'Bed', 'Coat Rack'}
 
     split = {
         'steps': [

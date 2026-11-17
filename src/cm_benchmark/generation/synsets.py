@@ -74,6 +74,9 @@ def objects_are_confusable(episode: dict, oid_a: str, oid_b: str, odata_a=None, 
     """Confusable using catalog synsets / types on ``episode``."""
     if oid_a == oid_b:
         return True
+    # Different types shown under one display name (naming.rename) read the same.
+    if type_of(episode, oid_a, odata_a) == type_of(episode, oid_b, odata_b):
+        return True
     return are_confusable(
         synset_of(episode, oid_a, odata_a),
         synset_of(episode, oid_b, odata_b),
