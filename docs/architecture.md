@@ -252,6 +252,8 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 2. `_co_visible_distinguishable_step` keeps a triple only when A, B, and C are distinguishable with mask pixels in one frame; otherwise the triple is dropped;
 3. `_referring_display_name` for A, B, C on that frame;
 4. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
+4a. `_pt_objects_entangled` — drop the triple if two of A/B/C are parts of one combined asset (4-part id, same first three parts, e.g. `television|7|1|0` TV stand and `television|7|1|1` television) or one rests on another (`object_catalog[..].receptacle_object_ids`);
+4b. `_pt_label_stable` — drop it if the label flips (another left / right / behind) at any of `perspective_taking.footprint_grid`² points of A's floor box (facing B) × the same grid over C's box; points inside the boundary margin are ignored;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
 
 ### route_knowledge (class 4, free action sequence) — "Start at your position in frame i … (the S is in view). Retrace … frame j (the G is in view)."

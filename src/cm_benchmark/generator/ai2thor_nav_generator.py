@@ -1067,9 +1067,10 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
             for key in ('pickupable', 'moveable', 'mass'):
                 if entry.get(key) is not None:
                     rec[key] = entry[key]
+            # THOR receptacleObjectIds: the objects resting on / inside this one
             recs = entry.get('receptacleObjectIds') or []
             if recs:
-                rec['parent_receptacle'] = recs[0]
+                rec['receptacle_object_ids'] = [str(r) for r in recs]
             catalog[oid] = rec
         episode_dict['object_catalog'] = catalog
         return episode_dict

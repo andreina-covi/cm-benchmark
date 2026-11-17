@@ -183,6 +183,7 @@ class LandmarksConfig:
 class PerspectiveTakingConfig:
     top_n_per_region: int
     max_total: int
+    footprint_grid: int
 
 
 @dataclass(frozen=True)
@@ -481,6 +482,7 @@ def generation_config_from_mapping(
         perspective_taking=PerspectiveTakingConfig(
             top_n_per_region=int(raw['perspective_taking']['top_n_per_region']),
             max_total=int(raw['perspective_taking']['max_total']),
+            footprint_grid=int(raw['perspective_taking']['footprint_grid']),
         ),
         templates=TemplatesConfig(
             verbose_max_nonvisible_names=int(raw['templates']['verbose_max_nonvisible_names']),

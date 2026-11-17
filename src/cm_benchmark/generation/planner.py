@@ -4938,11 +4938,63 @@ def _co_visible_distinguishable_step(
     return best
 
 
+def _asset_group(obj_id: str) -> Optional[str]:
+    """Combined-asset group of a 4-part id (``television|7|1|0`` → ``television|7|1``)."""
+    parts = str(obj_id or '').split('___')[0].split('|')
+    return '|'.join(parts[:3]) if len(parts) == 4 else None
+
+
+def _pt_objects_entangled(episode: dict, obj_ids: Sequence[str]) -> bool:
+    """True if two of A/B/C are parts of one combined asset or one rests on another."""
+    catalog = episode.get('object_catalog') or {}
+    ids = [str(o) for o in obj_ids]
+    for i, a in enumerate(ids):
+        for b in ids[i + 1 :]:
+            group = _asset_group(a)
+            if group is not None and group == _asset_group(b):
+                return True
+            on_a = (catalog.get(a) or {}).get('receptacle_object_ids') or []
+            on_b = (catalog.get(b) or {}).get('receptacle_object_ids') or []
+            if b in on_a or a in on_b:
+                return True
+    return False
+
+
+def _footprint_points(episode: dict, obj_id: str, fallback: dict, n: int) -> list[dict]:
+    """``n`` × ``n`` floor points over the object's AABB, or ``[fallback]``."""
+    rec = (episode.get('object_catalog') or {}).get(obj_id) or {}
+    amin, amax = rec.get('aabb_min'), rec.get('aabb_max')
+    if not amin or not amax or n < 2:
+        return [fallback]
+    xs = [amin[0] + (amax[0] - amin[0]) * i / (n - 1) for i in range(n)]
+    zs = [amin[2] + (amax[2] - amin[2]) * i / (n - 1) for i in range(n)]
+    return [{'x': x, 'y': fallback.get('y', 0.0), 'z': z} for x in xs for z in zs]
+
+
+def _pt_label_stable(
+    episode: dict, ids: Sequence[str], pos_a: dict, pos_b: dict, pos_c: dict, label: str
+) -> bool:
+    """No point of A's or C's floor box gives a different label (facing B).
+
+    Points inside the boundary margin give no label and are ignored; only a
+    flip to another label rejects. See ``perspective_taking.footprint_grid``.
+    """
+    n = int(_cfg().perspective_taking.footprint_grid)
+    for pa in _footprint_points(episode, ids[0], pos_a, n):
+        for pc in _footprint_points(episode, ids[2], pos_c, n):
+            other = imagined_perspective_label(pa, pos_b, pc)
+            if other is not None and other != label:
+                return False
+    return True
+
+
 def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
     """Object Perspective / Spatial Orientation Test: stand at A facing B, locate C.
 
     A, B, and C must be distinguishable together in one frame, with mask
     pixels on that frame. A triple that is never co-visible is dropped.
+    No two of A/B/C may be parts of one combined asset or rest on each other,
+    and the label must not flip across A's or C's floor box (``_pt_label_stable``).
     ``select_landmark_candidates`` keeps unique-category landmarks here
     (default). Triples are tried in landmark salience order and the first
     ``max_items`` valid ones are emitted.
@@ -4992,6 +5044,11 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
 
                 label = imagined_perspective_label(pos_a, pos_b, pos_c)
                 if not label or label not in EGO_DIRECTION_OPTIONS:
+                    continue
+                triple = [a['obj_id'], b['obj_id'], c['obj_id']]
+                if _pt_objects_entangled(episode, triple):
+                    continue
+                if not _pt_label_stable(episode, triple, pos_a, pos_b, pos_c, label):
                     continue
 
                 query_step = co_step

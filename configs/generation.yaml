@@ -108,6 +108,12 @@ landmarks:
 perspective_taking:
   top_n_per_region: 4  # none found (05535fa)
   max_total: 18  # none found (05535fa)
+  # Points per axis sampled over A's and C's floor box (3 = corners, edge midpoints,
+  # centre). The answer must not flip between left / right / behind across them, so
+  # "standing at A" and "where is C" hold wherever on A or C one imagines it.
+  # Calibrated on round 1: the 4 reviewed items whose label flips (TV stand facing
+  # its television, objects resting on A) scored 1/16; the 6 stable ones 5/10.
+  footprint_grid: 3  # none found
 
 templates:
   verbose_max_nonvisible_names: 4  # none found (b418bda)
