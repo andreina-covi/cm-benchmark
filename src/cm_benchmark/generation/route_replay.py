@@ -76,24 +76,69 @@ def successful_recorded_actions(episode: dict) -> list[str]:
     return out
 
 
-def recorded_actions_between(episode: dict, t0: int, t1: int) -> list[str]:
-    """Successful actions with ``t0 < step <= t1`` (arrival convention)."""
+_GLANCE_TURN = {'rotate_left': -1, 'rotate_right': 1}
+
+
+def recorded_actions_between(
+    episode: dict, t0: int, t1: int, *, skip_glances: bool = False
+) -> list[str]:
+    """Successful actions with ``t0 < step <= t1`` (arrival convention).
+
+    ``skip_glances`` drops each SPOC glance (``scripted_glance``: consecutive
+    turns toward an object and back) that lies wholly inside the window and
+    turns back to its start heading; the walked route is the same without it.
+    A glance the window cuts (start or end pose mid-glance) keeps its turns,
+    which the agent needs from that pose.
+    """
     lo, hi = int(t0), int(t1)
     if hi < lo:
         lo, hi = hi, lo
+    dropped = _complete_glance_steps(episode, lo, hi) if skip_glances else set()
     out: list[str] = []
     for rec in episode.get('agent_actions') or []:
         try:
             step = int(rec.get('step'))
         except (TypeError, ValueError):
             continue
-        if step <= lo or step > hi:
+        if step <= lo or step > hi or step in dropped:
             continue
         if rec.get('action_success') is False:
             continue
         act = rec.get('action')
         if act:
             out.append(str(act))
+    return out
+
+
+def _complete_glance_steps(episode: dict, lo: int, hi: int) -> set[int]:
+    """Steps of glances inside ``(lo, hi]`` whose turns cancel out."""
+    runs: list[list[dict]] = []
+    prev_step = None
+    for rec in episode.get('agent_actions') or []:
+        try:
+            step = int(rec.get('step'))
+        except (TypeError, ValueError):
+            continue
+        if rec.get('scripted_glance'):
+            if runs and prev_step is not None and step == prev_step + 1 and runs[-1]:
+                runs[-1].append(rec)
+            else:
+                runs.append([rec])
+        elif runs and runs[-1]:
+            runs.append([])
+        prev_step = step
+    out: set[int] = set()
+    for run in runs:
+        if not run:
+            continue
+        steps = [int(r['step']) for r in run]
+        if steps[0] <= lo or steps[-1] > hi:
+            continue
+        acts = [str(r.get('action')) for r in run if r.get('action_success') is not False]
+        if any(a not in _GLANCE_TURN for a in acts):
+            continue
+        if sum(_GLANCE_TURN[a] for a in acts) == 0:
+            out.update(steps)
     return out
 
 

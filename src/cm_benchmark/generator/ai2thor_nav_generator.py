@@ -646,6 +646,8 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 dict_navigation[timestep] = {
                     'action': row.get('ag-action'),
                     'degrees': row.get('degrees'),
+                    # SPOC open-loop glance turn (out or back), not a policy action
+                    'scripted_glance': _as_bool(row.get('scripted-glance')),
                     'action_success': (
                         _as_bool(row.get('action_success'))
                         if 'action_success' in row.index and pd.notna(row.get('action_success'))

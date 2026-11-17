@@ -148,6 +148,8 @@ class NavSequenceGenerator(ABC):
             }
             if 'action_success' in data:
                 action_rec['action_success'] = data.get('action_success')
+            if data.get('scripted_glance'):
+                action_rec['scripted_glance'] = True
             episode_dict['agent_actions'].append(action_rec)
 
         episode_dict['route'] = self.build_route(episode_dict['steps'])

@@ -190,7 +190,9 @@ continuous xz + heading (`x += m·sin(h)`, `z += m·cos(h)` from
 `episode_meta.motion`); a move whose landing point is farther than a
 calibrated radius from every nav-graph node is a no-op. Success is ObjectNav
 1.0 m. Route's stored reference is the recorded actions between source and
-goal; survey's is one breadth-first flood per source pose under the same
+goal, minus each SPOC glance (`scripted-glance` turns out and back) that lies
+wholly inside that span; a glance cut by the source or goal frame keeps its
+turns. Survey's is one breadth-first flood per source pose under the same
 kinematics, nearest node from a per-scene cKDTree, and only for pairs that
 already pass the geodesic gates. Visited cells are quantised
 (`class4.search_state_quant_m`); expansions stay in action-count order so the

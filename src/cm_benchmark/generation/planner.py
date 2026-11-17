@@ -3484,7 +3484,7 @@ def _recorded_route_reference(
     start_heading_deg: Optional[float],
 ):
     """Recorded actions between source and goal, verified by continuous replay."""
-    actions = recorded_actions_between(episode, t0, t1)
+    actions = recorded_actions_between(episode, t0, t1, skip_glances=True)
     if not actions:
         return None
     heading = 0.0 if start_heading_deg is None else float(start_heading_deg)
