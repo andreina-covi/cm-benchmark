@@ -485,8 +485,25 @@ _PAGE = r"""<!DOCTYPE html>
     padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; vertical-align: middle; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-top: 12px; }
   .top { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
-  .progress { flex: 0 1 280px; height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; }
-  .progress span { display: block; height: 100%; background: var(--accent); }
+  .item-nav { padding: 12px 14px; }
+  .item-nav .nav-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .item-nav .count { color: var(--muted); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+  .item-nav .goto { display: flex; gap: 6px; align-items: center; font-size: 0.95rem; }
+  .item-nav .goto input { width: 4.5rem; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .item-nav .goto button { padding: 5px 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chips .sep { width: 1px; background: var(--line); margin: 0 6px; align-self: stretch; }
+  .chip { position: relative; min-width: 34px; height: 30px; padding: 0 6px; border-radius: 6px; font-size: 0.85rem;
+    font-variant-numeric: tabular-nums; background: var(--surface); color: var(--ink); border: 1px solid #c9c3b8; }
+  .chip:hover { border-color: var(--ink); opacity: 1; }
+  .chip.done { background: #2e7d4f; border-color: #2e7d4f; color: #fff; }
+  .chip.current { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .chip.noted::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: #e0a100; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); font-size: 0.8rem; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; border: 1px solid #c9c3b8; background: var(--surface); }
+  .legend i.done { background: #2e7d4f; border-color: #2e7d4f; }
+  .legend i.current { outline: 2px solid var(--accent); }
+  .legend i.noted { border: 0; width: 8px; height: 8px; border-radius: 50%; background: #e0a100; vertical-align: 1px; }
   .frame-wrap { display: flex; justify-content: center; background: var(--frame); border-radius: 8px; overflow: hidden; }
   /* Frames are 396x224: scale up to the column width so small objects stay legible. */
   .frame-wrap img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; display: block; }
@@ -580,9 +597,9 @@ function syncRouteAnswer(rec) {
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
-    return {index: saved.index || 0, items: saved.items || {}};
+    return {index: saved.index || 0, last: saved.last || saved.index || 0, items: saved.items || {}};
   } catch (e) {
-    return {index: 0, items: {}};
+    return {index: 0, last: 0, items: {}};
   }
 }
 let state = loadState();
@@ -656,8 +673,9 @@ function instructionsHtml() {
     + '<p>Also tick any problem that applies:</p><ul>'
     + '<li>ambiguous reference</li><li>unclear question</li>'
     + '<li>object not visible</li><li>more than one option looks correct</li></ul>'
+    + '<p>Your answers are saved in this browser. Reopening the page returns to the last item you had open. The numbered strip above each item shows which items are answered (green), which are not (white) and which have a problem or comment (yellow dot); click a number, or type it in <strong>Go to item</strong>, to jump to any item.</p>'
     + '<p>A comment is optional. Time on each item is recorded. Two practice items come first and show the stored answer. Then the review items. Download the CSV when you finish, including if you stop early.</p>'
-    + '<div class="row"><button id="start" type="button">Start</button>'
+    + '<div class="row"><button id="start" type="button">' + (state.last > 0 ? 'Continue from item ' + state.last : 'Start') + '</button>'
     + '<button id="download" class="secondary" type="button">Download CSV</button></div></div>';
 }
 function noteFrame(item) {
@@ -760,6 +778,66 @@ function questionBlock(item, answers, flags, prompt) {
     + '<h2>Comment</h2><textarea id="comment">' + esc(rec.comment || "") + '</textarea>'
     + '</div>';
 }
+function isAnswered(item) {
+  const rec = state.items[item.item_id];
+  if (!rec) return false;
+  return item.kind === "nav" ? !!rec.answerable : !!rec.answer;
+}
+function hasNote(item) {
+  const rec = state.items[item.item_id];
+  return !!(rec && ((rec.flags || []).length || (rec.comment || "").trim()));
+}
+function chipLabel(item, i) {
+  if (item.role !== "practice") return String(i);
+  let p = 0;
+  for (let k = 0; k < i; k++) if (PAYLOAD[k].role === "practice") p++;
+  return "P" + p;
+}
+function navigatorHtml(index) {
+  const n = PAYLOAD.length;
+  let done = 0;
+  let chips = "";
+  PAYLOAD.forEach(function (item, k) {
+    const i = k + 1;
+    const answered = isAnswered(item);
+    if (answered) done++;
+    if (k > 0 && PAYLOAD[k - 1].role === "practice" && item.role !== "practice") chips += '<span class="sep"></span>';
+    const cls = "chip" + (answered ? " done" : "") + (i === index ? " current" : "") + (hasNote(item) ? " noted" : "");
+    const state = (answered ? "answered" : "not answered") + (hasNote(item) ? ", has a problem flag or comment" : "");
+    chips += '<button type="button" class="' + cls + '" data-goto="' + i + '" title="Item ' + i + ': ' + state + '"'
+      + (i === index ? ' aria-current="true"' : '') + '>' + chipLabel(item, i) + '</button>';
+  });
+  return '<div class="nav-head"><span class="count"><strong>' + done + '</strong> of ' + n + ' answered</span>'
+    + '<span class="goto"><label for="goto-n">Go to item</label>'
+    + '<input id="goto-n" type="number" min="1" max="' + n + '" value="' + index + '">'
+    + '<button type="button" class="secondary" id="goto-btn">Go</button></span></div>'
+    + '<div class="chips">' + chips + '</div>'
+    + '<div class="legend"><span><i class="done"></i>answered</span><span><i></i>not answered</span>'
+    + '<span><i class="current"></i>current</span><span><i class="noted"></i>problem or comment</span></div>';
+}
+function goTo(index, target) {
+  const t = parseInt(target, 10);
+  if (!(t >= 1 && t <= PAYLOAD.length)) return;
+  if (index >= 1) readForm(PAYLOAD[index - 1]);
+  show(t);
+}
+function bindNavigator(index) {
+  document.querySelectorAll("[data-goto]").forEach(function (el) {
+    el.addEventListener("click", function () { goTo(index, el.getAttribute("data-goto")); });
+  });
+  const input = document.getElementById("goto-n");
+  const btn = document.getElementById("goto-btn");
+  if (btn && input) btn.addEventListener("click", function () { goTo(index, input.value); });
+  if (input) input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); goTo(index, input.value); }
+  });
+}
+function refreshNavigator() {
+  const box = document.getElementById("item-nav");
+  if (!box || !state.index) return;
+  box.innerHTML = navigatorHtml(state.index);
+  bindNavigator(state.index);
+}
 function itemHtml(item, index) {
   const rec = itemState(item.item_id);
   const n = PAYLOAD.length;
@@ -807,7 +885,8 @@ function itemHtml(item, index) {
     : '';
   return ''
     + '<div class="top"><h1>' + esc(label) + tag + '</h1>'
-    + '<div class="progress" title="' + index + ' of ' + n + '"><span style="width:' + Math.round(100 * index / n) + '%"></span></div></div>'
+    + '<button class="secondary" type="button" id="instructions">Instructions</button></div>'
+    + '<div class="card item-nav" id="item-nav">' + navigatorHtml(index) + '</div>'
     + banner
     + '<div class="item-layout">'
     + '<div class="card viewer">' + viewerHtml(item) + '</div>'
@@ -841,6 +920,7 @@ function readForm(item) {
   const comment = document.getElementById("comment");
   rec.comment = comment ? comment.value : "";
   save();
+  refreshNavigator();
 }
 function refreshRouteDisplay(item) {
   const rec = itemState(item.item_id);
@@ -905,9 +985,15 @@ function bindRouteBuilder(item) {
 }
 function bindChrome(index) {
   const start = document.getElementById("start");
-  if (start) start.addEventListener("click", function () { show(1); });
+  if (start) start.addEventListener("click", function () { show(state.last || 1); });
   const download = document.getElementById("download");
   if (download) download.addEventListener("click", downloadCsv);
+  const intro = document.getElementById("instructions");
+  if (intro) intro.addEventListener("click", function () {
+    readForm(PAYLOAD[index - 1]);
+    show(0);
+  });
+  bindNavigator(index);
   const back = document.getElementById("back");
   if (back) back.addEventListener("click", function () {
     readForm(PAYLOAD[index - 1]);
@@ -925,6 +1011,7 @@ function show(index) {
   if (index < 0) index = 0;
   if (index > PAYLOAD.length) index = PAYLOAD.length;
   state.index = index;
+  if (index > 0) state.last = index;
   save();
   frameIndex = 0;
   const root = document.getElementById("app");

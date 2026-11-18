@@ -441,3 +441,9 @@ def test_frame_labels_count_frames_back_without_noise():
     ]
     route = {'construct': 'route_knowledge', 'image_roles': ['frame 1 of 2, step 4 · source · Bed', 'walk']}
     assert _frame_labels_for_review(route, 2) == ['frame 1 of 2', 'frame 2 of 2']
+
+
+def test_page_has_item_navigator(tmp_path):
+    html = _load('build_review_package.py')._PAGE
+    for needle in ('id="item-nav"', 'data-goto', 'goto-n', 'answered', 'id="instructions"', 'Continue from item'):
+        assert needle in html
