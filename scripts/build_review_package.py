@@ -461,52 +461,76 @@ _PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review __REVIEWER_ID__</title>
 <style>
-  :root { color-scheme: light; }
-  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: #f4f1ea; color: #1c1a16; }
-  main { max-width: 1600px; margin: 0 auto; padding: 24px 20px 48px; }
-  h1 { font-size: 1.4rem; margin: 0 0 8px; }
-  h2 { font-size: 1.05rem; margin: 20px 0 8px; }
+  :root {
+    color-scheme: light;
+    --bg: #f3f1ec; --surface: #fff; --ink: #1d1b18; --muted: #6b665e; --line: #e2ddd3;
+    --accent: #2f5d8a; --accent-soft: #e8eff6; --warn-soft: #fff4d6; --frame: #0f0f10;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  main { max-width: 1600px; margin: 0 auto; padding: 20px 20px 48px; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  h2 { font-size: 0.8rem; margin: 18px 0 6px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
   p { margin: 8px 0; }
   button, .ghost { font: inherit; }
-  button { background: #1c1a16; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-  button.secondary { background: #fff; color: #1c1a16; border: 1px solid #1c1a16; }
+  button { background: var(--ink); color: #fff; border: 1px solid var(--ink); border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+  button:hover { opacity: 0.88; }
+  button.secondary { background: var(--surface); color: var(--ink); border-color: var(--line); }
+  button.secondary:hover { border-color: var(--ink); opacity: 1; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; }
-  .construct-tag { color: #9a9388; font-size: 0.65rem; font-weight: 400; letter-spacing: 0.04em; margin-left: 8px; vertical-align: middle; }
-  .card { background: #fff; border-radius: 10px; padding: 16px; margin-top: 12px; }
-  .frame-wrap { display: flex; justify-content: center; background: #111; border-radius: 8px; min-height: 180px; }
+  .row .spacer { flex: 1; }
+  .construct-tag { color: var(--muted); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; margin-left: 10px;
+    padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; vertical-align: middle; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-top: 12px; }
+  .top { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  .progress { flex: 0 1 280px; height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .progress span { display: block; height: 100%; background: var(--accent); }
+  .frame-wrap { display: flex; justify-content: center; background: var(--frame); border-radius: 8px; overflow: hidden; }
   /* Frames are 396x224: scale up to the column width so small objects stay legible. */
-  .frame-wrap img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
-  .frame-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-  .item-layout { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(300px, 0.8fr); gap: 12px; align-items: start; }
-  .viewer { margin-top: 12px; }
-  .question-panel { position: sticky; top: 12px; }
+  .frame-wrap img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; display: block; }
+  .frame-nav { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
+  #frame-label { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.95rem; }
+  .item-layout { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(320px, 0.85fr); gap: 16px; align-items: start; }
+  .viewer { margin-top: 12px; padding: 12px; }
+  .question-panel { position: sticky; top: 12px; margin-top: 12px; }
   .question-panel .card { margin-top: 0; }
-  .thumbs { display: flex; gap: 6px; overflow-x: auto; margin-top: 8px; }
-  .thumb { padding: 0; border: 3px solid transparent; border-radius: 4px; background: #111; line-height: 0; flex: 0 0 auto; }
-  .thumb.current { border-color: #e6a817; }
-  .thumb img { height: 64px; width: 96px; object-fit: cover; display: block; }
-  input[type="range"] { width: 100%; margin: 10px 0 0; }
+  .thumbs { display: flex; gap: 6px; overflow-x: auto; margin-top: 10px; padding-bottom: 4px; }
+  .thumb { padding: 0; border: 3px solid transparent; border-radius: 6px; background: var(--frame); line-height: 0; flex: 0 0 auto; opacity: 0.7; }
+  .thumb:hover { opacity: 1; }
+  .thumb.current { border-color: var(--accent); opacity: 1; }
+  .thumb img { height: 56px; width: 99px; object-fit: cover; display: block; border-radius: 3px; }
+  input[type="range"] { width: 100%; margin: 12px 0 0; accent-color: var(--accent); }
   @media (max-width: 800px) {
     .item-layout { grid-template-columns: 1fr; }
     .question-panel { position: static; }
+    main { padding: 12px 12px 32px; }
   }
-  .question { font-size: 1.15rem; white-space: pre-wrap; }
-  label.choice { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
-  textarea { width: 100%; min-height: 72px; font: inherit; padding: 8px; box-sizing: border-box; }
-  .banner { background: #fff4cc; border-radius: 8px; padding: 10px 12px; }
+  .question { font-size: 1.2rem; line-height: 1.45; font-weight: 500; white-space: pre-wrap; margin: 0;
+    padding: 2px 0 2px 14px; border-left: 4px solid var(--accent); }
+  label.choice { display: flex; gap: 10px; align-items: center; padding: 9px 12px; margin: 6px 0;
+    border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+  label.choice:hover { border-color: var(--accent); }
+  label.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  label.choice input { accent-color: var(--accent); margin: 0; }
+  .flags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .flags label.choice { margin: 0; padding: 5px 10px; font-size: 0.9rem; border-radius: 999px; }
+  textarea { width: 100%; min-height: 64px; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+  .banner { background: var(--warn-soft); border: 1px solid #f0dfa6; border-radius: var(--radius); padding: 10px 14px; margin-top: 12px; }
+  .banner p { margin: 4px 0; }
   .answer { font-weight: 600; }
   ul { margin: 8px 0; padding-left: 1.2rem; }
-  .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
   .route-builder { margin-top: 8px; }
   .route-builder .controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
   .route-builder .controls button { font-size: 0.9rem; padding: 6px 10px; }
-  .route-builder .hint { color: #6b6560; font-size: 0.9rem; }
+  .route-builder .hint { color: var(--muted); font-size: 0.9rem; }
   .route-builder .seq {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85rem; background: #f7f4ee; border-radius: 6px;
+    font-size: 0.85rem; background: var(--bg); border-radius: 8px;
     padding: 8px; min-height: 2.4em; white-space: pre-wrap; word-break: break-word;
   }
-  .route-builder input[type="number"] { width: 3.5rem; font: inherit; padding: 4px 6px; }
+  .route-builder input[type="number"] { width: 3.5rem; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -625,8 +649,7 @@ function instructionsHtml() {
   return ''
     + '<div class="top"><h1>Spatial question review</h1></div>'
     + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n". Questions name the frames they refer to by these numbers; "the last frame" is frame n. Where a question counts frames back, the label also says how far back each frame is.</p>'
-    + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
-    + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
+    + '<p>The question is shown next to the frames. Read it, then look through the frames it refers to. When an item has more than one frame, move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded. On a narrow screen the question sits under the frames.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
     + '<p>For route and survey questions, the prompt asks you to start at your pose in frame i (the source in view) and end at your pose in frame j (the goal in view). Answer <strong>Can that route be worked out from these frames?</strong> Yes or no, then build the action sequence with the route builder (Forward/Back ×N at '
     + MOVE_M + ' m per step, 45° / 90° turns). Undo and Clear are available. The expanded action list is saved as your answer.</p>'
@@ -679,27 +702,17 @@ function viewerHtml(item) {
     thumbs += '<button type="button" class="thumb' + (i === frameIndex ? " current" : "") + '" data-frame="' + i + '">'
       + '<img alt="" src="' + esc(src) + '"></button>';
   });
+  const image = '<div class="frame-wrap"><img id="frame-img" alt="" src="' + esc(item.frames[frameIndex]) + '"></div>';
+  // A single image needs no label, navigation, slider or thumbnails.
+  if (n < 2) return image;
   const labels = item.frame_labels || [];
-  // A single image needs no frame label (step, role and object are noise there).
-  const startLabel = n < 2 ? '' : (labels[frameIndex]
-    || ('frame ' + (frameIndex + 1) + ' of ' + n));
-  return ''
-    + '<div class="frame-wrap"><img id="frame-img" alt="" src="' + esc(item.frames[frameIndex]) + '"></div>'
-    + '<div class="frame-nav"><button class="secondary" type="button" id="prev-frame">Previous</button>'
+  const startLabel = labels[frameIndex] || ('frame ' + (frameIndex + 1) + ' of ' + n);
+  return image
+    + '<div class="frame-nav"><button class="secondary" type="button" id="prev-frame">&#8249; Previous</button>'
     + '<span id="frame-label">' + esc(startLabel) + '</span>'
-    + '<button class="secondary" type="button" id="next-frame">Next</button></div>'
-    + '<input id="frame-slider" type="range" min="1" max="' + n + '" value="' + (frameIndex + 1) + '"'
-    + (n < 2 ? " disabled" : "") + '>'
+    + '<button class="secondary" type="button" id="next-frame">Next &#8250;</button></div>'
+    + '<input id="frame-slider" type="range" min="1" max="' + n + '" value="' + (frameIndex + 1) + '">'
     + '<div class="thumbs" id="thumbs">' + thumbs + '</div>';
-}
-function isSequence(item) {
-  return !!(item && item.frames && item.frames.length > 1);
-}
-function questionOpen(item) {
-  if (!isSequence(item)) return true;
-  const rec = itemState(item.item_id);
-  if (item.kind === "nav") return !!(rec.revealed || rec.answerable);
-  return !!(rec.revealed || rec.answer);
 }
 function navPrompt(item) {
   const a = item.route_from || "source";
@@ -743,7 +756,7 @@ function questionBlock(item, answers, flags, prompt) {
   return '<div class="card"><p class="question">' + esc(item.question) + '</p>'
     + '<h2>' + prompt + '</h2>' + answers
     + route
-    + '<h2>Problems</h2>' + flags
+    + '<h2>Problems</h2><div class="flags">' + flags + '</div>'
     + '<h2>Comment</h2><textarea id="comment">' + esc(rec.comment || "") + '</textarea>'
     + '</div>';
 }
@@ -778,27 +791,23 @@ function itemHtml(item, index) {
     flags += '<label class="choice"><input type="checkbox" name="flag" value="' + flag + '"' + checked + '> ' + esc(text) + '</label>';
   });
   const prompt = item.kind === "nav" ? navPrompt(item) : "Your answer";
-  const open = questionOpen(item);
   let banner = '';
   if (practice) {
-    banner = '<div class="banner"><p>Practice. This one is not part of the scored review.</p>';
-    if (open) banner += '<p class="answer">Stored answer: ' + esc(item.show_answer || "") + '</p>';
-    banner += '</div>';
+    banner = '<div class="banner"><p>Practice. This one is not part of the scored review.</p>'
+      + '<p class="answer">Stored answer: ' + esc(item.show_answer || "") + '</p></div>';
   }
   const nav = '<div class="row"><button class="secondary" type="button" id="back">Back</button>'
-    + (open ? '<button type="button" id="next">' + (index === n ? "Done" : "Next") + '</button>' : '')
-    + '<button class="secondary" type="button" id="download">Download CSV</button></div>';
-  const panel = open
-    ? (questionBlock(item, answers, flags, prompt) + nav)
-    : ('<div class="card"><p>Look through the frames in order. The question appears when you finish.</p>'
-      + '<div class="row"><button type="button" id="reveal-question">Show the question</button></div></div>'
-      + nav);
+    + '<button class="secondary" type="button" id="download">Download CSV</button>'
+    + '<span class="spacer"></span>'
+    + '<button type="button" id="next">' + (index === n ? "Done" : "Next item") + '</button></div>';
+  const panel = questionBlock(item, answers, flags, prompt) + nav;
   const initials = CONSTRUCT_INITIALS[item.construct] || "";
   const tag = initials
     ? '<span class="construct-tag" title="' + esc(item.construct) + '">' + esc(initials) + '</span>'
     : '';
   return ''
-    + '<div class="top"><h1>' + esc(label) + tag + '</h1></div>'
+    + '<div class="top"><h1>' + esc(label) + tag + '</h1>'
+    + '<div class="progress" title="' + index + ' of ' + n + '"><span style="width:' + Math.round(100 * index / n) + '%"></span></div></div>'
     + banner
     + '<div class="item-layout">'
     + '<div class="card viewer">' + viewerHtml(item) + '</div>'
@@ -953,21 +962,9 @@ function bindItem(item, index) {
   document.querySelectorAll(".thumb").forEach(function (el) {
     el.addEventListener("click", function () { setFrame(Number(el.getAttribute("data-frame"))); });
   });
-  const reveal = document.getElementById("reveal-question");
-  if (reveal) reveal.addEventListener("click", function () {
-    const keep = frameIndex;
-    itemState(item.item_id).revealed = true;
-    save();
-    frameIndex = keep;
-    const root = document.getElementById("app");
-    root.innerHTML = itemHtml(item, index);
-    bindItem(item, index);
-    bindChrome(index);
-    setFrame(keep);
-  });
 }
 document.addEventListener("keydown", function (e) {
-  if (!activeItem || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+  if (!activeItem || activeItem.frames.length < 2 || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
   const el = e.target;
   if (el && (el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return;
   if (el && el.tagName === "INPUT" && el.type !== "button") return;

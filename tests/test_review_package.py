@@ -156,8 +156,9 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert 'frame ' in html and ' of ' in html
         assert 'frames_viewed' in html
         assert 'frame-slider' in html
-        assert 'reveal-question' in html
-        assert 'Show the question' in html
+        # The question is always shown; there is no reveal step.
+        assert 'reveal-question' not in html
+        assert 'Show the question' not in html
         assert "Can't tell" in html
         assert 'worked out from these frames' in html
         assert 'route-builder' in html
