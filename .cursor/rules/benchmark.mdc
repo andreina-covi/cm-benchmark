@@ -21,7 +21,7 @@ exports + question. 8 constructs, 4 classes (configs/taxonomy.yaml).
    name their reference frames by number ("in frame 1 (k frames before the last
    frame)", "in the last frame (frame n)"), never "now" or "k steps ago".
    Verbose preambles name only objects visible in the shown frames and never
-   restate the queried object.
+   restate the queried object, repeat the question or say how to answer it.
 5. Confusable objects (obj-synset rule) are disambiguated by proximity or mark;
    never by a direction.
 

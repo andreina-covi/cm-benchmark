@@ -328,7 +328,8 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
     Per taxonomy shared_rules: only SWM / invisible_displacement verbose may
     name other static scene objects, and never with direction/distance/relation.
     It names only objects visible in the item's shown frames (encoding and last
-    frame) and never restates the queried object, which the question names.
+    frame), never restates the queried object, and never repeats the question or
+    says how to answer it.
     """
     step_idx = fact.encoding_step if fact.encoding_step is not None else fact.query_step
     step = step_by_index(episode, step_idx) if step_idx is not None else None
@@ -336,62 +337,9 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         step = episode['steps'][0]
 
     parts = []
-    extra = fact.extra or {}
 
-    # Online protocol cues that are NOT already in the core template.
-    # SWM / spatial_updating embed {k} in CONSTRUCT_TEMPLATES — do not restate.
-    if fact.construct == 'invisible_displacement':
-        mode = extra.get('template_mode')
-        if mode == 'swap':
-            parts.append(
-                'Two objects exchanged places while hidden. The question names '
-                'the partner object you saw earlier — not a receptacle.'
-            )
-        else:
-            parts.append(
-                'The object relocated while hidden. Use the destination named '
-                'in the question and report its bearing from your pose in the last frame.'
-            )
-    elif fact.construct == 'route_knowledge':
-        src = extra.get('source', 'start')
-        goal = extra.get('goal', 'goal')
-        si = extra.get('source_frame')
-        gi = extra.get('goal_frame')
-        if si is not None and gi is not None:
-            parts.append(
-                f'Start at your position in frame {si}, facing as in frame {si} '
-                f'(the {src} is in view). Retrace the walked route, ending at '
-                f'your position in frame {gi} (the {goal} is in view).'
-            )
-        else:
-            parts.append(
-                f'Retrace the walked route from the {src} to the {goal}.'
-            )
-    elif fact.construct == 'survey_based_route_planning':
-        src = extra.get('source', 'start')
-        goal = extra.get('goal', 'goal')
-        si = extra.get('source_frame')
-        gi = extra.get('goal_frame')
-        if si is not None and gi is not None:
-            parts.append(
-                f'Start at your position in frame {si}, facing as in frame {si} '
-                f'(the {src} is in view). Using layout you have seen, list a '
-                f'route that ends at your position in frame {gi} '
-                f'(the {goal} is in view). That connecting path was never walked.'
-            )
-        else:
-            parts.append(
-                f'Use the layout to plan a walk from the {src} to the {goal}. '
-                'The connecting path was never walked; evidence comes from a '
-                'doorway glimpse.'
-            )
-    elif fact.construct == 'perspective_taking':
-        parts.append(
-            f"Adopt an imagined viewpoint at {extra.get('A', 'landmark A')}, "
-            f"facing {extra.get('B', 'landmark B')}, then locate "
-            f"{extra.get('C', 'landmark C')}."
-        )
-
+    # No construct-specific opener: it would repeat the question or tell the
+    # model how to answer. Verbose adds only the room and visible objects.
     room = _object_room_label(episode, fact, step)
     if room:
         parts.append(f'You are looking around a space identified as {room}.')

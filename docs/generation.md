@@ -167,7 +167,7 @@ A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `-
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
 - Sequence questions name their reference frames by number, matching the `frame i of n` labels: `in frame {enc_frame} ({k} frames before the last frame)` and `in the last frame (frame {last_frame})`. k counts shown frames. No question says “now” about a sequence.
-- The verbose preamble (SWM and ID only add scene detail) names only objects visible in the encoding or last shown frame, without relations, and never restates the queried object.
+- The verbose preamble adds the queried object's room, and for SWM and ID the objects visible in the encoding or last shown frame, without relations. It never restates the queried object, repeats the question, or tells the model how to answer.
 - Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).

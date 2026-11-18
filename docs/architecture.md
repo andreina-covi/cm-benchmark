@@ -197,7 +197,7 @@ Count mode (reserved `max(1, max_items // 3)` slots): for each step,
 category; categories with ≥ 2 instances become "How many X have you seen?"
 items with off-by-one distractors, encoded at `_first_step_with_category`.
 
-### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Nothing else was moved. Where is the X now?"
+### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Where is the X relative to you in the last frame (frame n)?"
 
 `plan_invisible_displacement` uses the episode's `placement_candidates` when it
 has any (`_plan_id_from_placements`), and the older `displacement_events`

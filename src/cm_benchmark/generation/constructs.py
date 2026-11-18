@@ -70,7 +70,7 @@ CONSTRUCT_TEMPLATES = {
         'recall_direction': [
             (
                 'While the {object_type}{disambiguator} was out of your view, someone moved it onto '
-                '{new_location}. Nothing else was moved. '
+                '{new_location}. '
                 'Where is the {object_type} relative to you in the last frame (frame {last_frame})?'
             ),
         ],

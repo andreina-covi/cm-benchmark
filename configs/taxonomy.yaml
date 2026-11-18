@@ -28,7 +28,7 @@ shared_rules:
     # scene for verbosity/robustness testing (e.g. "the frames show a Window, a
     # CounterTop, a Chair, and a Fridge"). Named objects must be visible in the
     # item's shown frames, and the preamble never restates the queried object
-    # (the question names it). Named objects must NEVER be paired
+    # (the question names it), repeats the question, or says how to answer it. Named objects must NEVER be paired
     # with a direction, distance, or any relation to the queried object or to
     # each other — naming without relating. This tests tolerance to added scene
     # detail, not distractor resistance; see invisible_displacement
