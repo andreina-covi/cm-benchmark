@@ -52,7 +52,7 @@ CONSTRUCT_TEMPLATES = {
         # Delay k is a difficulty axis — must be stated in the question (not implicit).
         'recall_relation': [
             (
-                '{k} steps ago, where was the {object_type}{disambiguator} '
+                '{k} {frames} ago, where was the {object_type}{disambiguator} '
                 'relative to you at that moment?'
             )
         ],
@@ -82,7 +82,7 @@ CONSTRUCT_TEMPLATES = {
     },
     'spatial_updating': [
         (
-            'Considering the last {k} navigation steps, '
+            'Considering the last {k} {frames}, '
             'where is the {object_type}{disambiguator} relative to you now?'
         ),
     ],

@@ -181,6 +181,21 @@ def _usable_display_name(planned: Optional[str], obj_id: Optional[str]) -> str:
     return 'object'
 
 
+def _shown_frame_delay(fact: PlannedFact) -> Optional[int]:
+    """Frames between the encoding and query frames in the list the model sees.
+
+    ``extra['k']`` counts simulator steps. Frame-budget sampling can drop frames,
+    so the question counts shown frames instead. None when either step is not shown.
+    """
+    shown = [int(s) for s in ((fact.extra or {}).get('shown_frame_steps') or [])]
+    if fact.query_step is None or fact.encoding_step is None:
+        return None
+    try:
+        return shown.index(int(fact.query_step)) - shown.index(int(fact.encoding_step))
+    except ValueError:
+        return None
+
+
 def _core_question(fact: PlannedFact) -> str:
     """Fill the construct's template with the fact's names, delay and cues."""
     extra = fact.extra or {}
@@ -203,7 +218,9 @@ def _core_question(fact: PlannedFact) -> str:
     landmark_a = extra.get('A') or source
     landmark_b = extra.get('B') or goal
     landmark_c = extra.get('C') or object_type
-    k = extra.get('k')
+    k = _shown_frame_delay(fact)
+    if k is None:
+        k = extra.get('k')
     if k is None and fact.query_step is not None and fact.encoding_step is not None:
         k = max(1, int(fact.query_step) - int(fact.encoding_step))
     k = max(1, int(k or 1))
@@ -234,13 +251,14 @@ def _core_question(fact: PlannedFact) -> str:
         B=landmark_b,
         C=landmark_c,
         k=k,
+        frames='frame' if k == 1 else 'frames',
         new_location=new_location,
         condition=condition,
         relation=relation,
         disambiguator=disambiguator,
     )
     # Online sequential protocol: no multi-image "time order" cue; templates
-    # already situate "now" / "{k} steps ago" relative to the live nav stream.
+    # already situate "now" / "{k} frames ago" (k counts shown frames).
     return body
 
 

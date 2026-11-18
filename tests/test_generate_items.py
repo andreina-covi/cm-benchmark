@@ -1841,8 +1841,8 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
         delayed_episode, fact.encoding_step, fact.query_step
     )
     q = _core_question(fact)
-    assert str(k) in q
-    assert 'steps' in q.lower() or 'ago' in q.lower()
+    assert str(len(fact.image_paths) - 1) in q
+    assert 'frames ago' in q.lower()
 
 
 def test_swm_delay_range_is_configurable(delayed_episode):
@@ -1880,7 +1880,21 @@ def test_spatial_updating_mentions_now(delayed_episode):
     # Online sequential protocol: no bundled multi-image time-order cue.
     assert 'time order' not in q
     assert 'images are shown' not in q
-    assert 'steps' in q or 'navigation' in q
+    assert 'frames' in q
+
+
+def test_delay_in_question_counts_shown_frames(delayed_episode):
+    facts = plan_episode(
+        delayed_episode, constructs=['spatial_working_memory'], max_per_construct=2
+    )
+    fact = next(f for f in facts if (f.extra or {}).get('template_mode') == 'recall_relation')
+    enc, query = fact.encoding_step, fact.query_step
+    # Frame-budget sampling kept only the encoding and query frames.
+    fact.extra['shown_frame_steps'] = [enc, query]
+    assert fact.extra['k'] == query - enc >= 2
+    assert _core_question(fact).startswith('1 frame ago,')
+    fact.extra['shown_frame_steps'] = [enc, enc + 1, query]
+    assert _core_question(fact).startswith('2 frames ago,')
 
 
 def test_spatial_updating_delay_range_is_configurable(delayed_episode):

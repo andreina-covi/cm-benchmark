@@ -178,7 +178,7 @@ directions are never used.
 `plan_allocentric_encoding` always returns `unsupported`: the data has no
 trusted object facing, so object-to-object frames would be invented.
 
-### spatial_working_memory (class 2) — "{k} steps ago, where was the X relative to you at that moment?"
+### spatial_working_memory (class 2) — "{k} frames ago, where was the X relative to you at that moment?"
 
 Relation mode (most of the budget):
 

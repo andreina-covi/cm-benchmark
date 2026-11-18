@@ -166,7 +166,7 @@ Optional flags:
 A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
-- Temporal wording is `{k} steps ago` / `now` — not a bundled “time order” cue.
+- Temporal wording is `{k} frames ago` / `now` (k counts shown frames from the encoding frame to the query frame, after frame-budget sampling) — not a bundled “time order” cue.
 - Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).

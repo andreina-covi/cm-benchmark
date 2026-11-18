@@ -33,7 +33,7 @@ Runs on every candidate item before it's eligible for human review. This is the 
 - `answer_source` is non-null and resolves to a real field/row in the episode store (invariant #2).
 - For MCQ constructs, `answer` is one of `options`; exactly one option is correct. Class-4 (`route_knowledge`, `survey_based_route_planning`) has empty `options`: the model writes a free action sequence; [CODE] scoring is metric simulation (route: success / SPL / nDTW / SDTW; survey: success / SPL; edge-membership validity is diagnostic only), not option match. The allowed action names are stated once in `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION` (the Model Runner wraps every item with it) — not in the per-item question.
 - `frame_of_reference` is set and matches what the construct requires (fixed per construct, or explicit in multi-frame items).
-- For temporal constructs (class 2–4): question text situates “now” / “{k} steps ago”
+- For temporal constructs (class 2–4): question text situates “now” / “{k} frames ago”
   relative to the live navigation stream (online sequential protocol). Do **not** require
   a bundled multi-image “time order” cue. Flag as bug if temporal reference is ambiguous.
 - `image_paths` are non-empty and resolvable to real files. When
