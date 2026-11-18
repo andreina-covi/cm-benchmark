@@ -48,42 +48,45 @@ CONSTRUCT_TEMPLATES = {
     'allocentric_encoding': [
         'Where is the {object_type} in relation to the {reference_object}?',
     ],
+    # Sequence questions name their reference frames by number ("frame i of n"
+    # labels): {enc_frame} is the encoding frame, {last_frame} the last shown frame.
     'spatial_working_memory': {
         # Delay k is a difficulty axis — must be stated in the question (not implicit).
         'recall_relation': [
             (
-                '{k} {frames} ago, where was the {object_type}{disambiguator} '
-                'relative to you at that moment?'
+                'Where was the {object_type}{disambiguator} relative to you in frame '
+                '{enc_frame} ({k} {frames} before the last frame)?'
             )
         ],
         'recall_count': [
-            'How many distinct {object_category}s have you seen up to this point?',
+            'Across frames {enc_frame} to {last_frame}, how many distinct '
+            '{object_category}s have you seen?',
         ],
     },
     'invisible_displacement': {
         # Destination cue required: named landmark (direct) or partner object (swap).
         # Never ask "Where is X now?" alone — the hidden move is unwitnessed.
-        # Wording is for online sequential models (stream already seen; no image bundle).
         # k is stored on the item for analysis; the probe is destination tracking, not delay.
         'recall_direction': [
             (
                 'While the {object_type}{disambiguator} was out of your view, someone moved it onto '
                 '{new_location}. Nothing else was moved. '
-                'Where is the {object_type} relative to you now?'
+                'Where is the {object_type} relative to you in the last frame (frame {last_frame})?'
             ),
         ],
         'swap': [
             (
                 'While they were out of your view, the {object_type}{disambiguator} and the '
                 '{other_object_type} swapped places, so the {object_type} was moved to where the '
-                '{other_object_type} used to be. Where is the {object_type} relative to you now?'
+                '{other_object_type} used to be. Where is the {object_type} relative to you '
+                'in the last frame (frame {last_frame})?'
             ),
         ],
     },
     'spatial_updating': [
         (
-            'Considering the last {k} {frames}, '
-            'where is the {object_type}{disambiguator} relative to you now?'
+            'The {object_type}{disambiguator} is in view in frame {enc_frame}. '
+            'Where is it relative to you in the last frame (frame {last_frame})?'
         ),
     ],
     'perspective_taking': [

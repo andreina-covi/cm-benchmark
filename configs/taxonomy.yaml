@@ -20,10 +20,15 @@ analysis_breakdowns: [per_construct, "per_construct_x_frame_of_reference"]
 shared_rules:
   - question text names only the queried object(s) and asks the relation;
     it must never state the answer, a direction, or any move/event
+  - a question over a frame sequence names its reference frames by number,
+    matching the "frame i of n" labels ("in frame 1 (k frames before the last
+    frame)", "in the last frame (frame n)"); it never says "now" or "k steps ago"
   # EXCEPTION (spatial_working_memory | invisible_displacement, verbose only):
     # may additionally name other static, non-queried objects present in the
-    # scene for verbosity/robustness testing (e.g. "you can see a Window, a
-    # CounterTop, a Chair, and a Fridge"). Named objects must NEVER be paired
+    # scene for verbosity/robustness testing (e.g. "the frames show a Window, a
+    # CounterTop, a Chair, and a Fridge"). Named objects must be visible in the
+    # item's shown frames, and the preamble never restates the queried object
+    # (the question names it). Named objects must NEVER be paired
     # with a direction, distance, or any relation to the queried object or to
     # each other — naming without relating. This tests tolerance to added scene
     # detail, not distractor resistance; see invisible_displacement
@@ -116,8 +121,8 @@ class_2:
       answer_type: recalled relation, location, or count of past-seen items
       required_temporal_fields: [agent_trajectory, agent_actions]
       question_template: >-
-        {k} steps ago, where was the {object_type}{disambiguator} relative to you at that moment?
-        / How many {objects} have you seen so far?
+        Where was the {object_type}{disambiguator} relative to you in frame {enc_frame} ({k} frames before the last frame)?
+        / Across frames {enc_frame} to {last_frame}, how many distinct {objects} have you seen?
       ground_truth_method: >
         Recalled relation, location, or count from the encoding step.
         The object is static; the queried info is gone from the final view.
@@ -146,10 +151,10 @@ class_2:
       question_template:
         recall_direction: >-
           While out of view, the {object_type} was moved onto {new_location}.
-          Where is it relative to you now?
+          Where is it relative to you in the last frame (frame {last_frame})?
         swap: >-
           The {object_type} was moved to where the {other_object_type} used to be.
-          Where is the {object_type} relative to you now?
+          Where is the {object_type} relative to you in the last frame (frame {last_frame})?
       ground_truth_method: >
         Built from successful placement_candidates. The move step is the
         latest frame in (encode, query] at which the object is hidden.
@@ -184,7 +189,7 @@ class_3:
       answer_type: egocentric direction at the post-move pose
       required_temporal_fields: [agent_trajectory, agent_actions, object_state_track]
       question_template: >-
-        Considering the last {k} navigation steps, where is the {object_type} relative to you now?
+        The {object_type} is in view in frame {enc_frame}. Where is it relative to you in the last frame (frame {last_frame})?
       ground_truth_method: >
         Confirm a real pose change (position or heading) between encode and
         query — not action count alone. Object stays put (object_state_track).

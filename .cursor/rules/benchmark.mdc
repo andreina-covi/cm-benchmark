@@ -17,7 +17,11 @@ exports + question. 8 constructs, 4 classes (configs/taxonomy.yaml).
 1. Answers come only from exported metadata; every item has answer_source.
 2. Generation, validation and scoring are deterministic code; no LLM judges answers.
 3. FREEZE is one-way: evaluation never edits or regenerates items.
-4. Questions never state the answer, a direction or a move.
+4. Questions never state the answer, a direction or a move. Sequence questions
+   name their reference frames by number ("in frame 1 (k frames before the last
+   frame)", "in the last frame (frame n)"), never "now" or "k steps ago".
+   Verbose preambles name only objects visible in the shown frames and never
+   restate the queried object.
 5. Confusable objects (obj-synset rule) are disambiguated by proximity or mark;
    never by a direction.
 

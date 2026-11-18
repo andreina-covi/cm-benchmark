@@ -11,7 +11,7 @@ A spatial-cognition QA benchmark for vision-language models. Each item is a mult
 1. Answers come only from exported simulator metadata, and every item has a non-null `answer_source`.
 2. Generation, validation and scoring are deterministic code. No LLM judges answers. `paraphrase.py` may reword a question but never its answer, and it is off by default.
 3. FREEZE is one-way: evaluation never edits or regenerates items. Frozen items require `vision_necessary == true`.
-4. Questions never state the answer, a direction or a move. Verbose preambles must not leak the answer.
+4. Questions never state the answer, a direction or a move. Verbose preambles must not leak the answer, name only objects visible in the shown frames, and never restate the queried object. Questions over a frame sequence name their reference frames by number ("in frame 1 (k frames before the last frame)", "in the last frame (frame n)"), never "now" or "k steps ago".
 5. Confusable objects (the `obj-synset` rule) are disambiguated by proximity to a unique landmark or by a numbered mark, never by a direction.
 6. Every quality-affecting number lives in `configs/generation.yaml`. Never hardcode one. Partial configs (e.g. `configs/ablations/*.yaml`, `configs/generation_max.yaml`) are merged onto it by `load_generation_config`, and are passed with `--config`.
 

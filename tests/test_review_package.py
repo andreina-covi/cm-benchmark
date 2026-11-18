@@ -434,9 +434,9 @@ def test_frame_labels_count_frames_back_without_noise():
         'context': {'shown_frame_steps': [60, 61, 63]},
     }
     assert _frame_labels_for_review(swm, 3) == [
-        'frame 1 of 3 · 2 frames ago',
-        'frame 2 of 3 · 1 frame ago',
-        'frame 3 of 3 · now',
+        'frame 1 of 3 · 2 frames before the last',
+        'frame 2 of 3 · 1 frame before the last',
+        'frame 3 of 3 · last frame',
     ]
     route = {'construct': 'route_knowledge', 'image_roles': ['frame 1 of 2, step 4 · source · Bed', 'walk']}
     assert _frame_labels_for_review(route, 2) == ['frame 1 of 2', 'frame 2 of 2']

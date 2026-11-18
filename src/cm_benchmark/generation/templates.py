@@ -196,6 +196,17 @@ def _shown_frame_delay(fact: PlannedFact) -> Optional[int]:
         return None
 
 
+def _shown_frame_numbers(fact: PlannedFact) -> tuple[int, int]:
+    """1-based ``(encoding frame, last frame)`` among the frames the item shows."""
+    extra = fact.extra or {}
+    shown = [int(s) for s in (extra.get('shown_frame_steps') or [])]
+    last = len(shown) or len(fact.image_paths or []) or 1
+    enc = 1
+    if fact.encoding_step is not None and int(fact.encoding_step) in shown:
+        enc = shown.index(int(fact.encoding_step)) + 1
+    return enc, last
+
+
 def _core_question(fact: PlannedFact) -> str:
     """Fill the construct's template with the fact's names, delay and cues."""
     extra = fact.extra or {}
@@ -218,6 +229,7 @@ def _core_question(fact: PlannedFact) -> str:
     landmark_a = extra.get('A') or source
     landmark_b = extra.get('B') or goal
     landmark_c = extra.get('C') or object_type
+    enc_frame, last_frame = _shown_frame_numbers(fact)
     k = _shown_frame_delay(fact)
     if k is None:
         k = extra.get('k')
@@ -252,13 +264,15 @@ def _core_question(fact: PlannedFact) -> str:
         C=landmark_c,
         k=k,
         frames='frame' if k == 1 else 'frames',
+        enc_frame=enc_frame,
+        last_frame=last_frame,
         new_location=new_location,
         condition=condition,
         relation=relation,
         disambiguator=disambiguator,
     )
     # Online sequential protocol: no multi-image "time order" cue; templates
-    # already situate "now" / "{k} frames ago" (k counts shown frames).
+    # name their reference frames by number (frame {enc_frame}, the last frame).
     return body
 
 
@@ -313,6 +327,8 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
 
     Per taxonomy shared_rules: only SWM / invisible_displacement verbose may
     name other static scene objects, and never with direction/distance/relation.
+    It names only objects visible in the item's shown frames (encoding and last
+    frame) and never restates the queried object, which the question names.
     """
     step_idx = fact.encoding_step if fact.encoding_step is not None else fact.query_step
     step = step_by_index(episode, step_idx) if step_idx is not None else None
@@ -334,7 +350,7 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         else:
             parts.append(
                 'The object relocated while hidden. Use the destination named '
-                'in the question and report its bearing from your current pose.'
+                'in the question and report its bearing from your pose in the last frame.'
             )
     elif fact.construct == 'route_knowledge':
         src = extra.get('source', 'start')
@@ -380,7 +396,6 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
     if room:
         parts.append(f'You are looking around a space identified as {room}.')
 
-    visible = (step or {}).get('visible_objects') or {}
     queried = fact.queried_object_id
     allow_scene_detail = fact.construct in _VERBOSE_SCENE_DETAIL_CONSTRUCTS
 
@@ -409,48 +424,17 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
                 if key in seen_types:
                     continue
                 seen_types.add(key)
-                others.append(f'a {typ}')
+                others.append(f"{'an' if typ[:1].lower() in 'aeiou' else 'a'} {typ}")
 
         if others:
             if len(others) == 1:
-                parts.append(f'Also visible is {others[0]}.')
+                parts.append(f'The frames show {others[0]}.')
             else:
                 parts.append(
-                    'Among other things, you can see '
+                    'Among other things, the frames show '
                     + ', '.join(others[:-1])
                     + f', and {others[-1]}.'
                 )
-
-        nv_cats: list[str] = []
-        nv_seen: set[str] = set()
-        for st in detail_steps:
-            cap = get_generation_config().templates.verbose_max_nonvisible_names
-            for oid, odata in list((st.get('non_visible_objects') or {}).items())[:cap]:
-                if oid == queried:
-                    continue
-                typ = object_type_from_id(oid, {oid: odata})
-                key = typ.lower()
-                if key in nv_seen:
-                    continue
-                nv_seen.add(key)
-                nv_cats.append(typ)
-                if len(nv_cats) >= cap:
-                    break
-            if len(nv_cats) >= cap:
-                break
-        if nv_cats:
-            parts.append(
-                'Some objects are no longer in view, including '
-                + ', '.join(nv_cats)
-                + '.'
-            )
-
-    if queried:
-        qtype = _usable_display_name(extra.get('object_type'), queried)
-        if queried in visible:
-            parts.append(f'There is also a {qtype} in the scene.')
-        else:
-            parts.append(f'You previously noticed a {qtype}.')
 
     preamble = ' '.join(parts).strip()
     if fact.answer_label and fact.answer_label.lower() in preamble.lower():

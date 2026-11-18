@@ -50,9 +50,9 @@ _ACTION_LIST = ', '.join(ACTION_VOCAB)
 CHAT_SYSTEM_INSTRUCTION = (
     'You are a robot exploring a house with a front-facing camera. The images are '
     'frames from your camera in chronological order: the first image is the earliest '
-    'and the last image is your current view ("now"). One step is one action you took. '
-    'Each shown frame is labeled "frame i of n, step s" (i = 1-based index among the '
-    'attached images; s = agent step index). '
+    'and the last image is your current view. '
+    'Each shown frame is labeled "frame i of n" (i = 1-based position among the '
+    'attached images). Questions refer to frames by these numbers; the last frame is frame n. '
     'Answer using only the images and text in this message. '
     'Directions ("left", "right", "ahead", "behind") are relative to where you are '
     'facing in the last image, unless the question asks you to imagine another position. '
@@ -76,7 +76,7 @@ CHAT_UPLOAD_MESSAGE = (
     'The attached images are the only visual information: they are frames from a camera,\n'
     'named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the\n'
     'highest number is the current view). prompt.txt labels each as '
-    '"frame i of n, step s".\n'
+    '"frame i of n".\n'
     '\n'
     'Read prompt.txt and answer the question it contains, following its answer format\n'
     'exactly. Base your answer only on these images and the text in prompt.txt, plus\n'
@@ -114,24 +114,9 @@ def gold_for_answers(item: dict) -> str:
 
 
 def _frame_labels(item: dict) -> list[str]:
-    """``frame i of n, step s`` lines aligned with ``image_paths``."""
-    paths = item.get('image_paths') or []
-    n = len(paths)
-    if n == 0:
-        return []
-    ctx = item.get('context') or {}
-    roles = item.get('image_roles') or ctx.get('image_roles') or []
-    steps = ctx.get('shown_frame_steps') or []
-    labels: list[str] = []
-    for i in range(n):
-        if i < len(roles) and str(roles[i]).startswith('frame '):
-            labels.append(str(roles[i]))
-            continue
-        step = int(steps[i]) if i < len(steps) else i
-        role = str(roles[i]) if i < len(roles) else ''
-        base = f'frame {i + 1} of {n}, step {step}'
-        labels.append(f'{base} · {role}' if role else base)
-    return labels
+    """``frame i of n`` lines aligned with ``image_paths`` (questions cite these numbers)."""
+    n = len(item.get('image_paths') or [])
+    return [f'frame {i + 1} of {n}' for i in range(n)]
 
 
 def build_prompt(item: dict, *, blind: bool) -> str:

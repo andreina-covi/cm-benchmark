@@ -1842,7 +1842,7 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
     )
     q = _core_question(fact)
     assert str(len(fact.image_paths) - 1) in q
-    assert 'frames ago' in q.lower()
+    assert f'in frame 1 ({len(fact.image_paths) - 1} frames before the last frame)?' in q
 
 
 def test_swm_delay_range_is_configurable(delayed_episode):
@@ -1874,13 +1874,14 @@ def test_spatial_updating_mentions_now(delayed_episode):
         pytest.skip('no spatial_updating fact on delayed episode')
     item = items[0]
     q = item['question'].lower()
-    assert 'relative to you now' in q or 'now' in q
+    assert 'in view in frame 1.' in q
+    assert f"in the last frame (frame {len(item['image_paths'])})" in q
     assert len(item.get('image_paths') or []) >= 2
     assert item['query_step'] - item['encoding_step'] >= 2
     # Online sequential protocol: no bundled multi-image time-order cue.
     assert 'time order' not in q
     assert 'images are shown' not in q
-    assert 'frames' in q
+    assert 'now' not in q
 
 
 def test_delay_in_question_counts_shown_frames(delayed_episode):
@@ -1892,9 +1893,9 @@ def test_delay_in_question_counts_shown_frames(delayed_episode):
     # Frame-budget sampling kept only the encoding and query frames.
     fact.extra['shown_frame_steps'] = [enc, query]
     assert fact.extra['k'] == query - enc >= 2
-    assert _core_question(fact).startswith('1 frame ago,')
+    assert _core_question(fact).endswith('in frame 1 (1 frame before the last frame)?')
     fact.extra['shown_frame_steps'] = [enc, enc + 1, query]
-    assert _core_question(fact).startswith('2 frames ago,')
+    assert _core_question(fact).endswith('in frame 1 (2 frames before the last frame)?')
 
 
 def test_spatial_updating_delay_range_is_configurable(delayed_episode):
@@ -2132,7 +2133,10 @@ def test_verbose_preamble_omits_spatial_relations(delayed_episode):
         pytest.skip('no SWM fact on delayed episode')
     fact = facts[0]
     preamble = build_verbose_preamble(delayed_episode, fact).lower()
-    assert 'you can see' in preamble or 'also visible' in preamble
+    assert 'the frames show' in preamble
+    # No unseen objects, and the queried object is left to the question.
+    assert 'no longer in view' not in preamble
+    assert 'in the scene' not in preamble and 'previously noticed' not in preamble
     assert '(to your' not in preamble
     assert 'ahead of you' not in preamble
     assert 'behind you' not in preamble

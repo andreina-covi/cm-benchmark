@@ -195,11 +195,6 @@ class NamingConfig:
 
 
 @dataclass(frozen=True)
-class TemplatesConfig:
-    verbose_max_nonvisible_names: int
-
-
-@dataclass(frozen=True)
 class Class4RouteConfig:
     context_margin_steps: int
     max_ratio_floor: float
@@ -299,7 +294,6 @@ class GenerationConfig:
     landmarks: LandmarksConfig
     perspective_taking: PerspectiveTakingConfig
     naming: NamingConfig
-    templates: TemplatesConfig
     frames: FramesConfig
     class4: Class4Config
     episode_gt: EpisodeGtConfig
@@ -496,9 +490,6 @@ def generation_config_from_mapping(
         naming=NamingConfig(
             rename={str(k): str(v) for k, v in (raw.get('naming', {}).get('rename') or {}).items()},
             unnamed=tuple(str(t) for t in (raw.get('naming', {}).get('unnamed') or [])),
-        ),
-        templates=TemplatesConfig(
-            verbose_max_nonvisible_names=int(raw['templates']['verbose_max_nonvisible_names']),
         ),
         frames=FramesConfig(
             budgets=_budgets(raw['frames']['budgets']),

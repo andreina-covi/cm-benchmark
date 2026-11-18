@@ -166,7 +166,8 @@ Optional flags:
 A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `--episode_id`.
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
-- Temporal wording is `{k} frames ago` / `now` (k counts shown frames from the encoding frame to the query frame, after frame-budget sampling) — not a bundled “time order” cue.
+- Sequence questions name their reference frames by number, matching the `frame i of n` labels: `in frame {enc_frame} ({k} frames before the last frame)` and `in the last frame (frame {last_frame})`. k counts shown frames. No question says “now” about a sequence.
+- The verbose preamble (SWM and ID only add scene detail) names only objects visible in the encoding or last shown frame, without relations, and never restates the queried object.
 - Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).
@@ -226,7 +227,7 @@ planned-path edges. Fill remaining budget evenly on straight segments.
 Consecutive shown frames must be at most `frames.max_gap_steps` pool frames
 apart (default 5; repeated-pose frames do not count); a budget that cannot meet it is not offered, and the item is dropped
 when no budget can. Every shown frame is labeled
-`frame i of n, step s` for models and reviewers. Letter markers on source/goal
+`frame i of n` for models and reviewers. Letter markers on source/goal
 still apply when those frames need them. Evaluation uses the item’s
 `image_paths`: unmarked originals when `disambiguation` is `none` or
 `proximity`, and the numbered-badge copies when it is `mark`.
@@ -309,7 +310,7 @@ class-4 caps and sampling stay aligned.
 Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
 `blind/` (prompt only). `prompt.txt` holds the task instruction, question,
 and answer format (MC may use A–D or **Can't tell**, plus an optional
-comment). For class-4, attached frames are listed as `frame i of n, step s`.
+comment). Attached frames are listed as `frame i of n`.
 Gold is only in `answers.csv` / `private/`. Final cm-evaluation still uses
 forced A–D via `protocol.SYSTEM_INSTRUCTION`.
 
@@ -345,7 +346,7 @@ The attached file prompt.txt contains your instructions and the question.
 The attached images are the only visual information: they are frames from a camera,
 named frame_01, frame_02, … in chronological order (frame_01 is the earliest; the
 highest number is the current view). prompt.txt labels each as
-"frame i of n, step s".
+"frame i of n".
 
 Read prompt.txt and answer the question it contains, following its answer format
 exactly. Base your answer only on these images and the text in prompt.txt, plus

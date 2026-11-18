@@ -397,7 +397,7 @@ def _option_rows(item: dict) -> list[dict]:
     return [{'letter': str(k), 'text': str(v)} for k, v in sorted(options.items())]
 
 
-# Questions that count frames back from the last one ("N frames ago").
+# Questions that count frames back from the last one ("N frames before the last frame").
 _FRAMES_AGO_CONSTRUCTS = frozenset({'spatial_working_memory', 'spatial_updating'})
 
 
@@ -405,7 +405,7 @@ def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
     """Labels under the viewer: ``frame i of n``.
 
     Where the question counts frames back, each label also says how far back
-    that frame is (``k frames ago``, ``now``), in the question's own words.
+    that frame is (``k frames before the last``, ``last frame``), in the question's words.
     Simulator steps, roles and object names are left out.
     """
     labels: list[str] = []
@@ -413,7 +413,7 @@ def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
         label = f'frame {i + 1} of {n_frames}'
         if item.get('construct') in _FRAMES_AGO_CONSTRUCTS:
             back = n_frames - 1 - i
-            ago = 'now' if back == 0 else f"{back} frame{'' if back == 1 else 's'} ago"
+            ago = 'last frame' if back == 0 else f"{back} frame{'' if back == 1 else 's'} before the last"
             label = f'{label} · {ago}'
         labels.append(label)
     return labels
@@ -624,7 +624,7 @@ function downloadCsv() {
 function instructionsHtml() {
   return ''
     + '<div class="top"><h1>Spatial question review</h1></div>'
-    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n"; where a question counts frames back ("N frames ago"), the label also says how far back each frame is.</p>'
+    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n". Questions name the frames they refer to by these numbers; "the last frame" is frame n. Where a question counts frames back, the label also says how far back each frame is.</p>'
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'

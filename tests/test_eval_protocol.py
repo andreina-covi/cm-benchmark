@@ -18,7 +18,8 @@ def test_system_instruction_states_action_vocab_once():
     for name in ACTION_VOCAB:
         assert name in SYSTEM_INSTRUCTION
     assert 'A, B, C, or D' in SYSTEM_INSTRUCTION
-    assert 'frame i of n, step s' in SYSTEM_INSTRUCTION
+    assert 'frame i of n' in SYSTEM_INSTRUCTION
+    assert 'step s' not in SYSTEM_INSTRUCTION
 
 
 def test_class4_templates_do_not_repeat_action_vocab():

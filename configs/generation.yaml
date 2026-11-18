@@ -210,9 +210,6 @@ naming:
     Control, Console, Disk, Bow, Club, LightSource, OpticalIllusion, PowderStore,
     Exhibit, Swatch]
 
-templates:
-  verbose_max_nonvisible_names: 4  # none found (b418bda)
-
 frames:
   # Image budgets for multi-frame items (VLM image limits differ by model size).
   # Each item gets one frame list per budget it fits; evaluation uses the model's
