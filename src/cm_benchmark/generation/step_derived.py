@@ -25,6 +25,7 @@ FRAME_KEYS = (
     'visible_pixels',
     'obj_distance',
     'ang_width_deg',
+    'in_frame_fraction',
     'mark_xy',
     'room_id',
     'room_type',
@@ -39,6 +40,7 @@ _STEP_KEEP = (
     'agent',
     'current_room',
     'current_room_type',
+    'present_objects',
 )
 
 _DERIVED_KEYS = (
@@ -387,6 +389,21 @@ def _inferred_edges(episode: dict, step: dict, non_visible: dict) -> list[dict]:
             _edges_between('agent', [obj_id], aux, hyper, last_seen=int(last_seen))
         )
     return edges
+
+
+def present_pixels(step: Optional[dict], obj_id: str) -> Optional[float]:
+    """Mask pixels of ``obj_id`` among all exported detections on this step.
+
+    ``present_objects`` holds every detection before the question-visibility
+    filter. None when the step has no such map (older episode GT).
+    """
+    present = step.get('present_objects') if isinstance(step, dict) else None
+    if not isinstance(present, dict):
+        return None
+    if obj_id not in present:
+        return 0.0
+    pix = present[obj_id]
+    return 1.0 if pix is None else float(pix)
 
 
 def slim_visible_map(visible: Optional[dict]) -> dict:

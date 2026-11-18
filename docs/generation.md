@@ -117,6 +117,23 @@ python -m cm_benchmark.utils.fit_thresholds --folder path/to/calibration_scenes 
 
 Then pass `visibility_model_path=...` into `Ai2ThorNavGenerator`.
 
+Every **named** object (target, landmark, PT A/B/C, receptacle, displaced prop)
+must also pass two hard floors in the frame where it is named, with or without
+the DecisionTree (`fov_metrics_ok`):
+
+- `visibility.named_min_frame_fraction` (0.01): mask pixels cover at least 1%
+  of the frame.
+- `visibility.named_min_in_frame_fraction` (0.45): at least 45% of the object's
+  unoccluded projected box lies inside the frame (SPOC `in-frame-fraction`).
+  The target is 50%; 0.45–0.50 is a tolerance band. A plant with only a few
+  leaves at the border fails. Collections without the column skip this check.
+
+Stage 1 keeps every exported detection per step in `present_objects`
+(`obj → mask pixels`), before the question-visibility filter. "Hidden" (invisible
+displacement, spatial updating) means no mask pixel there, and a same-name
+object listed there in a shown frame makes a name confusable, even when it is
+too small or dim to be named itself.
+
 ---
 
 ## Generate items

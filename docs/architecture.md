@@ -212,13 +212,13 @@ of view, which gives the clear sighting the encode needs. Glance frames are
 ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 
 1. `successful_candidates`: `_successful_placements` keeps the successful rows. A row with `anchor_kind == 'floor'` becomes a floor destination (`anchor_id` `'Floor'`, the landmark kept in `floor_landmark_id`), because the object lies beside that landmark, not on it;
-2. `encode_hidden_query_window`: `_id_encode_step` needs a distinguishable sighting of the object, and `_id_earliest_query_window` needs a later step within `invisible_displacement.max_delay` where the object, its old position and the destination stay out of view. Every distinguishable sighting is tried as the encode, latest first;
+2. `encode_hidden_query_window`: `_id_encode_step` needs a distinguishable sighting of the object, and `_id_earliest_query_window` needs a later step within `invisible_displacement.max_delay` where the object, its old position and the destination stay out of view. "Out of view" means no mask pixel at all in any exported detection (`present_objects`), not only below the question-visibility filter: a chair whose top still shows at the bottom edge is in view. Every distinguishable sighting is tried as the encode, latest first;
 3. `displaced_object_nameable`: `_id_displaced_object_name` names the object at the encode step;
 4. `min_displacement`: the destination is at least `invisible_displacement.min_displacement_m` from the old position;
 5. `dest_not_current_receptacle`: the destination is not the receptacle the object is already on;
 6. `receptacle_parent_eq_anchor`: after a receptacle place, that receptacle is the object's parent;
 7. `dest_outside_frustum`: the destination point is outside the camera view from the move through the query;
-8. `anchor_nameable`: the destination can be named from the shown frames (`_id_shown_frames`, `_anchor_in_frames`). A floor destination is named by the nearest clearly seen landmark within the trial radius ("the floor near the Sofa");
+8. `anchor_nameable`: the destination can be named from the shown frames (`_id_shown_frames`, `_anchor_in_frames`). A floor destination is named by the nearest clearly seen landmark within the trial radius ("the floor near the Sofa"). `_id_landmark_far_from_object` then requires that landmark to be at least `invisible_displacement.min_landmark_gap_m` (AABB gap, XZ) from the object's old box, so the question never says "onto the Countertop" or "the floor near the Countertop" for an object that was already on that countertop;
 9. `swap_partner_ok`: `_placement_swap_decision`. When another object already occupies the destination point, the item is a swap if that partner is pickupable and has a clear sighting. If the partner fails, a receptacle or floor placement stays a plain move and any other placement is dropped;
 10. `diagnostic_options`: `_try_ego_direction_fact` needs the answer plus at least `invisible_displacement.min_diagnostic_labels` distinct bearings among the object's other candidates (`_specs_from_placement`).
 
@@ -244,7 +244,7 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 2. `_last_distinguishable_sighting`, `_delay_is_allowed` (`--su_*_delay`);
 3. `_net_pose_changed_between` — position > 0.1 m or heading > 5°;
 4. `_object_static_between` — the object did not move;
-5. the object must not be visible at the query step;
+5. the object must not be visible at the query step: no mask pixel in any exported detection (`present_objects`), not only below the question-visibility filter;
 6. `ego_label_from_world_pose` at the query pose with the 45° wedge (full circle);
 7. the pre-move bearing (`_ego_label_at` at encode, 20° wedge) becomes the "non-updating" distractor;
 8. `_referring_disambiguator` at the encoding step; repeated (object, encode, answer) triples are dropped;
@@ -257,6 +257,7 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 3. `_referring_display_name` for A, B, C on that frame;
 4. `imagined_perspective_label` — signed A→B vs A→C angle → left / right / behind, refused within the boundary margin;
 4a. `_pt_objects_entangled` — drop the triple if two of A/B/C are parts of one combined asset (4-part id, same first three parts, e.g. `television|7|1|0` TV stand and `television|7|1|1` television) or one rests on another (`object_catalog[..].receptacle_object_ids`);
+4a'. `_pt_pairs_well_spaced` — every pair of A, B, C must be `perspective_taking.min_pair_gap_m`..`max_pair_gap_m` apart (AABB gap, XZ; centre distance when a box is missing), so "standing at A, facing B" never uses two nearly touching objects;
 4b. `_pt_label_stable` — drop it if the label flips (another left / right / behind) at any of `perspective_taking.footprint_grid`² points of A's floor box (facing B) × the same grid over C's box; points inside the boundary margin are ignored;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
 

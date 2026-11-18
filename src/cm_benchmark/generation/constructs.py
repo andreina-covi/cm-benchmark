@@ -688,6 +688,26 @@ def frame_fraction_ok(
         return False
 
 
+def in_frame_ok(odata: Optional[dict], min_in_frame: Optional[float] = None) -> bool:
+    """At least ``named_min_in_frame_fraction`` of the object's projected box is in the frame.
+
+    Uses SPOC ``in-frame-fraction`` (unoccluded projected box clipped to the
+    image over the unclipped box). A plant showing only a few leaves at the
+    border fails. Without the value (older collections) nothing is rejected.
+    """
+    if min_in_frame is None:
+        min_in_frame = get_generation_config().visibility.named_min_in_frame_fraction
+    if not min_in_frame or not isinstance(odata, dict):
+        return True
+    frac = odata.get('in_frame_fraction')
+    if frac is None:
+        return True
+    try:
+        return float(frac) >= float(min_in_frame)
+    except (TypeError, ValueError):
+        return False
+
+
 def fov_metrics_ok(
     odata: Optional[dict],
     *,
@@ -708,7 +728,8 @@ def fov_metrics_ok(
     When no bbox metrics are present (legacy fixtures), do not invent a reject
     from floors; still apply border-scrape when bbox + image size exist.
     Optional ``image_wh`` rejects thin border-clipped scrapes either way.
-    The ``named_min_frame_fraction`` floor applies either way too.
+    The ``named_min_frame_fraction`` floor and the ``named_min_in_frame_fraction``
+    (share of the object inside the frame) apply either way too.
     """
     query = get_generation_config().visibility.query
     if min_bbox_area is None:
@@ -720,6 +741,8 @@ def fov_metrics_ok(
     if not isinstance(odata, dict):
         return False
     if not frame_fraction_ok(odata, image_wh, min_frame_fraction):
+        return False
+    if not in_frame_ok(odata):
         return False
 
     if model is not None:

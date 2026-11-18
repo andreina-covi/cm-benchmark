@@ -158,6 +158,11 @@ def objects_with_mask_pixels(
         for oid, odata in raw.items():
             if isinstance(odata, dict) and _mask_pixel_count(odata) > 0:
                 out.setdefault(str(oid), odata)
+        # Detections the question-visibility filter dropped still show on screen,
+        # so a dim or partial same-name object makes a name confusable.
+        for oid, pix in (step.get('present_objects') or {}).items():
+            if pix is None or pix > 0:
+                out.setdefault(str(oid), {'visible_pixels': pix})
     return out
 
 

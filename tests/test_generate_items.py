@@ -1590,12 +1590,20 @@ def test_merge_role_images_dedupes_with_combined_labels():
 
 
 def test_item_persists_image_roles_and_context(folder_episode):
-    items = generate_items_for_episode(
-        folder_episode,
-        constructs=['perspective_taking'],
-        max_per_construct=1,
-        styles=('concise',),
-    )
+    from dataclasses import replace
+
+    from cm_benchmark.generation.config import get_generation_config, use_generation_config
+
+    # The folder fixture's landmarks sit ~0.35 m apart; the spacing gate has its own tests.
+    cfg = get_generation_config()
+    cfg = replace(cfg, perspective_taking=replace(cfg.perspective_taking, min_pair_gap_m=0.0))
+    with use_generation_config(cfg):
+        items = generate_items_for_episode(
+            folder_episode,
+            constructs=['perspective_taking'],
+            max_per_construct=1,
+            styles=('concise',),
+        )
     ok = [i for i in items if i.get('status') == 'ok']
     if not ok:
         pytest.skip('no perspective_taking on tiny fixture')

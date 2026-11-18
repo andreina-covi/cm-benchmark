@@ -72,6 +72,7 @@ class VisibilityConfig:
     proba_high: float
     degenerate_band_half_width: float
     named_min_frame_fraction: float
+    named_min_in_frame_fraction: float
     static: VisibilityFloors
     query: VisibilityFloors
     border: VisibilityBorder
@@ -165,6 +166,7 @@ class MotionConfig:
 class InvisibleDisplacementConfig:
     floor_anchor_radius_m: float
     min_displacement_m: float
+    min_landmark_gap_m: float
     min_diagnostic_labels: int
     max_delay: Optional[int]
 
@@ -184,6 +186,8 @@ class PerspectiveTakingConfig:
     top_n_per_region: int
     max_total: int
     footprint_grid: int
+    min_pair_gap_m: float
+    max_pair_gap_m: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -411,6 +415,7 @@ def generation_config_from_mapping(
             proba_high=float(vis['proba_high']),
             degenerate_band_half_width=float(vis['degenerate_band_half_width']),
             named_min_frame_fraction=float(vis['named_min_frame_fraction']),
+            named_min_in_frame_fraction=float(vis.get('named_min_in_frame_fraction') or 0.0),
             static=_floors(vis['static'], extra=True),
             query=_floors(vis['query']),
             border=VisibilityBorder(
@@ -467,6 +472,7 @@ def generation_config_from_mapping(
         invisible_displacement=InvisibleDisplacementConfig(
             floor_anchor_radius_m=float(raw['invisible_displacement']['floor_anchor_radius_m']),
             min_displacement_m=float(raw['invisible_displacement']['min_displacement_m']),
+            min_landmark_gap_m=float(raw['invisible_displacement']['min_landmark_gap_m']),
             min_diagnostic_labels=int(raw['invisible_displacement']['min_diagnostic_labels']),
             max_delay=(
                 None
@@ -486,6 +492,12 @@ def generation_config_from_mapping(
             top_n_per_region=int(raw['perspective_taking']['top_n_per_region']),
             max_total=int(raw['perspective_taking']['max_total']),
             footprint_grid=int(raw['perspective_taking']['footprint_grid']),
+            min_pair_gap_m=float(raw['perspective_taking']['min_pair_gap_m']),
+            max_pair_gap_m=(
+                None
+                if raw['perspective_taking'].get('max_pair_gap_m') is None
+                else float(raw['perspective_taking']['max_pair_gap_m'])
+            ),
         ),
         naming=NamingConfig(
             rename={str(k): str(v) for k, v in (raw.get('naming', {}).get('rename') or {}).items()},

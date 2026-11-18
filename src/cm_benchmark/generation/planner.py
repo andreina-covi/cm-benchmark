@@ -1843,6 +1843,12 @@ def _id_in_raw_fov(episode: dict, obj_id: str, step_idx: int) -> bool:
     step = step_by_index(episode, step_idx)
     if step is None:
         return False
+    from cm_benchmark.generation.step_derived import present_pixels
+
+    # Any exported mask pixel counts as in view, even below the question filter.
+    pix = present_pixels(step, obj_id)
+    if pix is not None:
+        return pix > 0
     frames = _id_raw_frames(step)
     if frames:
         return obj_id in frames
@@ -3150,6 +3156,23 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
     return counts
 
 
+def _id_landmark_far_from_object(episode: dict, landmark_id: Optional[str], obj_id: str) -> bool:
+    """The landmark naming the destination is ``min_landmark_gap_m`` from the object's old box.
+
+    Rejects "moved onto the Countertop" when the object was already on that
+    countertop, and "the floor near the Countertop" when it sat on or beside it.
+    """
+    if not landmark_id or _is_floor_receptacle(landmark_id):
+        return True
+    catalog = episode.get('object_catalog') or {}
+    gap = object_aabb_gap_m(
+        episode, landmark_id, catalog.get(landmark_id) or {}, obj_id, catalog.get(obj_id) or {}
+    )
+    if gap is None:
+        return False
+    return gap >= float(_cfg().invisible_displacement.min_landmark_gap_m)
+
+
 def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     """Build ID items from successful ``placement_candidates`` + hidden walk windows."""
     successful = _successful_placements(episode)
@@ -3226,6 +3249,8 @@ def _plan_id_from_placements(episode: dict, max_items: int = 3) -> list[PlannedF
             if anchor is None:
                 continue
             anchor_id, new_location, is_floor = anchor
+            if not _id_landmark_far_from_object(episode, anchor_id, obj_id):
+                continue
             decision, partner_id, _partner_enc, partner_named = _placement_swap_decision(
                 episode, cand, obj_id, move, query
             )
@@ -3432,8 +3457,10 @@ def plan_spatial_updating(
                 continue
             if not _object_static_between(episode, obj_id, enc_idx, step_idx):
                 continue
-            # Queried object must NOT be visible at final pose
+            # Queried object must NOT be visible at final pose (no mask pixel at all)
             if obj_id in (step.get('visible_objects') or {}):
+                continue
+            if _id_in_raw_fov(episode, obj_id, step_idx):
                 continue
             # Recompute bearing from poses (equal wedges); no stored-triple fallback
             ag_pos, ag_rot = agent_pose_at_step(episode, step_idx)
@@ -5033,6 +5060,28 @@ def _pt_objects_entangled(episode: dict, obj_ids: Sequence[str]) -> bool:
     return False
 
 
+def _pt_pairs_well_spaced(episode: dict, objects: Sequence[dict]) -> bool:
+    """Every pair of A/B/C is ``min_pair_gap_m``..``max_pair_gap_m`` apart.
+
+    The gap is between AABBs (XZ), or between centres when a box is missing.
+    Nearly touching objects make "standing at A, facing B" or "where is C"
+    almost the same place (VSI-Bench uses 0.30-5.0 m).
+    """
+    pt = _cfg().perspective_taking
+    catalog = episode.get('object_catalog') or {}
+    items = [(str(o['obj_id']), {**(catalog.get(o['obj_id']) or {}), **o}) for o in objects]
+    for i, (a, da) in enumerate(items):
+        for b, db in items[i + 1 :]:
+            gap = object_aabb_gap_m(episode, a, da, b, db)
+            if gap is None:
+                gap = _xz_distance(da.get('position'), db.get('position'))
+            if gap is None or gap < float(pt.min_pair_gap_m):
+                return False
+            if pt.max_pair_gap_m is not None and gap > float(pt.max_pair_gap_m):
+                return False
+    return True
+
+
 def _footprint_points(episode: dict, obj_id: str, fallback: dict, n: int) -> list[dict]:
     """``n`` × ``n`` floor points over the object's AABB, or ``[fallback]``."""
     rec = (episode.get('object_catalog') or {}).get(obj_id) or {}
@@ -5120,6 +5169,8 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     continue
                 triple = [a['obj_id'], b['obj_id'], c['obj_id']]
                 if _pt_objects_entangled(episode, triple):
+                    continue
+                if not _pt_pairs_well_spaced(episode, [a, b, c]):
                     continue
                 if not _pt_label_stable(episode, triple, pos_a, pos_b, pos_c, label):
                     continue

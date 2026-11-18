@@ -274,6 +274,7 @@ def metrics_from_nav_row(
         ('ang-width-deg', 'ang_width_deg'),
         ('ang-height-deg', 'ang_height_deg'),
         ('expected-bbox-area', 'expected_bbox_area'),
+        ('in-frame-fraction', 'in_frame_fraction'),
     ):
         val = _row_get(row, csv_key)
         out[metric_key] = float(val) if _finite(val) else None

@@ -685,6 +685,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     'marks': [],
                     'rooms': [],
                     'visibility_metrics': [],
+                    # Every exported detection (obj -> mask pixels), before the
+                    # question-visibility filter: "hidden" and confusable checks use it.
+                    'present': {},
                 }
             if not _is_valid_obj_id(obj) or is_structural_object(object_id=obj):
                 continue
@@ -715,6 +718,11 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 'passes_question_filter': passes,
             }
             self._raw_fov_detections.append(raw)
+            pix = metrics.get('visible_pixels')
+            if pix is None or pix > 0:
+                dict_navigation[timestep]['present'][obj] = (
+                    None if pix is None else int(pix)
+                )
 
             if filter_on and not raw['passes_question_filter']:
                 continue
@@ -901,6 +909,7 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 visible_objs[obj]['visible_pixels'] = vis_m.get('visible_pixels')
                 visible_objs[obj]['obj_distance'] = vis_m.get('obj_distance')
                 visible_objs[obj]['ang_width_deg'] = vis_m.get('ang_width_deg')
+                visible_objs[obj]['in_frame_fraction'] = vis_m.get('in_frame_fraction')
             catalog = self.dict_objects.get(obj) or {}
             size = _finite_xyz(catalog.get('size'))
             if size is not None:
