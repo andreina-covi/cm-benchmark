@@ -397,20 +397,25 @@ def _option_rows(item: dict) -> list[dict]:
     return [{'letter': str(k), 'text': str(v)} for k, v in sorted(options.items())]
 
 
+# Questions that count frames back from the last one ("N frames ago").
+_FRAMES_AGO_CONSTRUCTS = frozenset({'spatial_working_memory', 'spatial_updating'})
+
+
 def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
-    """Labels shown under the viewer: ``frame i of n, step s`` (+ role when known)."""
-    ctx = item.get('context') or {}
-    roles = item.get('image_roles') or ctx.get('image_roles') or []
-    steps = ctx.get('shown_frame_steps') or []
+    """Labels under the viewer: ``frame i of n``.
+
+    Where the question counts frames back, each label also says how far back
+    that frame is (``k frames ago``, ``now``), in the question's own words.
+    Simulator steps, roles and object names are left out.
+    """
     labels: list[str] = []
     for i in range(n_frames):
-        if i < len(roles) and str(roles[i]).startswith('frame '):
-            labels.append(str(roles[i]))
-            continue
-        step = int(steps[i]) if i < len(steps) else i
-        role = str(roles[i]) if i < len(roles) else ''
-        base = f'frame {i + 1} of {n_frames}, step {step}'
-        labels.append(f'{base} · {role}' if role else base)
+        label = f'frame {i + 1} of {n_frames}'
+        if item.get('construct') in _FRAMES_AGO_CONSTRUCTS:
+            back = n_frames - 1 - i
+            ago = 'now' if back == 0 else f"{back} frame{'' if back == 1 else 's'} ago"
+            label = f'{label} · {ago}'
+        labels.append(label)
     return labels
 
 
@@ -458,7 +463,7 @@ _PAGE = r"""<!DOCTYPE html>
 <style>
   :root { color-scheme: light; }
   body { margin: 0; font: 16px/1.45 system-ui, sans-serif; background: #f4f1ea; color: #1c1a16; }
-  main { max-width: 1120px; margin: 0 auto; padding: 24px 20px 48px; }
+  main { max-width: 1600px; margin: 0 auto; padding: 24px 20px 48px; }
   h1 { font-size: 1.4rem; margin: 0 0 8px; }
   h2 { font-size: 1.05rem; margin: 20px 0 8px; }
   p { margin: 8px 0; }
@@ -469,9 +474,10 @@ _PAGE = r"""<!DOCTYPE html>
   .construct-tag { color: #9a9388; font-size: 0.65rem; font-weight: 400; letter-spacing: 0.04em; margin-left: 8px; vertical-align: middle; }
   .card { background: #fff; border-radius: 10px; padding: 16px; margin-top: 12px; }
   .frame-wrap { display: flex; justify-content: center; background: #111; border-radius: 8px; min-height: 180px; }
-  .frame-wrap img { max-width: 100%; max-height: 520px; object-fit: contain; }
+  /* Frames are 396x224: scale up to the column width so small objects stay legible. */
+  .frame-wrap img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; }
   .frame-nav { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-  .item-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr); gap: 12px; align-items: start; }
+  .item-layout { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(300px, 0.8fr); gap: 12px; align-items: start; }
   .viewer { margin-top: 12px; }
   .question-panel { position: sticky; top: 12px; }
   .question-panel .card { margin-top: 0; }
@@ -618,7 +624,7 @@ function downloadCsv() {
 function instructionsHtml() {
   return ''
     + '<div class="top"><h1>Spatial question review</h1></div>'
-    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n, step s".</p>'
+    + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n"; where a question counts frames back ("N frames ago"), the label also says how far back each frame is.</p>'
     + '<p>Move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded.</p>'
     + '<p>When an item has more than one frame, look through them first. Press <strong>Show the question</strong> when you are done. The question and the answer choices appear then. A single frame shows the question right away. On a narrow screen the question sits under the frame.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
@@ -646,7 +652,7 @@ function setFrame(index0) {
   const img = document.getElementById("frame-img");
   if (img) img.src = activeItem.frames[frameIndex];
   const label = document.getElementById("frame-label");
-  if (label) {
+  if (label && n > 1) {
     const labels = activeItem.frame_labels || [];
     label.textContent = labels[frameIndex]
       || ("frame " + (frameIndex + 1) + " of " + n);
@@ -674,8 +680,9 @@ function viewerHtml(item) {
       + '<img alt="" src="' + esc(src) + '"></button>';
   });
   const labels = item.frame_labels || [];
-  const startLabel = labels[frameIndex]
-    || ('frame ' + (frameIndex + 1) + ' of ' + n);
+  // A single image needs no frame label (step, role and object are noise there).
+  const startLabel = n < 2 ? '' : (labels[frameIndex]
+    || ('frame ' + (frameIndex + 1) + ' of ' + n));
   return ''
     + '<div class="frame-wrap"><img id="frame-img" alt="" src="' + esc(item.frames[frameIndex]) + '"></div>'
     + '<div class="frame-nav"><button class="secondary" type="button" id="prev-frame">Previous</button>'

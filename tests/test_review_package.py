@@ -423,3 +423,20 @@ def test_class4_per_reviewer_cli_override(tmp_path: Path):
         for name in reviewers:
             per_reviewer[name] += 1
     assert set(per_reviewer.values()) == {3}
+
+
+def test_frame_labels_count_frames_back_without_noise():
+    _frame_labels_for_review = _load('build_review_package.py')._frame_labels_for_review
+
+    swm = {
+        'construct': 'spatial_working_memory',
+        'image_roles': ['encode · last clear view of Bed', 'navigation · frame 1', 'query · now'],
+        'context': {'shown_frame_steps': [60, 61, 63]},
+    }
+    assert _frame_labels_for_review(swm, 3) == [
+        'frame 1 of 3 · 2 frames ago',
+        'frame 2 of 3 · 1 frame ago',
+        'frame 3 of 3 · now',
+    ]
+    route = {'construct': 'route_knowledge', 'image_roles': ['frame 1 of 2, step 4 · source · Bed', 'walk']}
+    assert _frame_labels_for_review(route, 2) == ['frame 1 of 2', 'frame 2 of 2']
