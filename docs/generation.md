@@ -212,15 +212,19 @@ hardest surviving pairs. Route also requires real turns. Constants: `planner.py`
 
 Frames, all multi-frame constructs: one frame list per budget in
 `frames.budgets` (default 16, 24, 32; `--frame_budgets` overrides for one run).
-A span that fits a budget is shown whole. Otherwise required frames are kept
-(SWM/SU: encode, query and the frames around each turn; ID and PT: every
-frame) and the rest fill the gaps. Each list becomes its own item with
+A frame whose agent pose (position, heading, pitch) repeats the previous kept
+frame, as after a failed move or turn, is dropped first. A span that fits a
+budget is shown whole. SWM and SU are never sampled: their question counts the
+frames from encoding to query, so a span longer than a budget is not offered
+at that budget, and the planner skips spans longer than the largest budget.
+Otherwise required frames are kept (ID and PT: every frame) and the rest fill
+the gaps. Each list becomes its own item with
 `frame_budgets` and a shared `frame_group_id`; ids carry `f<budget>` when a
 fact has more than one list. Class-4 frames per budget: lock source/goal sightings and the FOV frames just before/after
 every rotation between them; survey also locks frames covering the unwalked
 planned-path edges. Fill remaining budget evenly on straight segments.
-Consecutive shown frames must be at most `frames.max_gap_steps` apart
-(default 5); a budget that cannot meet it is not offered, and the item is dropped
+Consecutive shown frames must be at most `frames.max_gap_steps` pool frames
+apart (default 5; repeated-pose frames do not count); a budget that cannot meet it is not offered, and the item is dropped
 when no budget can. Every shown frame is labeled
 `frame i of n, step s` for models and reviewers. Letter markers on source/goal
 still apply when those frames need them. Evaluation uses the item’s
@@ -228,7 +232,8 @@ still apply when those frames need them. Evaluation uses the item’s
 `proximity`, and the numbered-badge copies when it is `mark`.
 
 Spatial updating and spatial working memory show every FOV frame from the
-sighting through the query, in time order (including a turn in place).
+sighting through the query, in time order (including a turn in place), minus
+repeated-pose frames.
 Perspective taking shows the one frame where A, B, and C are all visible.
 Invisible displacement shows the walk from the earlier of the object encode
 and a clear destination sighting through the query.

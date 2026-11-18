@@ -613,33 +613,80 @@ def _class4_role_images(
     return merge_role_images(pairs)
 
 
+def _drop_repeated_poses(
+    episode: dict, steps: Sequence[int], keep: Sequence[int] = ()
+) -> list[int]:
+    """``steps`` without frames whose agent pose repeats the previous kept frame.
+
+    A failed move or turn leaves position, heading and pitch unchanged, so its
+    frame shows the same view again. A step in ``keep`` is never dropped; it
+    replaces the frame it repeats unless that frame is kept too.
+    """
+    poses = {
+        int(st['step']): repr(((st.get('agent') or {}).get('position'),
+                               (st.get('agent') or {}).get('rotation')))
+        for st in episode.get('steps') or []
+        if (st.get('agent') or {}).get('position') is not None
+    }
+    must = {int(s) for s in keep}
+    out: list[int] = []
+    for step in sorted({int(s) for s in steps}):
+        pose = poses.get(step)
+        if out and pose is not None and poses.get(out[-1]) == pose:
+            if step not in must:
+                continue
+            if out[-1] not in must:
+                out[-1] = step
+                continue
+        out.append(step)
+    return out
+
+
+def _fits_whole(episode: dict, start_step: int, end_step: int) -> bool:
+    """True when every non-repeated frame of the window fits the largest budget."""
+    steps = _drop_repeated_poses(
+        episode, _fov_step_indices(episode, start_step, end_step), keep=[start_step, end_step]
+    )
+    return len(steps) <= max(_cfg().frames.budgets)
+
+
 def _budget_frame_lists(
     pool: Sequence[int],
     required: Sequence[int],
     *,
     straight_pool: Optional[Sequence[int]] = None,
+    sample: bool = True,
 ) -> list[tuple[list[int], list[int]]]:
     """``(shown_steps, budgets)`` for each distinct frame list over ``frames.budgets``.
 
-    A pool that fits a budget is shown whole. A longer pool is sampled with every
-    required step kept and consecutive frames at most ``frames.max_gap_steps``
-    apart. A budget that cannot meet that is not offered. Budgets that give the
-    same frame list share one entry. Ordered by smallest budget.
+    A pool that fits a budget is shown whole. With ``sample`` false, a longer
+    pool is not offered at that budget. Otherwise it is sampled with every
+    required step kept and consecutive shown frames at most
+    ``frames.max_gap_steps`` pool frames apart; a budget that cannot meet that
+    is not offered. Budgets that give the same frame list share one entry.
+    Ordered by smallest budget.
     """
     frames_cfg = _cfg().frames
     ordered = sorted({int(s) for s in pool})
+    # Sample over pool positions, so frames dropped as repeats are not a gap.
+    pos = {step: i for i, step in enumerate(ordered)}
+    straight = None if straight_pool is None else [pos[int(s)] for s in straight_pool if int(s) in pos]
+    need = [pos.get(int(s), -1) for s in required]
     groups: dict[tuple[int, ...], list[int]] = {}
     for budget in frames_cfg.budgets:
         if len(ordered) <= budget:
             shown = ordered
+        elif not sample or -1 in need:
+            shown = None
         else:
-            shown = _sample_class4_frames(
-                ordered,
+            picked = _sample_class4_frames(
+                list(range(len(ordered))),
                 int(budget),
-                required,
+                need,
                 max_gap=int(frames_cfg.max_gap_steps),
-                straight_pool=straight_pool,
+                straight_pool=straight,
             )
+            shown = [ordered[i] for i in picked] if picked else None
         if shown:
             groups.setdefault(tuple(shown), []).append(int(budget))
     return [(list(steps), budgets) for steps, budgets in groups.items()]
@@ -655,7 +702,14 @@ def _class4_frame_variants(
     t_src: int,
     t_goal: int,
 ) -> list[dict]:
-    """One class-4 frame list per image budget, with frame numbers and roles."""
+    """One class-4 frame list per image budget, with frame numbers and roles.
+
+    Repeated-pose frames leave the pool first; required frames (source, goal,
+    path covers, rotation neighbors) always stay.
+    """
+    pool = _drop_repeated_poses(episode, pool, keep=required)
+    kept = set(pool)
+    straight = [s for s in straight if int(s) in kept]
     variants: list[dict] = []
     for shown, budgets in _budget_frame_lists(pool, required, straight_pool=straight):
         frame_nums = _shown_frame_numbers(shown, t_src, t_goal)
@@ -680,6 +734,9 @@ def _class4_frame_variants(
 
 # Constructs whose shown frames are each needed (curated sightings): never sampled.
 _ALL_FRAMES_REQUIRED = frozenset({'invisible_displacement', 'perspective_taking'})
+# The question counts the frames from encoding to query, so every frame is shown
+# (repeated poses aside); an item is offered only at budgets that hold it whole.
+_CONTIGUOUS_SEQUENCE = frozenset({'spatial_working_memory', 'spatial_updating'})
 
 
 def _frame_variants_for_fact(episode: dict, fact: PlannedFact) -> list[dict]:
@@ -695,24 +752,34 @@ def _frame_variants_for_fact(episode: dict, fact: PlannedFact) -> list[dict]:
         # Frames we cannot map to steps are never sampled: offer budgets they fit.
         budgets = [b for b in _cfg().frames.budgets if len(paths) <= b]
         return [{'budgets': budgets, 'image_paths': paths}] if budgets else []
+    by_step = dict(zip(steps, paths))
     if fact.construct in _ALL_FRAMES_REQUIRED:
         required = steps
         rot_frames: list[int] = []
     else:
+        ends = [steps[0], steps[-1]]
+        for key in ('encoding_step', 'query_step'):
+            if getattr(fact, key, None) is not None:
+                ends.append(int(getattr(fact, key)))
+        steps = _drop_repeated_poses(episode, steps, keep=ends)
         rot_frames = _rotation_neighbor_frames(
             steps, _rotation_action_steps(episode, steps[0], steps[-1])
         )
         required = [steps[0], steps[-1], *rot_frames]
     rot_set = set(rot_frames)
     straight = [s for s in steps if s not in rot_set]
-    by_step = dict(zip(steps, paths))
     return [
         {
             'budgets': budgets,
             'shown_frame_steps': shown,
             'image_paths': [by_step[s] for s in shown],
         }
-        for shown, budgets in _budget_frame_lists(steps, required, straight_pool=straight)
+        for shown, budgets in _budget_frame_lists(
+            steps,
+            required,
+            straight_pool=straight,
+            sample=fact.construct not in _CONTIGUOUS_SEQUENCE,
+        )
     ]
 
 
@@ -1341,6 +1408,8 @@ def plan_spatial_working_memory(
             # Rotate-in-place delay is not navigation for this benchmark.
             if not _has_real_move_between(episode, enc_idx, step_idx):
                 continue
+            if not _fits_whole(episode, enc_idx, step_idx):
+                continue
             enc = step_by_index(episode, enc_idx)
             if enc is None:
                 continue
@@ -1455,6 +1524,8 @@ def plan_spatial_working_memory(
                 if not _delay_is_allowed(k, min_delay, max_delay):
                     continue
                 if not _has_real_move_between(episode, enc_idx, step_idx):
+                    continue
+                if not _fits_whole(episode, enc_idx, step_idx):
                     continue
                 counts.append(
                     PlannedFact(
@@ -3356,6 +3427,8 @@ def plan_spatial_updating(
             if enc is None:
                 continue
             if not _net_pose_changed_between(episode, enc_idx, step_idx):
+                continue
+            if not _fits_whole(episode, enc_idx, step_idx):
                 continue
             if not _object_static_between(episode, obj_id, enc_idx, step_idx):
                 continue

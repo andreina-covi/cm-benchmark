@@ -177,10 +177,12 @@ loaded file when present: `--max_per_construct`, `--frame_budgets`,
 
 `frames.budgets` (default `[16, 24, 32]`; `--frame_budgets 16 24 32` overrides
 it) are the image limits of the VLMs to evaluate. Every multi-frame item gets
-one frame list per budget it fits: a span that fits is shown whole, a longer
-one is sampled keeping the required frames (encode and query, frames around
-each turn; class 4 also source/goal sightings and survey path covers) with at
-most `frames.max_gap_steps` between shown frames. A budget that cannot meet
+one frame list per budget it fits, after frames that repeat the previous pose
+are dropped: a span that fits is shown whole. Spatial working memory and
+spatial updating are never sampled. A longer class-4 span is sampled keeping
+the required frames (source/goal sightings, frames around each turn, survey
+path covers) with at most `frames.max_gap_steps` pool frames between shown
+frames. A budget that cannot meet
 that is not offered, and an item that fits no budget is dropped. Each item
 records `frame_budgets`; items with the same `frame_group_id` ask the same
 question with different frame lists. Evaluate a model on the items whose

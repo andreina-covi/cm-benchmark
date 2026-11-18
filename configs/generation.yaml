@@ -220,7 +220,7 @@ frames:
   # are always kept; the rest fill the gaps evenly. Change the list to evaluate
   # larger or smaller VLMs.
   budgets: [16, 24, 32]  # literature: VSI-Bench / MMSI-Bench evaluate the same question at a per-model frame count
-  max_gap_steps: 5  # none found; max agent steps between consecutive shown frames; a budget that cannot meet it is not offered
+  max_gap_steps: 5  # none found; class 4 only (SWM/SU are never sampled): max pool frames between consecutive shown frames, after repeated-pose frames are dropped; a budget that cannot meet it is not offered
 
 class4:
   min_pair_geodesic_m: 2.0  # none found; source–goal path at least 2 m (literature band was 1–30 m)

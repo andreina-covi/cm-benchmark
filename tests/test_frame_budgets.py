@@ -93,3 +93,57 @@ def test_sighting_search_stops_at_max_span(monkeypatch):
     assert planner._last_distinguishable_sighting(episode, 'o', 30) == 5
     assert planner._last_distinguishable_sighting(episode, 'o', 30, max_span=20) is None
     assert planner._last_distinguishable_sighting(episode, 'o', 30, max_span=25) == 5
+
+
+def _pose_episode(poses):
+    """Episode whose step i has agent pose ``poses[i]`` (x, heading)."""
+    return {
+        'steps': [
+            {'step': i, 'agent': {'position': [x, 0.9, 0.0], 'rotation': [0.0, h, 0.0]}}
+            for i, (x, h) in enumerate(poses)
+        ]
+    }
+
+
+def test_repeated_pose_frames_are_dropped_but_kept_steps_stay():
+    from cm_benchmark.generation.planner import _drop_repeated_poses
+
+    # 1 and 2 repeat 0 (failed moves); 4 repeats 3; 5 turns back toward 3's heading.
+    ep = _pose_episode([(0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (1, 90), (1, 0)])
+    assert _drop_repeated_poses(ep, range(7)) == [0, 3, 5, 6]
+    # A kept step replaces the frame it repeats.
+    assert _drop_repeated_poses(ep, range(7), keep=[4]) == [0, 4, 5, 6]
+
+
+def test_unsampled_pool_is_offered_only_at_budgets_that_hold_it_whole():
+    lists = _budget_frame_lists(range(20), [0, 19], sample=False)
+    assert lists == [(list(range(20)), [24, 32])]
+    assert _budget_frame_lists(range(40), [0, 39], sample=False) == []
+
+
+def test_gap_rule_counts_pool_frames_not_steps():
+    # Steps 1..9 were dropped as repeats: the jump 0 -> 10 is one pool frame.
+    pool = [0, *range(10, 40)]
+    for shown, _budgets in _budget_frame_lists(pool, [0, 39]):
+        assert shown[0] == 0 and shown[-1] == 39
+
+
+def test_spatial_working_memory_frames_are_never_sampled():
+    from cm_benchmark.generation.planner import _frame_variants_for_fact
+
+    ep = _pose_episode([(i, 0) for i in range(20)])
+    for st in ep['steps']:
+        st['image_path'] = f"img_{st['step']}.png"
+    fact = PlannedFact(
+        construct='spatial_working_memory',
+        status='ok',
+        query_step=19,
+        encoding_step=0,
+        queried_object_id='Box|1',
+        answer_label='ahead of you',
+        image_paths=[f'img_{i}.png' for i in range(20)],
+        extra={'shown_frame_steps': list(range(20))},
+    )
+    variants = _frame_variants_for_fact(ep, fact)
+    assert [v['budgets'] for v in variants] == [[24, 32]]
+    assert variants[0]['shown_frame_steps'] == list(range(20))
