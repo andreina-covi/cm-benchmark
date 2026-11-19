@@ -259,7 +259,7 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 4a. `_pt_objects_entangled` — drop the triple if two of A/B/C are parts of one combined asset (4-part id, same first three parts, e.g. `television|7|1|0` TV stand and `television|7|1|1` television) or one rests on another (`object_catalog[..].receptacle_object_ids`);
 4a'. `_pt_pairs_well_spaced` — every pair of A, B, C must be `perspective_taking.min_pair_gap_m`..`max_pair_gap_m` apart (AABB gap, XZ; centre distance when a box is missing), so "standing at A, facing B" never uses two nearly touching objects;
 4b. `_pt_label_stable` — drop it if the label flips (another left / right / behind) at any of `perspective_taking.footprint_grid`² points of A's floor box (facing B) × the same grid over C's box; points inside the boundary margin are ignored;
-5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A).
+5. distractors: the camera-frame label of C (unless it is "ahead of you"), the mirrored left/right, and the answer under the reversed facing (B behind A). Options come only from left / right / behind (`PT_DIRECTION_OPTIONS`), so there are 3, and "ahead of you", which is never the answer, is never offered.
 
 ### route_knowledge (class 4, free action sequence) — "Start at your position in frame i … (the S is in view). Retrace … frame j (the G is in view)."
 

@@ -17,6 +17,14 @@ EGO_DIRECTION_OPTIONS = [
     'to your left',
 ]
 
+# Perspective-taking answers (``imagined_perspective_label``): never "ahead of
+# you", so the options never offer it either.
+PT_DIRECTION_OPTIONS = [
+    'to your right',
+    'behind you',
+    'to your left',
+]
+
 OPPOSITE = {
     'ahead of you': 'behind you',
     'behind you': 'ahead of you',

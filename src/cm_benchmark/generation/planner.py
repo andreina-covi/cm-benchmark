@@ -30,6 +30,7 @@ from cm_benchmark.generation.synsets import (
 from cm_benchmark.generation.constructs import (
     EGO_DIRECTION_OPTIONS,
     MIRRORED_LR,
+    PT_DIRECTION_OPTIONS,
     OPPOSITE,
     ORTHOGONAL,
     camera_size_wh,
@@ -5216,7 +5217,7 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 wrong = imagined_perspective_label(pos_a, wrong_b, pos_c)
                 pool = [label]
                 seeds: list[str] = []
-                if cam and cam not in pool:
+                if cam and cam in PT_DIRECTION_OPTIONS and cam not in pool:
                     pool.append(cam)
                     seeds += ['camera_frame_answer', _mode_seed('camera_frame_answer', cam)]
                 if mirrored and mirrored not in pool:
@@ -5228,7 +5229,7 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                         'wrong_facing_assumption',
                         _mode_seed('wrong_facing_assumption', wrong),
                     ]
-                pool += [f for f in EGO_DIRECTION_OPTIONS if f not in pool]
+                pool += [f for f in PT_DIRECTION_OPTIONS if f not in pool]
                 # How far the imagined heading (A→B) is from the camera heading.
                 shift = None
                 pose = _agent_pose_dict(episode, query_step)
