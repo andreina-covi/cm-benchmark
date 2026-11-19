@@ -54,9 +54,19 @@ planner words it as "the floor near the X". Objaverse assets report a mass of
 
 During the walk the collector glances at nearby movable objects that are out
 of view (a few 45° turns toward the object, then back). Those frames have
-`scripted-glance` true in `navigation-*.csv`. cm-benchmark does not read that
-column yet: glance frames are ordinary steps, they can be shown frames, and the
-turns are part of `agent_actions`.
+`scripted-glance` true in `navigation-*.csv`, and every row has `step-source`
+(`policy`, `glance`, or `done_override` for a turn that replaced an early
+`done`). Stage 1 stores both on `agent_actions`. Glance frames are ordinary
+shown frames; route-knowledge references drop complete glances and collapse
+each run of consecutive turns to its net turn, so override spins vanish.
+
+Before a full export, collect 2–3 houses and run
+`scripts/check_collection.py --collection DIR --reference-items OLD_ITEMS`. It
+fails when a navigation row lacks a pose, action or `step-source`, a row with
+mask pixels lacks `in-frame-fraction`, glance rows disagree with
+`episode_meta.glances`, timeouts exceed 20% of episodes, or a construct gives
+0 items in a scene where the reference had some. It also reports how many
+placement anchors and objects the walk saw.
 
 ```bash
 python -m cm_benchmark.generator.ai2thor_nav_generator \

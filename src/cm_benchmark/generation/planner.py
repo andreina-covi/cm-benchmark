@@ -78,7 +78,7 @@ from cm_benchmark.generation.nav_graph import (
     viewed_edges_from_trajectory,
     xz_reaches_goal,
 )
-from cm_benchmark.generation.route_replay import recorded_actions_between
+from cm_benchmark.generation.route_replay import collapse_rotations, recorded_actions_between
 from cm_benchmark.generator.visibility_filters import (
     apply_question_visibility_to_episode,
     visibility_model_from_episode,
@@ -3584,7 +3584,13 @@ def _recorded_route_reference(
     start_heading_deg: Optional[float],
 ):
     """Recorded actions between source and goal, verified by continuous replay."""
-    actions = recorded_actions_between(episode, t0, t1, skip_glances=True)
+    # Net turn per run of turns: done-override spins and turn-backs are not a plan.
+    actions = collapse_rotations(
+        recorded_actions_between(episode, t0, t1, skip_glances=True),
+        rotation_deg=float(
+            graph.graph.get('agent_rotation_deg') or _cfg().class4.fallback.agent_rotation_deg
+        ),
+    )
     if not actions:
         return None
     heading = 0.0 if start_heading_deg is None else float(start_heading_deg)

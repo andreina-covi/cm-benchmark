@@ -110,6 +110,42 @@ def recorded_actions_between(
     return out
 
 
+def collapse_rotations(actions: list[str], rotation_deg: float) -> list[str]:
+    """Replace each run of consecutive turns by its net turn.
+
+    Rotations in place do not move the agent, so the end pose is unchanged:
+    ``rotate_right`` x8 (a full spin, e.g. SPOC done-override turns) vanishes,
+    ``rotate_right, rotate_right, rotate_left`` becomes one ``rotate_right``.
+    A net turn over half a revolution goes the short way; exactly half keeps
+    the run's own direction.
+    """
+    per_rev = max(1, int(round(360.0 / float(rotation_deg))))
+    out: list[str] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        net = sum(_GLANCE_TURN[a] for a in run) % per_rev
+        if net * 2 > per_rev:
+            out.extend(['rotate_left'] * (per_rev - net))
+        elif net * 2 == per_rev:
+            first = 'rotate_left' if run[0] == 'rotate_left' else 'rotate_right'
+            out.extend([first] * net)
+        else:
+            out.extend(['rotate_right'] * net)
+        run.clear()
+
+    for act in actions:
+        if act in _GLANCE_TURN:
+            run.append(act)
+        else:
+            flush()
+            out.append(act)
+    flush()
+    return out
+
+
 def _complete_glance_steps(episode: dict, lo: int, hi: int) -> set[int]:
     """Steps of glances inside ``(lo, hi]`` whose turns cancel out."""
     runs: list[list[dict]] = []

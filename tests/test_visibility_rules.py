@@ -66,3 +66,14 @@ def test_perspective_objects_must_be_half_a_metre_to_five_metres_apart():
     assert not _pt_pairs_well_spaced({}, [obj('A|1', 0.0), obj('B|1', 0.85), obj('C|1', 3.0)])
     # more than 5 m apart is too far
     assert not _pt_pairs_well_spaced({}, [obj('A|1', 0.0), obj('B|1', 2.0), obj('C|1', 7.0)])
+
+
+def test_route_reference_keeps_only_the_net_turn():
+    from cm_benchmark.generation.route_replay import collapse_rotations
+
+    spin = ['rotate_right'] * 8
+    assert collapse_rotations(['move_ahead', *spin, 'move_ahead'], 45) == ['move_ahead', 'move_ahead']
+    assert collapse_rotations(['rotate_right', 'rotate_right', 'rotate_left'], 45) == ['rotate_right']
+    assert collapse_rotations(['rotate_right'] * 6, 45) == ['rotate_left'] * 2
+    assert collapse_rotations(['rotate_left'] * 4, 45) == ['rotate_left'] * 4
+    assert collapse_rotations(['rotate_right', 'move_ahead', 'rotate_left'], 45) == ['rotate_right', 'move_ahead', 'rotate_left']

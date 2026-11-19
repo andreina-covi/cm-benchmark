@@ -153,6 +153,9 @@ class NavSequenceGenerator(ABC):
                 action_rec['action_success'] = data.get('action_success')
             if data.get('scripted_glance'):
                 action_rec['scripted_glance'] = True
+            if data.get('step_source'):
+                # SPOC step-source: policy, glance, or done_override
+                action_rec['step_source'] = data['step_source']
             episode_dict['agent_actions'].append(action_rec)
 
         episode_dict['route'] = self.build_route(episode_dict['steps'])
