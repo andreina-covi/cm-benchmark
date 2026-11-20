@@ -468,3 +468,35 @@ def test_pixel_sibling_unmarkable_target_drops():
         'steps': [step],
     }
     assert resolve_named_objects(episode, [0], ['Chair|1']) is None
+
+
+def test_mark_drawn_on_filtered_out_frame_with_mask_pixels(tmp_path):
+    """A numbered object keeps its mark on every frame it shows in."""
+    from PIL import Image
+
+    bg = (120, 120, 120)
+    w, h = 200, 100
+    p0 = tmp_path / 'f0.png'
+    p1 = tmp_path / 'f1.png'
+    Image.new('RGB', (w, h), bg).save(p0)
+    Image.new('RGB', (w, h), bg).save(p1)
+    episode = {
+        'episode_meta': {'camera': {'width': w, 'height': h}},
+        'steps': [
+            _step(0, {'Chair|1': _vis('Chair', [0.0, 0.0, 1.0], bbox=[40, 20, 80, 70], mark_xy=(50, 55))}, image=str(p0)),
+            {
+                **_step(1, {}, image=str(p1), x=0.5),
+                'visible_objects': {},
+                'present_objects': {'Chair|1': 300, 'Chair|2': 0},
+                'present_marks': {'Chair|1': [150, 55], 'Chair|2': [20, 20]},
+            },
+        ],
+    }
+    copies = draw_marked_frames(
+        episode, [str(p0), str(p1)], [0, 1], {'Chair|1': 3, 'Chair|2': 4}, tmp_path / 'marked'
+    )
+    second = Image.open(copies[1]).convert('RGB')
+    disc = [second.getpixel((x, y)) for x in range(142, 159) for y in range(47, 64)]
+    assert (0, 0, 0) in disc
+    # Chair|2 has no mask pixels on that frame: no badge.
+    assert second.getpixel((20, 20)) == bg

@@ -333,8 +333,10 @@ def draw_marked_frames(
 ) -> list[str]:
     """Write marked copies of ``image_paths``; return the copy paths.
 
-    Marks every ``objectId`` in ``marks`` that passes the visibility filter
-    on that frame. Originals are not modified.
+    Marks every ``objectId`` in ``marks`` that shows on that frame: its
+    filtered detection's mask point, else the point of any exported detection
+    with mask pixels (``present_marks``), so a numbered object keeps its mark
+    in every frame of a sequence. Originals are not modified.
     """
     from PIL import Image, ImageDraw
 
@@ -355,11 +357,16 @@ def draw_marked_frames(
             continue
         draw = ImageDraw.Draw(im)
         w, h = im.size
+        step = step_by_index(episode, int(si)) or {}
+        present = step.get('present_objects') or {}
+        present_marks = step.get('present_marks') or {}
         for oid, number in marks.items():
             odata = vis.get(oid)
-            if not isinstance(odata, dict):
-                continue
-            pt = _mark_xy(odata)
+            pt = _mark_xy(odata) if isinstance(odata, dict) else None
+            if pt is None and oid in present_marks:
+                pix = present.get(oid)
+                if pix is None or pix > 0:
+                    pt = _mark_xy({'mark_xy': present_marks[oid]})
             if pt is None:
                 continue
             xy = _scale_px(pt, image_wh or (w, h), (w, h))

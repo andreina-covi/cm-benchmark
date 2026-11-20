@@ -693,6 +693,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                     # Every exported detection (obj -> mask pixels), before the
                     # question-visibility filter: "hidden" and confusable checks use it.
                     'present': {},
+                    # Mask point of every exported detection (obj -> [x, y]), so a
+                    # numbered mark is drawn on every frame the object shows in.
+                    'present_marks': {},
                 }
             if not _is_valid_obj_id(obj) or is_structural_object(object_id=obj):
                 continue
@@ -728,6 +731,9 @@ class Ai2ThorNavGenerator(NavSequenceGenerator):
                 dict_navigation[timestep]['present'][obj] = (
                     None if pix is None else int(pix)
                 )
+                mark = _row_mark_xy(row)
+                if mark is not None:
+                    dict_navigation[timestep]['present_marks'][obj] = list(mark)
 
             if filter_on and not raw['passes_question_filter']:
                 continue

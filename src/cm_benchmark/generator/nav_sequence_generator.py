@@ -130,6 +130,9 @@ class NavSequenceGenerator(ABC):
             if data.get('present'):
                 # Unfiltered detections: obj -> mask pixels (None if not exported)
                 step_dict['present_objects'] = dict(data['present'])
+            if data.get('present_marks'):
+                # Mask point of every exported detection: obj -> [x, y]
+                step_dict['present_marks'] = dict(data['present_marks'])
             step_dict['non_visible_objects'] = non_visible_objs
             step_dict['edges_egocentric'] = edges_egocentric
             step_dict['edges_allocentric'] = edges_allocentric

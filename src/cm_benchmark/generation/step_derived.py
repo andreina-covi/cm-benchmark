@@ -41,6 +41,7 @@ _STEP_KEEP = (
     'current_room',
     'current_room_type',
     'present_objects',
+    'present_marks',
 )
 
 _DERIVED_KEYS = (
