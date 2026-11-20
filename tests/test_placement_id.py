@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cm_benchmark.generation.planner import id_placement_funnel, plan_invisible_displacement
 
 
@@ -345,6 +347,64 @@ def test_colliding_distractor_replaced_with_unused_ego_label():
     assert len(fact.options_pool) == 4
 
 
+_LEFT = [-3.0, 0.9, 4.0]  # to the left of the query pose (0, 1, 4), yaw 0
+
+
+@pytest.mark.label_change
+@pytest.mark.label_margin
+@pytest.mark.parametrize(
+    'dest, old, expected',
+    [
+        (_LEFT, [0.5, 0.9, 0.5], True),  # left vs behind
+        (_BEHIND, [0.5, 0.9, 0.5], False),  # both behind: old location also right
+        (_LEFT, [2.9, 0.9, 0.5], False),  # old 140 deg, within the margin of the 135 edge
+        (_LEFT, None, False),  # no old position
+    ],
+)
+def test_answer_must_change_label_with_the_move(dest, old, expected):
+    from cm_benchmark.generation.planner import _id_label_changes_with_move, _try_ego_direction_fact
+
+    episode = _placement_episode(dest=dest)
+    specs = [
+        {'role': 'chosen', 'position': dest, 'is_answer': True},
+        {'role': 'original_location', 'position': old, 'is_answer': False},
+    ]
+    answer = 'to your left' if dest is _LEFT else 'behind you'
+    assert _id_label_changes_with_move(
+        episode, specs, 2, obj_id='Cup|1', answer_dir=answer
+    ) is expected
+    fact = _try_ego_direction_fact(
+        episode,
+        {'obj_id': 'Cup|1', 'at_timestep': 2, 'hidden_during': True},
+        obj_id='Cup|1',
+        object_type='Cup',
+        enc_idx=0,
+        query_step=2,
+        at_t=2,
+        images=['/img_0.png', '/img_2.png'],
+        specs=specs,
+        template_mode='recall_direction',
+        answer_source=['placement_candidates'],
+        extra_fields={},
+    )
+    assert (fact is not None) is expected
+    if expected:
+        # The old location is always an option, tagged for the A-not-B rate.
+        assert fact.answer_label == answer
+        assert 'original_location' in fact.distractor_seeds
+
+
+@pytest.mark.label_change
+def test_funnel_drops_item_whose_old_location_shares_the_label():
+    funnel = dict(id_placement_funnel(_placement_episode(dest=_BEHIND)))
+    assert funnel['swap_partner_ok'] >= 1
+    assert funnel['label_changes_with_move'] == 0
+    assert funnel['diagnostic_options'] == 0
+    assert not any(
+        f.status == 'ok' for f in plan_invisible_displacement(_placement_episode(dest=_BEHIND))
+    )
+
+
 def test_id_funnel_reports_gates_in_order():
     episode = _placement_episode(dest=_BEHIND)
     funnel = id_placement_funnel(episode)
@@ -359,6 +419,7 @@ def test_id_funnel_reports_gates_in_order():
         'dest_outside_frustum',
         'anchor_nameable',
         'swap_partner_ok',
+        'label_changes_with_move',
         'diagnostic_options',
     ]
     by_gate = dict(funnel)

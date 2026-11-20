@@ -169,6 +169,7 @@ class InvisibleDisplacementConfig:
     min_landmark_gap_m: float
     min_diagnostic_labels: int
     max_delay: Optional[int]
+    require_label_change: bool
 
 
 @dataclass(frozen=True)
@@ -474,6 +475,7 @@ def generation_config_from_mapping(
             min_displacement_m=float(raw['invisible_displacement']['min_displacement_m']),
             min_landmark_gap_m=float(raw['invisible_displacement']['min_landmark_gap_m']),
             min_diagnostic_labels=int(raw['invisible_displacement']['min_diagnostic_labels']),
+            require_label_change=bool(raw['invisible_displacement']['require_label_change']),
             max_delay=(
                 None
                 if raw['invisible_displacement'].get('max_delay') is None

@@ -150,3 +150,57 @@ def score_survey_based_route_planning(
         goal_pos=goal_pos,
         **kwargs,
     )
+
+
+def score_mcq(item: dict[str, Any], choice: Optional[str]) -> dict:
+    """Exact option-letter match, plus the failure mode of the chosen option.
+
+    ``chosen_mode`` is the item's ``distractor_rationale`` tag for the chosen
+    letter (``correct``, ``original_location``, ...), or None when the reply is
+    not one of the option letters.
+    """
+    key = str(choice or '').strip().upper()
+    options = item.get('options') or {}
+    if key not in options:
+        return {'correct': False, 'chosen_mode': None}
+    return {
+        'correct': key == item.get('answer'),
+        'chosen_mode': (item.get('distractor_rationale') or {}).get(key),
+    }
+
+
+def distractor_choice_rates(items: list[dict[str, Any]], choices: dict[str, Optional[str]]) -> dict:
+    """Per construct, how wrong answers split over distractor failure modes.
+
+    For invisible displacement, ``original_location`` is the perseveration
+    (A-not-B) error: the model answers with where the object was, not where it
+    was moved. ``chance`` is the share one tag would get if a wrong answer were
+    picked uniformly among the item's wrong options, for comparison.
+    """
+    out: dict[str, dict] = {}
+    for item in items:
+        iid = item.get('item_id')
+        if iid not in choices or not item.get('options'):
+            continue
+        res = score_mcq(item, choices[iid])
+        row = out.setdefault(
+            item.get('construct'),
+            {'n': 0, 'n_correct': 0, 'n_wrong': 0, 'modes': {}, 'chance': {}},
+        )
+        row['n'] += 1
+        if res['correct']:
+            row['n_correct'] += 1
+            continue
+        row['n_wrong'] += 1
+        n_wrong_opts = max(1, len(item['options']) - 1)
+        for mode in (item.get('distractor_rationale') or {}).values():
+            if mode == 'correct':
+                continue
+            row['chance'][mode] = row['chance'].get(mode, 0.0) + 1.0 / n_wrong_opts
+        mode = res['chosen_mode'] or 'invalid_reply'
+        row['modes'][mode] = row['modes'].get(mode, 0) + 1
+    for row in out.values():
+        n = row['n_wrong']
+        row['rates'] = {m: c / n for m, c in row['modes'].items()} if n else {}
+        row['chance'] = {m: c / n for m, c in row['chance'].items()} if n else {}
+    return out
