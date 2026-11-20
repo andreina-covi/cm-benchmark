@@ -91,6 +91,23 @@ def _trim_label_share(chosen: list[tuple[str, dict]], share: float) -> None:
         chosen.pop(drop_at)
 
 
+def _trim_control_share(chosen: list[tuple[str, dict]], share: float) -> None:
+    """Drop perspective-taking control items (disparity bin 0) above ``share`` of the set.
+
+    At least one control item is always kept. The latest-drawn ones go first.
+    """
+    def is_control(item: dict) -> bool:
+        return (item.get('context') or {}).get('disparity_bin') == 0
+
+    while chosen:
+        n = len(chosen)
+        limit = max(1, int(float(share) * n))
+        control = [i for i, (_name, item) in enumerate(chosen) if is_control(item)]
+        if len(control) <= limit:
+            break
+        chosen.pop(control[-1])
+
+
 def _round_robin(
     pool: list[tuple[str, dict]],
     *,
@@ -129,13 +146,15 @@ def balance_scene_items(
     max_per_scene: int,
     max_label_share: float,
     seed: int,
+    max_control_share: float = 1.0,
 ) -> list[tuple[str, list[dict]]]:
     """Pick a whole-set sample, then cap answer labels.
 
     Each scene contributes at most ``max_per_scene`` concise facts per
     construct. Those lists are shuffled with ``seed`` and drawn round-robin
     up to ``max_per_construct`` times the number of scenes. The label cap
-    runs after that draw. Verbose partners of a kept concise item are kept.
+    runs after that draw, after the perspective-taking control-bin cap
+    (``max_control_share``). Verbose partners of a kept concise item are kept.
     A scene that produced no ok fact for a construct keeps its placeholder.
     """
     scenes = [(name, _dedupe_items(items)) for name, items in scenes]
@@ -174,6 +193,8 @@ def balance_scene_items(
             slots=target,
             rng=rng,
         )
+        if construct == 'perspective_taking':
+            _trim_control_share(chosen, max_control_share)
         _trim_label_share(chosen, max_label_share)
         for name, item in chosen:
             keep[name].add(item['item_id'])
@@ -204,6 +225,7 @@ def _balance_generated(
         max_per_scene=cfg.budget.max_per_scene,
         max_label_share=cfg.options.max_label_share,
         seed=cfg.options.shuffle_seed,
+        max_control_share=cfg.perspective_taking.max_control_share,
     )
 
 

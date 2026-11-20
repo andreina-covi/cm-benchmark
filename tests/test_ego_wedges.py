@@ -201,15 +201,15 @@ def test_pixel_column_center_is_ahead():
     assert abs(bearing) < 1e-6 or abs(bearing - 360.0) < 1e-6
 
 
-def test_imagined_uses_signed_bins_not_ahead_wedge():
-    # ~26.5° to the right of +Z facing — old 45° wedge said "ahead"; PT bins → right
+def test_imagined_uses_the_full_circle_ahead_wedge():
+    # ~26.5° to the right of +Z facing — ahead under the 45° wedge, as in spatial updating
     assert (
         imagined_perspective_label(
             {'x': 0, 'z': 0},
             {'x': 0, 'z': 1},
             {'x': 1, 'z': 2},
         )
-        == 'to your right'
+        == 'ahead of you'
     )
     assert (
         translated_egocentric_label(

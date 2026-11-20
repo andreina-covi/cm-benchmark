@@ -189,6 +189,14 @@ class PerspectiveTakingConfig:
     footprint_grid: int
     min_pair_gap_m: float
     max_pair_gap_m: Optional[float]
+    disparity_bin_edges_deg: tuple[float, ...]
+    max_control_share: float
+    a_standoff_m: float
+    max_uses_as_a: int
+    multi_frame: bool
+    continuity_max_turn_deg: float
+    continuity_max_move_m: float
+    max_window_frames: int
 
 
 @dataclass(frozen=True)
@@ -500,6 +508,16 @@ def generation_config_from_mapping(
                 if raw['perspective_taking'].get('max_pair_gap_m') is None
                 else float(raw['perspective_taking']['max_pair_gap_m'])
             ),
+            disparity_bin_edges_deg=tuple(
+                float(e) for e in raw['perspective_taking']['disparity_bin_edges_deg']
+            ),
+            max_control_share=float(raw['perspective_taking']['max_control_share']),
+            a_standoff_m=float(raw['perspective_taking']['a_standoff_m']),
+            max_uses_as_a=int(raw['perspective_taking']['max_uses_as_a']),
+            multi_frame=bool(raw['perspective_taking']['multi_frame']),
+            continuity_max_turn_deg=float(raw['perspective_taking']['continuity_max_turn_deg']),
+            continuity_max_move_m=float(raw['perspective_taking']['continuity_max_move_m']),
+            max_window_frames=int(raw['perspective_taking']['max_window_frames']),
         ),
         naming=NamingConfig(
             rename={str(k): str(v) for k, v in (raw.get('naming', {}).get('rename') or {}).items()},

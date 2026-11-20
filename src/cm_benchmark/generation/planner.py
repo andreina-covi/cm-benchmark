@@ -5138,32 +5138,212 @@ def _pt_pairs_well_spaced(episode: dict, objects: Sequence[dict]) -> bool:
     return True
 
 
-def _footprint_points(episode: dict, obj_id: str, fallback: dict, n: int) -> list[dict]:
-    """``n`` × ``n`` floor points over the object's AABB, or ``[fallback]``."""
+def _footprint_points(
+    episode: dict, obj_id: str, fallback: dict, n: int, pad: float = 0.0
+) -> list[dict]:
+    """``n`` × ``n`` floor points over the object's AABB grown by ``pad`` m, or ``[fallback]``."""
     rec = (episode.get('object_catalog') or {}).get(obj_id) or {}
     amin, amax = rec.get('aabb_min'), rec.get('aabb_max')
     if not amin or not amax or n < 2:
         return [fallback]
-    xs = [amin[0] + (amax[0] - amin[0]) * i / (n - 1) for i in range(n)]
-    zs = [amin[2] + (amax[2] - amin[2]) * i / (n - 1) for i in range(n)]
+    x0, x1 = amin[0] - pad, amax[0] + pad
+    z0, z1 = amin[2] - pad, amax[2] + pad
+    xs = [x0 + (x1 - x0) * i / (n - 1) for i in range(n)]
+    zs = [z0 + (z1 - z0) * i / (n - 1) for i in range(n)]
     return [{'x': x, 'y': fallback.get('y', 0.0), 'z': z} for x in xs for z in zs]
 
 
 def _pt_label_stable(
     episode: dict, ids: Sequence[str], pos_a: dict, pos_b: dict, pos_c: dict, label: str
 ) -> bool:
-    """No point of A's or C's floor box gives a different label (facing B).
+    """No combination of A, B and C floor points gives a different label.
 
-    Points inside the boundary margin give no label and are ignored; only a
-    flip to another label rejects. See ``perspective_taking.footprint_grid``.
+    A's points are its centre plus a ring ``perspective_taking.a_standoff_m``
+    wide on the half of A facing B ("standing next to A", facing B); B's and C's boxes are used as they are, so a long B
+    cannot swing the heading into another sector. Points inside the boundary
+    margin give no label and are ignored; only a flip to another label
+    rejects. See ``perspective_taking.footprint_grid``.
     """
-    n = int(_cfg().perspective_taking.footprint_grid)
-    for pa in _footprint_points(episode, ids[0], pos_a, n):
-        for pc in _footprint_points(episode, ids[2], pos_c, n):
-            other = imagined_perspective_label(pa, pos_b, pc)
-            if other is not None and other != label:
-                return False
+    pt = _cfg().perspective_taking
+    n = int(pt.footprint_grid)
+    pts_a = _a_standpoints(episode, ids[0], pos_a, pos_b, n, float(pt.a_standoff_m))
+    pts_b = _footprint_points(episode, ids[1], pos_b, n)
+    pts_c = _footprint_points(episode, ids[2], pos_c, n)
+    for pa in pts_a:
+        for pb in pts_b:
+            for pc in pts_c:
+                other = imagined_perspective_label(pa, pb, pc)
+                if other is not None and other != label:
+                    return False
     return True
+
+
+def _a_standpoints(
+    episode: dict, obj_id: str, pos_a: dict, pos_b: dict, n: int, pad: float
+) -> list[dict]:
+    """Where one may stand "next to A, facing B": A's centre plus the grown-box
+    grid points on the side of A facing B (A→B half-plane through A's centre)."""
+    pts = _footprint_points(episode, obj_id, pos_a, n, pad=pad)
+    fx, fz = pos_b['x'] - pos_a['x'], pos_b['z'] - pos_a['z']
+    out = [pos_a]
+    for p in pts:
+        if (p['x'] - pos_a['x']) * fx + (p['z'] - pos_a['z']) * fz > 0:
+            out.append(p)
+    return out
+
+
+def _pt_frames_continuous(episode: dict, steps: Sequence[int]) -> bool:
+    """Consecutive shown frames overlap: heading change and move within one step.
+
+    Limits: ``perspective_taking.continuity_max_turn_deg`` and
+    ``continuity_max_move_m``.
+    """
+    pt = _cfg().perspective_taking
+    poses = [_agent_pose_dict(episode, int(st)) for st in steps]
+    for pa, pb in zip(poses, poses[1:]):
+        if pa is None or pb is None:
+            return False
+        turn = abs((pb['heading'] - pa['heading'] + 180) % 360 - 180)
+        move = math.hypot(pb['x'] - pa['x'], pb['z'] - pa['z'])
+        if turn > float(pt.continuity_max_turn_deg) + 1e-6:
+            return False
+        if move > float(pt.continuity_max_move_m) + 1e-6:
+            return False
+    return True
+
+
+def _image_x(episode: dict, step_idx: int, obj_id: str) -> Optional[float]:
+    """Horizontal image position of ``obj_id`` on a step (mark, else 2D box centre)."""
+    step = step_by_index(episode, step_idx)
+    odata = _id_raw_odata(episode, step, obj_id) if step is not None else None
+    if not odata:
+        return None
+    mark = odata.get('mark_xy')
+    if mark:
+        return float(mark[0])
+    bbox = odata.get('bbox')
+    if bbox:
+        return (float(bbox[0]) + float(bbox[2])) / 2.0
+    return None
+
+
+def _pt_image_heuristic(episode: dict, step_idx: int, id_a: str, id_c: str) -> Optional[str]:
+    """Shortcut answer "C is right / left of A in the picture", or None if unknown."""
+    xa, xc = _image_x(episode, step_idx, id_a), _image_x(episode, step_idx, id_c)
+    if xa is None or xc is None or xa == xc:
+        return None
+    return 'to your right' if xc > xa else 'to your left'
+
+
+def _pt_sighting_steps(episode: dict, obj_id: str) -> list[int]:
+    """Steps where ``obj_id`` is distinguishable and has mask pixels, in order."""
+    return sorted(
+        int(step['step'])
+        for step in episode.get('steps') or []
+        if _distinguishable_encoding_sighting(episode, int(step['step']), obj_id)
+        and _object_mask_pixels(episode, obj_id, int(step['step'])) > 0
+    )
+
+
+def _pt_best_window(
+    episode: dict, sightings: Sequence[Sequence[int]], max_frames: int
+) -> Optional[tuple[int, int, bool]]:
+    """Window of at most ``max_frames`` FOV frames holding a sighting of each object.
+
+    Returns ``(start, end, pair_together)``. Preference: a window with a frame
+    where two of the objects are seen together, then the fewest frames, then
+    the latest. ``(s, s, True)`` means all are seen together on step ``s``.
+    """
+    import bisect
+
+    if any(not seq for seq in sightings):
+        return None
+    sets = [set(int(x) for x in seq) for seq in sightings]
+    fov = _fov_step_indices(episode, min(min(x) for x in sets), max(max(x) for x in sets))
+    if not fov:
+        return None
+    steps = sorted(set().union(*sets))
+    together = sorted(st for st in steps if sum(st in x for x in sets) >= 2)
+    best = None
+    for si, start in enumerate(steps):
+        lo = bisect.bisect_left(fov, start)
+        for end in steps[si:]:
+            n_frames = bisect.bisect_right(fov, end) - lo
+            if n_frames > max_frames:
+                break
+            if not all(any(start <= x <= end for x in xs) for xs in sets):
+                continue
+            k = bisect.bisect_left(together, start)
+            pair = k < len(together) and together[k] <= end
+            key = (not pair, n_frames, -end)
+            if best is None or key < best[0]:
+                best = (key, (start, end, pair))
+    return None if best is None else best[1]
+
+
+def _pt_window_fits(episode: dict, start: int, end: int) -> bool:
+    """Every FOV frame of the window fits the largest image budget."""
+    return len(_fov_step_indices(episode, start, end)) <= max(_cfg().frames.budgets)
+
+
+def _pt_disparity_bin(shift: Optional[float]) -> Optional[int]:
+    """Bin index of the A→B vs camera heading angle (``disparity_bin_edges_deg``)."""
+    if shift is None:
+        return None
+    return sum(1 for e in _cfg().perspective_taking.disparity_bin_edges_deg if shift >= e)
+
+
+def _pt_spread(facts: list[PlannedFact], max_items: int) -> list[PlannedFact]:
+    """Take facts round-robin over (answer label, disparity bin, image shortcut agrees).
+
+    Each round visits groups of the rarest answer label first, then smaller
+    groups, so rare cells ("behind", high disparity) are kept when the cap is
+    small; the control bin (disparity bin 0) goes last. Order inside a group is the planner's
+    (landmark salience). No object is A in more than
+    ``perspective_taking.max_uses_as_a`` of the returned facts, and the same A
+    with B and C swapped is taken once.
+    """
+    max_a = int(_cfg().perspective_taking.max_uses_as_a)
+    groups: dict[tuple, list[PlannedFact]] = {}
+    for f in facts:
+        extra = f.extra or {}
+        key = (f.answer_label, extra.get('disparity_bin'), extra.get('image_heuristic_agrees'))
+        groups.setdefault(key, []).append(f)
+    for g in groups.values():
+        # A frame showing two of A/B/C together is preferred (stable sort).
+        g.sort(key=lambda f: not (f.extra or {}).get('abc_pair_together', True))
+    per_label: dict = {}
+    for f in facts:
+        per_label[f.answer_label] = per_label.get(f.answer_label, 0) + 1
+    queues = sorted(
+        groups.values(),
+        key=lambda g: (
+            (g[0].extra or {}).get('disparity_bin') == 0,
+            per_label[g[0].answer_label],
+            len(g),
+            str(g[0].answer_label),
+        ),
+    )
+    out: list[PlannedFact] = []
+    uses_a: dict = {}
+    triples: set = set()
+    while len(out) < max_items and any(queues):
+        for q in queues:
+            while q and len(out) < max_items:
+                f = q.pop(0)
+                extra = f.extra or {}
+                a_id = extra.get('landmark_a_id')
+                if uses_a.get(a_id, 0) >= max_a:
+                    continue
+                # Same A with B and C swapped is the same three objects: one item.
+                key = (a_id, frozenset((extra.get('landmark_b_id'), extra.get('landmark_c_id'))))
+                if key in triples:
+                    continue
+                triples.add(key)
+                uses_a[a_id] = uses_a.get(a_id, 0) + 1
+                out.append(f)
+                break
+    return out
 
 
 def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFact]:
@@ -5171,11 +5351,13 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
 
     A, B, and C must be distinguishable together in one frame, with mask
     pixels on that frame. A triple that is never co-visible is dropped.
-    No two of A/B/C may be parts of one combined asset or rest on each other,
-    and the label must not flip across A's or C's floor box (``_pt_label_stable``).
+    A must stand on the floor (SPOC ``salient_landmarks``). No two of A/B/C
+    may be parts of one combined asset or rest on each other, and the label
+    must not flip across A's (grown), B's or C's floor box (``_pt_label_stable``).
     ``select_landmark_candidates`` keeps unique-category landmarks here
-    (default). Triples are tried in landmark salience order and the first
-    ``max_items`` valid ones are emitted.
+    (default). Every valid triple is collected in landmark salience order, then
+    ``max_items`` are drawn spread over (answer label, disparity bin, image
+    shortcut agrees) (``_pt_spread``); the bin is the item's difficulty.
     """
     pt = _cfg().perspective_taking
     landmarks = select_landmark_candidates(
@@ -5190,8 +5372,12 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
             )
         ]
 
+    floor_ids = _salient_floor_landmark_ids(episode)
+    sightings = {lm['obj_id']: _pt_sighting_steps(episode, lm['obj_id']) for lm in landmarks}
     out: list[PlannedFact] = []
     for i, a in enumerate(landmarks):
+        if floor_ids is not None and a['obj_id'] not in floor_ids:
+            continue
         for j, b in enumerate(landmarks):
             if i == j:
                 continue
@@ -5205,14 +5391,27 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 if not pos_a or not pos_b or not pos_c:
                     continue
 
-                co_step = _co_visible_distinguishable_step(
-                    episode, [a['obj_id'], b['obj_id'], c['obj_id']]
-                )
-                if co_step is None:
+                ids3 = [a['obj_id'], b['obj_id'], c['obj_id']]
+                if pt.multi_frame:
+                    window = _pt_best_window(
+                        episode, [sightings[o] for o in ids3], int(pt.max_window_frames)
+                    )
+                else:
+                    co = _co_visible_distinguishable_step(episode, ids3)
+                    window = None if co is None else (co, co, True)
+                if window is None or not _pt_window_fits(episode, window[0], window[1]):
                     continue
-                name_a = _referring_display_name(episode, co_step, a['obj_id'])
-                name_b = _referring_display_name(episode, co_step, b['obj_id'])
-                name_c = _referring_display_name(episode, co_step, c['obj_id'])
+                win_start, win_end, pair_together = window
+                # Each object's latest sighting inside the window names it.
+                seen_at = [
+                    max(st for st in sightings[o] if win_start <= st <= win_end)
+                    if pt.multi_frame
+                    else win_end
+                    for o in ids3
+                ]
+                name_a = _referring_display_name(episode, seen_at[0], a['obj_id'])
+                name_b = _referring_display_name(episode, seen_at[1], b['obj_id'])
+                name_c = _referring_display_name(episode, seen_at[2], c['obj_id'])
                 if name_a is None or name_b is None or name_c is None:
                     continue
                 if _named_ids_confusable(
@@ -5221,7 +5420,7 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                     continue
 
                 label = imagined_perspective_label(pos_a, pos_b, pos_c)
-                if not label or label not in EGO_DIRECTION_OPTIONS:
+                if not label or label not in PT_DIRECTION_OPTIONS:
                     continue
                 triple = [a['obj_id'], b['obj_id'], c['obj_id']]
                 if _pt_objects_entangled(episode, triple):
@@ -5231,17 +5430,38 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 if not _pt_label_stable(episode, triple, pos_a, pos_b, pos_c, label):
                     continue
 
-                query_step = co_step
-                encoding_step = co_step
-                images, image_roles = merge_role_images(
-                    [
-                        (
-                            _img(step_by_index(episode, co_step)),
-                            f'A/B/C co-visible · stand at {name_a}, face {name_b}, locate {name_c}',
-                        )
-                    ]
-                )
-                if not images:
+                query_step = win_end
+                encoding_step = win_start
+                co_visible = win_start == win_end
+                if co_visible:
+                    shown_steps = [win_end]
+                    images, image_roles = merge_role_images(
+                        [
+                            (
+                                _img(step_by_index(episode, win_end)),
+                                f'A/B/C co-visible · stand next to {name_a}, face {name_b}, locate {name_c}',
+                            )
+                        ]
+                    )
+                else:
+                    shown_steps = _fov_step_indices(episode, win_start, win_end)
+                    if not _pt_frames_continuous(episode, shown_steps):
+                        continue
+                    tags = {}
+                    for tag, st in zip(
+                        (f'A · {name_a}', f'B · {name_b}', f'C · {name_c}'), seen_at
+                    ):
+                        tags.setdefault(st, []).append(tag)
+                    images, image_roles = merge_role_images(
+                        [
+                            (
+                                _img(step_by_index(episode, st)),
+                                ' + '.join(tags[st]) if st in tags else 'between sightings',
+                            )
+                            for st in shown_steps
+                        ]
+                    )
+                if not images or len(images) != len(shown_steps):
                     continue
 
                 # Camera-frame distractor: C relative to actual agent pose (FOV)
@@ -5287,6 +5507,17 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                         math.atan2(pos_b['x'] - pos_a['x'], pos_b['z'] - pos_a['z'])
                     )
                     shift = abs((imag_h - pose['heading'] + 180) % 360 - 180)
+                # Shortcut needs A and C in one frame: the latest shown frame with both.
+                both = [
+                    st
+                    for st in shown_steps
+                    if st in set(sightings[a['obj_id']]) and st in set(sightings[c['obj_id']])
+                ]
+                heuristic = (
+                    _pt_image_heuristic(episode, both[-1], a['obj_id'], c['obj_id'])
+                    if both
+                    else None
+                )
                 out.append(
                     PlannedFact(
                         construct='perspective_taking',
@@ -5316,15 +5547,23 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                             'landmark_b_id': b['obj_id'],
                             'landmark_c_id': c['obj_id'],
                             'perspective_shift_magnitude': shift,
+                            'disparity_bin': _pt_disparity_bin(shift),
+                            'image_heuristic_label': heuristic,
+                            'image_heuristic_agrees': (
+                                None if heuristic is None else heuristic == label
+                            ),
+                            'dist_a_c_m': round(
+                                math.hypot(pos_c['x'] - pos_a['x'], pos_c['z'] - pos_a['z']), 3
+                            ),
                             'frame_of_reference': 'allocentric',
                             'image_roles': image_roles,
-                            'shown_frame_steps': [co_step],
-                            'abc_co_visible': True,
+                            'shown_frame_steps': shown_steps,
+                            'abc_co_visible': co_visible,
+                            'abc_window_steps': [win_start, win_end],
+                            'abc_pair_together': pair_together,
                         },
                     )
                 )
-                if len(out) >= max_items:
-                    return out
     if not out:
         return [
             PlannedFact(
@@ -5333,7 +5572,7 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 reason='no_valid_ABC_landmark_triple',
             )
         ]
-    return out
+    return _pt_spread(out, max_items)
 
 
 PLANNERS = {

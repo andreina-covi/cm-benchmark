@@ -1716,8 +1716,8 @@ def test_perspective_taking_rejects_weak_landmarks():
         assert 'Cup' not in blob
 
 
-def test_perspective_taking_requires_one_shared_frame():
-    """A, B, and C must share one frame. Split sightings are not a question."""
+def test_perspective_taking_shared_frame_or_window():
+    """One-frame mode needs A, B, C together; multi-frame mode shows the whole window."""
     from cm_benchmark.generation.planner import plan_perspective_taking
 
     def det(cat, pos):
@@ -1769,8 +1769,36 @@ def test_perspective_taking_requires_one_shared_frame():
             for i in range(3)
         ],
     }
-    facts = plan_perspective_taking(split, max_items=2)
+    from dataclasses import replace
+
+    from cm_benchmark.generation.config import (
+        get_generation_config,
+        reset_generation_config,
+        set_generation_config,
+    )
+
+    cfg = get_generation_config()
+    token = set_generation_config(
+        replace(cfg, perspective_taking=replace(cfg.perspective_taking, multi_frame=False))
+    )
+    try:
+        facts = plan_perspective_taking(split, max_items=2)
+    finally:
+        reset_generation_config(token)
     assert not any(f.status == 'ok' for f in facts)
+
+    token = set_generation_config(
+        replace(cfg, perspective_taking=replace(cfg.perspective_taking, multi_frame=True))
+    )
+    try:
+        facts = plan_perspective_taking(split, max_items=2)
+    finally:
+        reset_generation_config(token)
+    ok = [f for f in facts if f.status == 'ok']
+    assert ok
+    assert ok[0].extra.get('shown_frame_steps') == [0, 1, 2]
+    assert ok[0].extra.get('abc_co_visible') is False
+    assert ok[0].image_paths == ['/img_0.png', '/img_1.png', '/img_2.png']
 
 
 def test_border_scrape_cup_rejected_for_egocentric():

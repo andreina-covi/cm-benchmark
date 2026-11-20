@@ -40,6 +40,9 @@ directions:
   ahead_half_width_fov_deg: 20.0  # none found (d56b883; 45° collapses FOV objects to ahead)
   ahead_half_width_full_deg: 45.0  # derived: four equal 90° sectors; behind boundary = 135°
   pt_back_deg: 135.0  # literature: VSI-Bench relative direction, back = turn ≥ 135°
+  # Perspective taking uses the same four 90° sectors as spatial updating: ahead
+  # within ±ahead_half_width_full_deg of A->B, left / right up to pt_back_deg,
+  # behind beyond it; a triple within this margin of any edge gives no label.
   pt_boundary_margin_deg: 10.0  # none found (c87ae77; not a published VSI/ViewSpatial constant)
   refuse_straddling_objects: true  # derived: drop when 2D bbox edges (visible) or AABB corners (hidden) span >1 sector; ang-width fallback
   label_margin_deg: 10.0  # calibrated: round-1 review, human acc 13% (<5°) / 45% (5-10°) / 54-62% (≥10°) by distance to the nearest sector edge; every extent bearing must be this far from an edge
@@ -124,9 +127,10 @@ landmarks:
 perspective_taking:
   top_n_per_region: 4  # none found (05535fa)
   max_total: 18  # none found (05535fa)
-  # Points per axis sampled over A's and C's floor box (3 = corners, edge midpoints,
-  # centre). The answer must not flip between left / right / behind across them, so
-  # "standing at A" and "where is C" hold wherever on A or C one imagines it.
+  # Points per axis sampled over A's, B's and C's floor boxes (3 = corners, edge
+  # midpoints, centre). The answer must not flip for any (A, B, C) point combination,
+  # so "standing next to A", "facing B" (a long countertop swings A->B by 30 deg or
+  # more) and "where is C" hold wherever on A, B or C one imagines it.
   # Calibrated on round 1: the 4 reviewed items whose label flips (TV stand facing
   # its television, objects resting on A) scored 1/16; the 6 stable ones 5/10.
   footprint_grid: 3  # none found
@@ -135,6 +139,40 @@ perspective_taking:
   # minimum is 0.5 m (keeps 84 of 98 round-7 items; user decision 2026-11-18).
   min_pair_gap_m: 0.5
   max_pair_gap_m: 5.0
+  # Angular disparity = angle between the imagined heading (A->B) and the camera
+  # heading in the shown frame, 0-180 deg. Edges split it into bins (bin index is
+  # the item's `difficulty`); triples are drawn round-robin over (answer label,
+  # bin), emptiest group first. Spatial Orientation Test (Hegarty & Waller 2004;
+  # Kozhevnikov & Hegarty 2001): error grows with this angle; 45-deg bins.
+  disparity_bin_edges_deg: [45.0, 90.0, 135.0]
+  # Bin 0 (disparity < first edge) is the control: the imagined heading is close to
+  # the camera's. Kept, but capped at this share of the final perspective-taking set
+  # (whole-set balance); headline accuracy is reported on the other bins.
+  max_control_share: 0.2  # none found; reviewer feedback 2026-11-20
+  # A must stand on the floor (SPOC salient_landmarks) and the question says
+  # "standing next to the {A}". A's stability points are its centre plus a ring this
+  # wide on the half of A facing B (user decision 2026-11-20: one-sided; the full
+  # ring removed every "behind" answer in Round 2).
+  a_standoff_m: 0.5  # none found; reviewer feedback 2026-11-20
+  # Max items in one scene that use the same object as A (the stand-at landmark), so
+  # one landmark ("House Plant") does not become a learnable cue.
+  max_uses_as_a: 2  # none found; reviewer feedback 2026-11-20
+  # false: A, B and C must be distinguishable together in one frame. true: they may be
+  # seen in different frames; the item shows every frame of the shortest window that
+  # holds one sighting of each (whole, within the largest frames.budgets), and stores
+  # abc_co_visible so the two kinds can be compared. Disparity uses the last frame.
+  multi_frame: true  # user decision 2026-11-20: kept (Round 2: 56 of 59 items need it)
+  # Frame continuity for multi-frame items: consecutive shown frames must overlap,
+  # i.e. differ by at most one turn and one move step (SPOC: 45 deg turns, 0.2 m
+  # moves), so A, B and C can be chained across frames without a jump.
+  continuity_max_turn_deg: 45.0  # derived: one SPOC turn step; user decision 2026-11-20
+  continuity_max_move_m: 0.25  # derived: one SPOC move (0.2 m) plus tolerance
+  # Multi-frame window: at most this many consecutive frames (no step skipped); a
+  # triple whose A, B and C cannot be covered within it is dropped. Among windows
+  # that fit, one with a frame showing two of A/B/C together is preferred
+  # (`abc_pair_together`), then the shortest. 32 = the largest frames.budgets (user
+  # decision 2026-11-20, after trying 8: 39 items vs 63).
+  max_window_frames: 32  # derived: max(frames.budgets); user decision 2026-11-20
 
 naming:
   # Display names in questions. Keys are the exported obj-type (Obja prefix

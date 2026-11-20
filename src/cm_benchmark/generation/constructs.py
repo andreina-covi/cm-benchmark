@@ -17,13 +17,9 @@ EGO_DIRECTION_OPTIONS = [
     'to your left',
 ]
 
-# Perspective-taking answers (``imagined_perspective_label``): never "ahead of
-# you", so the options never offer it either.
-PT_DIRECTION_OPTIONS = [
-    'to your right',
-    'behind you',
-    'to your left',
-]
+# Perspective-taking answers (``imagined_perspective_label``): the same four
+# 90° sectors as spatial updating, so every label is offered.
+PT_DIRECTION_OPTIONS = list(EGO_DIRECTION_OPTIONS)
 
 OPPOSITE = {
     'ahead of you': 'behind you',
@@ -98,7 +94,7 @@ CONSTRUCT_TEMPLATES = {
         ),
     ],
     'perspective_taking': [
-        'Imagine standing at the {A}, facing the {B}. From that position, where is the {C}?',
+        'Imagine standing next to the {A}, facing the {B}. From that position, where is the {C}?',
     ],
     'route_knowledge': [
         (
@@ -320,36 +316,35 @@ def perspective_direction_label_from_signed(
     *,
     margin_deg: Optional[float] = None,
     back_deg: Optional[float] = None,
+    ahead_deg: Optional[float] = None,
 ) -> Optional[str]:
-    """Map signed A→B vs A→C angle to left / right / behind; None if ambiguous.
+    """Map signed A→B vs A→C angle to ahead / left / right / behind; None if ambiguous.
 
-    Bins (no ``ahead of you`` answer class)::
+    Four equal sectors, as in spatial updating (positive angle = left)::
 
-        right : -back < angle < 0
-        left  :  0 < angle < +back
-        back  : |angle| >= back   → ``behind you``
+        ahead : |angle| < ahead            (ahead_half_width_full_deg, 45°)
+        left  :  ahead <= angle < back     (back = pt_back_deg, 135°)
+        right : -back < angle <= -ahead
+        behind: |angle| >= back
 
-    Reject when ``|angle|`` is within ``margin_deg`` of 0° or ±back (decision
-    boundaries). World object extent is not used here — episode GT does not
-    carry trusted world-space AABB extents for angular span checks.
+    Reject when ``|angle|`` is within ``margin_deg`` of ±ahead or ±back.
     """
     dcfg = get_generation_config().directions
     if margin_deg is None:
         margin_deg = dcfg.pt_boundary_margin_deg
     if back_deg is None:
         back_deg = dcfg.pt_back_deg
-    a = float(signed_deg)
+    if ahead_deg is None:
+        ahead_deg = dcfg.ahead_half_width_full_deg
+    a = abs(float(signed_deg))
     m = max(0.0, float(margin_deg))
-    back = float(back_deg)
-    if abs(a) < m:
+    if abs(a - float(ahead_deg)) < m or abs(a - float(back_deg)) < m:
         return None
-    if abs(abs(a) - back) < m:
-        return None
-    if abs(a) >= back:
+    if a < float(ahead_deg):
+        return 'ahead of you'
+    if a >= float(back_deg):
         return 'behind you'
-    if a < 0.0:
-        return 'to your right'
-    return 'to your left'
+    return 'to your right' if float(signed_deg) < 0.0 else 'to your left'
 
 
 def _sector_boundaries_deg(ahead_half_width: float) -> tuple[float, ...]:
@@ -996,12 +991,13 @@ def imagined_perspective_label(
     - Forward: A → B
     - Target: A → C
     - Signed angle on the horizontal plane (positive = left, negative = right)
-    - Labels: ``to your right`` / ``to your left`` / ``behind you``
-    - Returns None near 0° / ±135° boundaries (``margin_deg``) so ambiguous
+    - Labels: ``ahead of you`` / ``to your right`` / ``to your left`` /
+      ``behind you`` (four 90° sectors)
+    - Returns None near ±45° / ±135° boundaries (``margin_deg``) so ambiguous
       QA samples are not generated.
 
-    ``ahead_half_width`` is accepted for call-site compatibility but ignored —
-    perspective-taking no longer uses equal ahead wedges.
+    ``ahead_half_width`` is accepted for call-site compatibility but ignored;
+    the ahead sector is ``directions.ahead_half_width_full_deg``.
     """
     del ahead_half_width  # unused; kept for backward-compatible kwargs
     try:

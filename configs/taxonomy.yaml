@@ -205,23 +205,28 @@ class_3:
       class: 3
       frame_of_reference: allocentric         # an IMAGINED viewpoint's frame
       definition: >
-        Standing at landmark A, facing B, report where landmark C is.
+        Standing next to floor-standing landmark A, facing B, report where landmark C is.
         Heading is A→B (two positions), not an object's intrinsic front.
       what_moves: observer (imagined; viewpoint adopted, not executed)
-      # Difficulty: angle between agent heading and imagined A-facing-B heading (0-180 deg).
+      # Difficulty: angular disparity between the camera heading and the imagined
+      # A-facing-B heading (0-180 deg), binned by perspective_taking.disparity_bin_edges_deg
+      # (item `difficulty`). Pair distance is only a well-definedness gate.
       difficulty_axis: [perspective_shift_magnitude]
       answer_type: >
         direction of landmark C from the imagined viewpoint (standing at A, facing B)
       required_temporal_fields: []
       question_template: >-
-        Imagine standing at the {A}, facing the {B}. From that position, where is the {C}?
+        Imagine standing next to the {A}, facing the {B}. From that position, where is the {C}?
       ground_truth_method: >
         Three distinguishable landmarks A, B, C. Imagined heading is A→B.
-        Answer is where C sits in that frame (left / right / behind).
+        Answer is where C sits in that frame (ahead / left / right / behind: the
+        same four 90-deg sectors as spatial updating, 10-deg margin on every edge),
+        stable over every point of A's grown box, B's box and C's box.
         No object-intrinsic facing is required.
       distractor_pattern: [camera_frame_answer, mirrored_left_right, wrong_facing_assumption]
       discriminators:
-        - A, B, and C are distinguishable together in the one shown frame
+        - A, B, and C are distinguishable in the shown frames (together in one frame,
+          or across the frames of one short window when perspective_taking.multi_frame)
         - agent does NOT actually move to viewpoint A (no real action — imagined only)
         - answer is in the imagined (A, A->B heading) frame, never the agent's actual current frame
         - heading is computed relationally from A and B positions — no

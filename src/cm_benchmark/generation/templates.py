@@ -560,6 +560,13 @@ def _slide_context(fact: PlannedFact) -> dict:
         'disambiguation',
         'disambiguation_landmark',
         'marks',
+        'perspective_shift_magnitude',
+        'disparity_bin',
+        'image_heuristic_label',
+        'image_heuristic_agrees',
+        'dist_a_c_m',
+        'abc_co_visible',
+        'abc_pair_together',
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
     return ctx
@@ -592,7 +599,7 @@ def infer_image_roles(fact: PlannedFact) -> list[str]:
     ot = extra.get('object_type') or 'object'
     if c == 'perspective_taking':
         tags = [
-            f"A · stand here ({extra.get('A') or 'landmark'})",
+            f"A · stand next to ({extra.get('A') or 'landmark'})",
             f"B · face toward ({extra.get('B') or 'landmark'})",
             f"C · locate ({extra.get('C') or ot})",
         ]
@@ -811,7 +818,7 @@ def fact_to_items(
             question_style=style,
             paired_item_id=paired,
             displacement_event=fact.displacement_event,
-            difficulty=extra.get('k'),
+            difficulty=extra.get('k', extra.get('disparity_bin')),
             image_roles=infer_image_roles(fact) or None,
             context=_item_context(episode, fact),
             disambiguation=extra.get('disambiguation') or 'none',

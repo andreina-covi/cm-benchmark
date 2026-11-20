@@ -21,24 +21,25 @@ def test_signed_rel_bearing_sign_convention_xz():
 
 
 def test_perspective_bins_and_margin():
-    assert perspective_direction_label_from_signed(-30.0) == 'to your right'
-    assert perspective_direction_label_from_signed(30.0) == 'to your left'
+    """Four 90° sectors as in spatial updating, 10° margin on every edge."""
+    assert perspective_direction_label_from_signed(0.0) == 'ahead of you'
+    assert perspective_direction_label_from_signed(-30.0) == 'ahead of you'
+    assert perspective_direction_label_from_signed(30.0) == 'ahead of you'
+    assert perspective_direction_label_from_signed(-90.0) == 'to your right'
+    assert perspective_direction_label_from_signed(90.0) == 'to your left'
     assert perspective_direction_label_from_signed(150.0) == 'behind you'
     assert perspective_direction_label_from_signed(-150.0) == 'behind you'
-    # Near 0° / ±135° rejected
-    assert perspective_direction_label_from_signed(5.0) is None
-    assert perspective_direction_label_from_signed(-5.0) is None
-    assert perspective_direction_label_from_signed(135.0) is None
-    assert perspective_direction_label_from_signed(-135.0) is None
-    assert perspective_direction_label_from_signed(130.0) is None  # within 10° of 135
+    assert perspective_direction_label_from_signed(180.0) == 'behind you'
+    # Within 10° of ±45° / ±135° rejected
+    for a in (40.0, -45.0, 50.0, 130.0, -135.0, 140.0):
+        assert perspective_direction_label_from_signed(a) is None
+    assert perspective_direction_label_from_signed(56.0) == 'to your left'
     assert perspective_direction_label_from_signed(146.0) == 'behind you'
-    assert perspective_direction_label_from_signed(
-        5.0, margin_deg=0.0
-    ) == 'to your left'
+    assert perspective_direction_label_from_signed(44.0, margin_deg=0.0) == 'ahead of you'
 
 
-def test_countertop_fridge_window_regression_is_right():
-    """House 007514 centroids: ~29° to the right of A→B → right, not ahead."""
+def test_countertop_fridge_window_regression_is_ahead():
+    """House 007514 centroids: ~29° right of A→B is ahead, as in egocentric encoding."""
     a = {'x': 0.49, 'y': 0.0, 'z': 1.64}
     b = {'x': 2.86, 'y': 0.01, 'z': 0.46}
     c = {'x': 1.51, 'y': 0.69, 'z': 0.17}
@@ -49,26 +50,20 @@ def test_countertop_fridge_window_regression_is_right():
         c['z'] - a['z'],
     )
     assert signed is not None
-    assert -135.0 + PT_DIRECTION_BOUNDARY_MARGIN_DEG < signed < -PT_DIRECTION_BOUNDARY_MARGIN_DEG
-    assert imagined_perspective_label(a, b, c) == 'to your right'
+    assert -45.0 + PT_DIRECTION_BOUNDARY_MARGIN_DEG < signed < 0.0
+    assert imagined_perspective_label(a, b, c) == 'ahead of you'
 
 
-def test_imagined_rejects_near_ahead():
-    # Facing +Z, target almost ahead but slightly right → margin rejects
+def test_imagined_labels_near_and_clear():
+    # Facing +Z, target almost straight ahead → ahead
     assert (
-        imagined_perspective_label(
-            {'x': 0, 'z': 0},
-            {'x': 0, 'z': 1},
-            {'x': 0.05, 'z': 2},
-        )
-        is None
+        imagined_perspective_label({'x': 0, 'z': 0}, {'x': 0, 'z': 1}, {'x': 0.05, 'z': 2})
+        == 'ahead of you'
     )
+    # Facing +Z, target 45° to the right → on the ahead/right edge, refused
+    assert imagined_perspective_label({'x': 0, 'z': 0}, {'x': 0, 'z': 1}, {'x': 1, 'z': 1}) is None
     # Clear right
     assert (
-        imagined_perspective_label(
-            {'x': 0, 'z': 0},
-            {'x': 0, 'z': 1},
-            {'x': 1, 'z': 1},
-        )
+        imagined_perspective_label({'x': 0, 'z': 0}, {'x': 0, 'z': 1}, {'x': 1, 'z': 0})
         == 'to your right'
     )
