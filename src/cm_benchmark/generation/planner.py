@@ -2160,6 +2160,41 @@ def _ego_pool_from_specs(
     return answer_dir, dir_pool, dir_seeds
 
 
+def _id_label_changes_with_move(
+    episode: dict,
+    specs: list[dict],
+    query_step: int,
+    *,
+    obj_id: str,
+    answer_dir: str,
+) -> bool:
+    """True when the old position's ego label at ``query_step`` differs from the answer.
+
+    The old label uses the object's box moved to its old position and the same
+    sector-edge refusal as the answer (``directions.label_margin_deg``), so both
+    labels are clear of every edge. No old position or no clear old label is False:
+    the item could then be answered without the move. When True, the old location
+    is always an option (``original_location`` in the rationale), which is what
+    the A-not-B (perseveration) rate counts.
+    """
+    old = next((s for s in specs if s.get('role') == 'original_location'), None)
+    if old is None or old.get('position') is None:
+        return False
+    ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+    amin, amax = _aabb_around_world_pos(episode, obj_id, old['position'])
+    old_dir = ego_label_from_world_pose(
+        ag_pos,
+        ag_rot,
+        old['position'],
+        episode,
+        ahead_half_width=_cfg().directions.ahead_half_width_full_deg,
+        aabb_min=amin,
+        aabb_max=amax,
+        visible=False,
+    )
+    return bool(old_dir) and old_dir != answer_dir
+
+
 def _pad_id_ego_options(
     answer: str, pool: list[str], seeds: list[str]
 ) -> tuple[list[str], list[str]]:
@@ -2370,6 +2405,10 @@ def _try_ego_direction_fact(
         episode, specs, query_step, obj_id=obj_id
     )
     if not answer_dir or len(dir_pool) < _cfg().invisible_displacement.min_diagnostic_labels:
+        return None
+    if _cfg().invisible_displacement.require_label_change and not _id_label_changes_with_move(
+        episode, specs, query_step, obj_id=obj_id, answer_dir=answer_dir
+    ):
         return None
     dir_pool, dir_seeds = _pad_id_ego_options(answer_dir, dir_pool, dir_seeds)
     return PlannedFact(
@@ -3095,6 +3134,7 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
         )
     counts.append(('swap_partner_ok', len(after_partner)))
 
+    n_changed = 0
     n_options = 0
     for obj_id, cand, window, named_obj, from_pos, disp, from_rec, anchor, radius in after_partner:
         enc, move, query = window
@@ -3136,6 +3176,14 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
         )
         if not images:
             continue
+        specs = _specs_from_placement(cand, by_obj[obj_id], ev)
+        if _cfg().invisible_displacement.require_label_change:
+            answer_dir = _ego_pool_from_specs(episode, specs, query, obj_id=obj_id)[0]
+            if not answer_dir or not _id_label_changes_with_move(
+                episode, specs, query, obj_id=obj_id, answer_dir=answer_dir
+            ):
+                continue
+        n_changed += 1
         fact = _try_ego_direction_fact(
             episode,
             ev,
@@ -3145,7 +3193,7 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
             query_step=query,
             at_t=move,
             images=images,
-            specs=_specs_from_placement(cand, by_obj[obj_id], ev),
+            specs=specs,
             template_mode='swap' if decision == 'swap' else 'recall_direction',
             answer_source=['funnel'],
             extra_fields=extra_fields,
@@ -3153,6 +3201,7 @@ def id_placement_funnel(episode: dict) -> list[tuple[str, int]]:
         )
         if fact is not None:
             n_options += 1
+    counts.append(('label_changes_with_move', n_changed))
     counts.append(('diagnostic_options', n_options))
     return counts
 

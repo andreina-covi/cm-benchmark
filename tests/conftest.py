@@ -39,5 +39,11 @@ def _disable_named_frame_fraction(request):
     if not request.node.get_closest_marker('label_margin'):
         # Fixtures put objects a few degrees from sector edges; test_label_margin keeps it on.
         cfg = replace(cfg, directions=replace(cfg.directions, label_margin_deg=0.0))
+    if not request.node.get_closest_marker('label_change'):
+        # ID fixtures put the old and new positions behind the query pose (one label).
+        cfg = replace(
+            cfg,
+            invisible_displacement=replace(cfg.invisible_displacement, require_label_change=False),
+        )
     with use_generation_config(cfg):
         yield

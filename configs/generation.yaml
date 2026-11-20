@@ -106,6 +106,11 @@ invisible_displacement:
   # Long Time No See names counter areas by nearby landmarks for the same reason.
   min_landmark_gap_m: 0.5
   min_diagnostic_labels: 2  # derived: invariant 7 (at least one diagnostic distractor)
+  # The answer must depend on the move: at the query step the object's old box and
+  # its new box each get an ego label clear of directions.label_margin_deg, and the
+  # two labels differ, so answering with the old location (A-not-B) is wrong.
+  # min_displacement_m alone does not ensure it (0.5 m at 4 m is about 7 deg).
+  require_label_change: true  # derived: answer must depend on the move
   max_delay: 10  # none found; earliest query after encode, dest has no mask pixels
 
 landmarks:
