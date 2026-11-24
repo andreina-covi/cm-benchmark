@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,7 @@ from cm_benchmark.generation.geometry import (
     point_in_camera_frustum,
 )
 from cm_benchmark.generation.nav_graph import (
+    nearest_node_xz,
     calibrate_view_radius_m,
     continuous_bfs_actions,
     continuous_bfs_to_goals,
@@ -79,7 +81,18 @@ from cm_benchmark.generation.nav_graph import (
     viewed_edges_from_trajectory,
     xz_reaches_goal,
 )
-from cm_benchmark.generation.route_replay import collapse_rotations, recorded_actions_between
+from cm_benchmark.generation.route_mc import (
+    consensus_pick,
+    point_box_gap_xz,
+    route_distractors,
+    turn_clusters,
+    turn_label,
+)
+from cm_benchmark.generation.route_replay import (
+    collapse_rotations,
+    recorded_actions_between,
+    recorded_steps_between,
+)
 from cm_benchmark.generator.visibility_filters import (
     apply_question_visibility_to_episode,
     visibility_model_from_episode,
@@ -205,6 +218,8 @@ def _named_ids_for_fact(episode: dict, fact: PlannedFact, frames: list[int]) -> 
         'goal_landmark_id',
     ):
         add(extra.get(key))
+    for oid in extra.get('turn_landmark_ids') or []:
+        add(oid)
     to_r = extra.get('to_receptacle')
     if to_r and not _is_floor_receptacle(to_r) and not extra.get('destination_landmark_id'):
         for si in frames:
@@ -335,7 +350,38 @@ def _relabel_fact(episode: dict, fact: PlannedFact) -> Optional[PlannedFact]:
         goal_name = extra.get('goal')
         if src_name and goal_name and src_name == goal_name:
             return None
+        if extra.get('route_steps') and not _rename_route_options(fact, names):
+            return None
     return fact
+
+
+def _rename_route_options(fact: PlannedFact, names: dict) -> bool:
+    """Class-4 options with the turn-landmark names of the whole-item pass.
+
+    A duplicate turn landmark gets its proximity phrase or numbered mark here,
+    the same one drawn on the frames. False when two turn names collide, a
+    turn name equals the source or goal, or the renamed route runs short of
+    distractors.
+    """
+    extra = fact.extra
+    steps = dict(extra['route_steps'])
+    renamed = [
+        (names[oid].display_name if oid in names else name) if oid else None
+        for oid, name in zip(steps['landmark_ids'], steps['landmark_names'])
+    ]
+    shown = [n for n in renamed if n]
+    if len(set(shown)) != len(shown) or {extra.get('source'), extra.get('goal')} & set(shown):
+        return False
+    steps['landmark_names'] = renamed
+    options = _route_options(steps, extra.get('route_options_key') or fact.construct)
+    if options is None:
+        return False
+    extra['route_steps'] = steps
+    extra['consensus_heuristic_agrees'] = options['consensus_heuristic_agrees']
+    fact.answer_label = options['answer_label']
+    fact.options_pool = options['options_pool']
+    fact.distractor_seeds = options['distractor_seeds']
+    return True
 
 
 def _apply_whole_item_names(episode: dict, facts: list[PlannedFact]) -> list[PlannedFact]:
@@ -3662,6 +3708,7 @@ def _recorded_route_reference(
         'start_heading_deg': heading,
         'turn_count': count_direction_changes(actions),
         'travel_m': float(sim.get('simulated_length_m') or 0.0),
+        'poses_xz': list(sim.get('poses_xz') or []),
     }
 
 
@@ -3712,6 +3759,169 @@ def _survey_bfs_reference(
         'answer_label': format_nav_actions(actions),
         'start_heading_deg': heading,
         'turn_count': count_direction_changes(actions),
+        'poses_xz': list(sim.get('poses_xz') or []),
+    }
+
+
+def _turn_landmark_pool(episode: dict, exclude_ids: Sequence[str], shown: Sequence[int]) -> list[dict]:
+    """Objects that can name a class-4 turn: they never move and are clearly seen.
+
+    Any object in the shown frames whose catalog row says it is neither
+    ``pickupable`` nor ``moveable`` (counters, tables, shelves, beds, wardrobes),
+    so it stays at the turn point for the whole walk. Composite sub-parts,
+    never-named types and passages (doors open and close) are left out, and so
+    are the source and goal (named in the question). Duplicates stay in: the
+    whole-item naming pass gives them a proximity phrase or a numbered mark.
+    Each row has ``obj_id``, the floor box (``amin`` / ``amax``) and
+    ``clear_steps`` (shown steps where the object passes the question floors).
+    """
+    catalog = episode.get('object_catalog') or {}
+    skip = set(exclude_ids)
+    seen: list[str] = []
+    for si in shown:
+        for oid in (step_by_index(episode, int(si)) or {}).get('visible_objects') or {}:
+            if oid not in seen and oid not in skip:
+                seen.append(oid)
+    pool = []
+    for oid in seen:
+        rec = catalog.get(oid)
+        if not rec or rec.get('pickupable') is not False or rec.get('moveable') is not False:
+            continue
+        if never_named(episode, oid) or _is_passage_landmark(oid, rec.get('category')):
+            continue
+        amin, amax = rec.get('aabb_min'), rec.get('aabb_max')
+        if not amin or not amax:
+            pos = _xyz_tuple(rec.get('position'))
+            if pos is None:
+                continue
+            amin = amax = pos
+        clear = [int(si) for si in shown if _dest_clearly_visible(episode, oid, int(si))]
+        if clear:
+            pool.append({'obj_id': oid, 'amin': amin, 'amax': amax, 'clear_steps': clear})
+    return pool
+
+
+def _route_options(route_steps: dict, key: str) -> Optional[dict]:
+    """2x2 option texts for stored route steps, or None without two independent changes."""
+    correct, wrong = route_distractors(
+        route_steps['start_turn'],
+        route_steps['turns'],
+        route_steps['landmark_names'],
+        key=key,
+    )
+    if not wrong:
+        return None
+    texts = [correct, *(t for _tag, t in wrong)]
+    pick = consensus_pick(texts, key)
+    return {
+        'answer_label': correct,
+        'options_pool': texts,
+        'distractor_seeds': [f'{tag}::{text}' for tag, text in wrong],
+        'consensus_heuristic_agrees': None if pick is None else pick == 0,
+    }
+
+
+def _class4_route_mc(
+    episode: dict,
+    graph,
+    ref: dict,
+    variants: list[dict],
+    *,
+    source_id: str,
+    goal_id: str,
+    key: str,
+):
+    """Landmark-and-turn options for a class-4 reference, or a reject reason (str).
+
+    Mid turns come from ``route_mc.turn_clusters`` and ``turn_label``
+    (``class4.mc.turn_labels_deg``: exact 90 / 135 / 180 degree labels). Each labelled turn is named
+    by the nearest object from ``_turn_landmark_pool`` whose box is within
+    ``class4.mc.turn_landmark_max_m`` of where the agent turned, is not
+    confusable with the source, the goal or another turn landmark, and can be
+    named over the shown frames; otherwise the turn stays unnamed
+    (``walk ahead``). A route has ``class4.mc.min_turns`` to ``max_turns``
+    labelled turns (start turn included) and names at least one of them.
+    Frame variants in which a named turn landmark is never clearly visible
+    are dropped.
+    """
+    mc = _cfg().class4.mc
+    rot = float(graph.graph.get('agent_rotation_deg') or _cfg().class4.fallback.agent_rotation_deg)
+    poses = ref.get('poses_xz') or []
+    if len(poses) < len(ref['actions']) + 1:
+        return 'route_poses_missing'
+    start_deg, mids = turn_clusters(
+        ref['actions'], poses, rotation_deg=rot, merge_m=float(mc.turn_merge_m)
+    )
+    start_turn = turn_label(start_deg, mc.turn_labels_deg)
+    labels = [turn_label(m['net_deg'], mc.turn_labels_deg) for m in mids]
+    if start_turn is None or any(lab is None for lab in labels):
+        return 'turn_label_ambiguous'
+    turn_points = [(m, lab) for m, lab in zip(mids, labels) if lab != 'straight']
+    n_steps = len(turn_points) + 1
+    n_turns = len(turn_points) + (start_turn != 'straight')
+    if n_turns < int(mc.min_turns):
+        return f'route_turns_lt_{int(mc.min_turns)}'
+    if n_turns > int(mc.max_turns):
+        return f'route_turns_gt_{int(mc.max_turns)}'
+
+    shown = [int(s) for s in variants[-1]['shown_frame_steps']]
+    pool = _turn_landmark_pool(episode, [source_id, goal_id], shown)
+    ids: list[Optional[str]] = []
+    names: list[Optional[str]] = []
+    gaps: list[Optional[float]] = []
+    for mid, _lab in turn_points:
+        ranked = sorted(
+            (min(point_box_gap_xz(p, lm['amin'], lm['amax']) for p in mid['points']), lm['obj_id'])
+            for lm in pool
+        )
+        pick = None
+        for gap, oid in ranked:
+            if gap > float(mc.turn_landmark_max_m):
+                break
+            if oid in ids or _named_ids_confusable(
+                episode, [source_id, goal_id, *(i for i in ids if i), oid]
+            ):
+                continue
+            resolved = resolve_named_objects(episode, shown, [oid])
+            name = resolved[oid].display_name if resolved else None
+            if not name or name in names:
+                continue
+            pick = (gap, oid, name)
+            break
+        ids.append(pick[1] if pick else None)
+        names.append(pick[2] if pick else None)
+        gaps.append(round(pick[0], 3) if pick else None)
+    named_ids = [oid for oid in ids if oid]
+    if not named_ids:
+        return 'no_named_turn'
+
+    clear = {lm['obj_id']: set(lm['clear_steps']) for lm in pool}
+    kept = [
+        v for v in variants
+        if all(clear[oid] & {int(s) for s in v['shown_frame_steps']} for oid in named_ids)
+    ]
+    if not kept:
+        return 'turn_landmark_not_in_frames'
+
+    route_steps = {
+        'start_turn': start_turn,
+        'turns': [lab for _m, lab in turn_points],
+        'landmark_ids': ids,
+        'landmark_names': names,
+        'landmark_gaps_m': gaps,
+        'named_turns': len(named_ids),
+        'total_turns': len(turn_points),
+    }
+    options = _route_options(route_steps, key)
+    if options is None:
+        return 'no_2x2_option_set'
+    return {
+        **options,
+        'frame_variants': kept,
+        'route_steps': route_steps,
+        'route_options_key': key,
+        'turn_landmark_ids': named_ids,
+        'n_route_steps': n_steps,
     }
 
 
@@ -4274,8 +4484,213 @@ def _class4_emit_key(
     return (1 if unique_pair else 0, int(turn_count), float(geodesic_m), int(hops))
 
 
+def _walk_turn_boundaries(episode: dict, rotation_deg: float) -> list[dict]:
+    """Turns of the whole recorded walk that split it into route stretches.
+
+    Same rules as ``route_mc``: complete glances dropped, consecutive turns
+    summed, turns within ``class4.mc.turn_merge_m`` of travel merged, then
+    labelled. Each row has ``first`` / ``last`` (action steps) and ``label``
+    (a ``turn_label`` value, None when no exact label fits); straight
+    clusters are not boundaries. Positions come from the recorded trajectory.
+    """
+    mc = _cfg().class4.mc
+    traj = sorted(
+        (int(e['step']), _xyz_tuple(e.get('position')))
+        for e in episode.get('agent_trajectory') or []
+        if e.get('step') is not None and _xyz_tuple(e.get('position')) is not None
+    )
+    if len(traj) < 2:
+        return []
+    travel: dict[int, float] = {traj[0][0]: 0.0}
+    for (s0, p0), (s1, p1) in zip(traj, traj[1:]):
+        travel[s1] = travel[s0] + math.hypot(p1[0] - p0[0], p1[2] - p0[2])
+    steps = sorted(travel)
+
+    def travel_before(step: int) -> float:
+        i = bisect.bisect_left(steps, step) - 1
+        return travel[steps[max(i, 0)]]
+
+    sign = {'rotate_left': -1, 'rotate_right': 1}
+    acts = recorded_steps_between(episode, steps[0], steps[-1], skip_glances=True)
+    runs: list[dict] = []
+    for step, act in acts:
+        if act in sign:
+            if runs and runs[-1]['open']:
+                runs[-1]['last'] = step
+                runs[-1]['net'] += sign[act]
+            else:
+                runs.append({'first': step, 'last': step, 'net': sign[act], 'open': True})
+        elif runs:
+            runs[-1]['open'] = False
+    clusters: list[dict] = []
+    for run in runs:
+        t = travel_before(run['first'])
+        if clusters and t - clusters[-1]['travel'] < float(mc.turn_merge_m):
+            clusters[-1]['last'] = run['last']
+            clusters[-1]['net'] += run['net']
+            clusters[-1]['travel'] = t
+            continue
+        clusters.append({'first': run['first'], 'last': run['last'], 'net': run['net'], 'travel': t})
+    out = []
+    for c in clusters:
+        label = turn_label(c['net'] * float(rotation_deg), mc.turn_labels_deg)
+        if label != 'straight':
+            out.append({'first': c['first'], 'last': c['last'], 'label': label})
+    return out
+
+
+def _plan_route_stretches(episode: dict, graph, max_items) -> tuple[list[PlannedFact], Counter]:
+    """Multiple-choice route items from stretches of the recorded walk.
+
+    For each run of 2 to ``class4.mc.max_turns`` consecutive labelled turns,
+    the stretch starts after the previous turn and ends before the next one.
+    Its frames are sampled like the other class-4 items: the frame before and
+    after every labelled turn stays (corrections and glances do not pin
+    frames), the rest is thinned to ``frames.max_gap_steps``, one
+    frame list per budget in ``frames.budgets``; the first and last legs are
+    halved until some budget fits. A route depends on its turns and landmarks,
+    not on continuous motion, so unlike spatial updating not every frame is
+    shown. The recorded actions are replayed from the start pose and must
+    end within ``goal_success_m`` of the end pose; ``_class4_route_mc`` then
+    names the turns and builds the 2x2 options. No landmark-pair gates apply.
+    """
+    mc = _cfg().class4.mc
+    rejects: Counter = Counter()
+    rot = float(graph.graph.get('agent_rotation_deg') or _cfg().class4.fallback.agent_rotation_deg)
+    turns = _walk_turn_boundaries(episode, rot)
+    fov = _fov_step_indices(episode, 0, sys.maxsize)
+    if not fov or len(turns) < int(mc.min_turns):
+        rejects['walk_turns_lt_min'] += 1
+        return [], rejects
+    scored: list[tuple[tuple, PlannedFact]] = []
+    for a in range(len(turns)):
+        for b in range(a + int(mc.min_turns) - 1, min(len(turns), a + int(mc.max_turns))):
+            group = turns[a : b + 1]
+            if any(t['label'] is None for t in group):
+                rejects['stretch_turn_ambiguous'] += 1
+                continue
+            lo = turns[a - 1]['last'] if a > 0 else fov[0]
+            hi = turns[b + 1]['first'] - 1 if b + 1 < len(turns) else fov[-1]
+            pool = [s for s in fov if lo <= s <= hi]
+            core_lo, core_hi = group[0]['first'] - 1, group[-1]['last']
+            lead = [s for s in pool if s < core_lo]
+            core = [s for s in pool if core_lo <= s <= core_hi]
+            tail = [s for s in pool if s > core_hi]
+            if not lead or not tail or not core:
+                rejects['stretch_no_leg'] += 1
+                continue
+            # Sampled like the other class-4 items: frames around each turn
+            # stay, straight legs are thinned to frames.max_gap_steps. Legs
+            # too long for any budget are halved (from the far ends) until
+            # the stretch fits.
+            n_lead, n_tail = len(lead), len(tail)
+            while True:
+                window = lead[len(lead) - n_lead :] + core + tail[:n_tail]
+                t0, t1 = window[0], window[-1]
+                # The frame before and after each labelled turn; 45-degree
+                # corrections and glances are thinned like straight legs.
+                rot_frames = sorted(
+                    {max(s for s in window if s <= t['first'] - 1) for t in group}
+                    | {min(s for s in window if s >= t['last']) for t in group}
+                )
+                straight = [s for s in window if s not in set(rot_frames)]
+                variants = _class4_frame_variants(
+                    episode, window, [t0, t1, *rot_frames], straight, 'start', 'end', t0, t1
+                )
+                if variants or (n_lead == 1 and n_tail == 1):
+                    break
+                n_lead, n_tail = max(1, n_lead // 2), max(1, n_tail // 2)
+            if not variants:
+                rejects['frames_exceed_budgets_or_gap'] += 1
+                continue
+            start_pos, start_heading = _start_pose_at_step(episode, t0)
+            end_pos, _h = _start_pose_at_step(episode, t1)
+            if start_pos is None or end_pos is None:
+                rejects['stretch_pose_missing'] += 1
+                continue
+            node, _d = nearest_node_xz(graph, float(start_pos[0]), float(start_pos[2]))
+            if node is None:
+                rejects['stretch_off_graph'] += 1
+                continue
+            ref = _recorded_route_reference(
+                episode, graph, t0=t0, t1=t1, source_node=node,
+                goal_pos=end_pos, start_pos=start_pos, start_heading_deg=start_heading,
+            )
+            if ref is None:
+                rejects['actions_unusable'] += 1
+                continue
+            key = f'route_knowledge|stretch|{t0}|{t1}'
+            mc_route = _class4_route_mc(
+                episode, graph, ref, variants, source_id='', goal_id='', key=key
+            )
+            if isinstance(mc_route, str):
+                rejects[mc_route] += 1
+                continue
+            steps_info = mc_route['route_steps']
+            largest = mc_route['frame_variants'][-1]
+            shown, images, roles = (
+                largest['shown_frame_steps'], largest['image_paths'], largest['image_roles']
+            )
+            fact = PlannedFact(
+                construct='route_knowledge',
+                status='ok',
+                query_step=t1,
+                encoding_step=t0,
+                answer_label=mc_route['answer_label'],
+                answer_source=[
+                    f'agent_actions[{t0}<step<={t1}]',
+                    f'agent_trajectory[{t0}→{t1}]',
+                    *(f'object_catalog[{oid}].aabb' for oid in mc_route['turn_landmark_ids']),
+                ],
+                options_pool=mc_route['options_pool'],
+                distractor_seeds=mc_route['distractor_seeds'],
+                image_paths=images,
+                extra={
+                    'template_mode': 'route_mc',
+                    'template_index': 0,
+                    'route_steps': steps_info,
+                    'n_route_steps': mc_route['n_route_steps'],
+                    'named_turns': steps_info['named_turns'],
+                    'total_turns': steps_info['total_turns'],
+                    'consensus_heuristic_agrees': mc_route['consensus_heuristic_agrees'],
+                    'route_options_key': key,
+                    'turn_landmark_ids': mc_route['turn_landmark_ids'],
+                    'source_frame': largest['source_frame'],
+                    'goal_frame': largest['goal_frame'],
+                    'shown_frame_steps': shown,
+                    'max_shown_gap_steps': _max_gap_steps(shown),
+                    'image_roles': roles,
+                    'frame_variants': mc_route['frame_variants'],
+                    'source_node': node,
+                    'turn_count': int(ref['turn_count']),
+                    'action_sequence': ref['actions'],
+                    'start_heading_deg': ref['start_heading_deg'],
+                    'start_pos': start_pos,
+                    'goal_pos': list(_xyz_tuple(end_pos) or []),
+                    'answer_format': 'route_mc',
+                    'scoring': 'mcq',
+                    'graph_scope': 'traversed',
+                    'frame_of_reference': 'egocentric',
+                },
+            )
+            rank = (
+                steps_info['named_turns'] / max(1, steps_info['total_turns']),
+                steps_info['total_turns'],
+                -t0,
+            )
+            scored.append((rank, fact))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [fact for _rank, fact in scored[:max_items]], rejects
+
+
 def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]:
-    """Retrace an EXPERIENCED path as collected-format actions on traversed_edges."""
+    """Route knowledge: multiple-choice walk stretches, plus the free-action pairs.
+
+    Multiple choice comes from ``_plan_route_stretches``. The landmark pairs
+    (2-30 m, detour ratio, floor-standing endpoints) keep the replay-scored
+    free action sequence as a small diagnostic subset
+    (``diagnostic_subset: free_action``).
+    """
 
     graph = _load_nav_graph_or_none(episode)
     if graph is None:
@@ -4473,6 +4888,8 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                     ],
                     image_paths=images,
                     extra={
+                        'template_mode': 'action_sequence',
+                        'diagnostic_subset': 'free_action',
                         'source': source,
                         'goal': goal,
                         'A': source,
@@ -4533,7 +4950,11 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
                 )
             )
 
-    if not candidates:
+    # Multiple choice: stretches of the walk, not landmark pairs. The pairs
+    # above are the free-action diagnostic subset.
+    stretch_facts, stretch_rejects = _plan_route_stretches(episode, graph, max_items)
+    rejects.update(stretch_rejects)
+    if not candidates and not stretch_facts:
         return [
             PlannedFact(
                 construct='route_knowledge',
@@ -4545,7 +4966,7 @@ def plan_route_knowledge(episode: dict, max_items: int = 2) -> list[PlannedFact]
             )
         ]
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return [fact for _rank, fact in candidates[:max_items]]
+    return stretch_facts + [fact for _rank, fact in candidates[:max_items]]
 
 
 _ROUTE_PAIR_GATES = (
@@ -4830,6 +5251,7 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
     # not difficulty. Continuous search runs only after the geodesic gate, and
     # one flood covers every goal that shares a source pose.
     candidates: list[tuple[tuple, PlannedFact]] = []
+    mc_candidates: list[tuple[tuple, PlannedFact]] = []
     rejects: Counter = Counter()
     pending: list[dict] = []
     allowed_nodes = set(viewed_sub.nodes)
@@ -4984,6 +5406,13 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             # Covers / rotation neighbors did not fit any budget, or max gap unmet.
             rejects['frames_exceed_budgets_or_gap'] += 1
             continue
+        mc_route = _class4_route_mc(
+            episode, graph, ref, variants,
+            source_id=src_id, goal_id=goal_id, key=f'survey_based_route_planning|{src_id}|{goal_id}',
+        )
+        if isinstance(mc_route, str):
+            rejects[mc_route] += 1
+            mc_route = None
         largest = variants[-1]
         shown = largest['shown_frame_steps']
         source_frame, goal_frame = largest['source_frame'], largest['goal_frame']
@@ -5009,6 +5438,8 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
                 ],
                 image_paths=images,
                 extra={
+                    'template_mode': 'action_sequence',
+                    'diagnostic_subset': 'free_action',
                     'source': source,
                     'goal': goal,
                     'A': source,
@@ -5051,19 +5482,17 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         )
         # Unique names first, then harder: more real turns, then longer geodesic.
-        candidates.append(
-            (
-                _class4_emit_key(
-                    src_id in unique_ids and goal_id in unique_ids,
-                    turn_count,
-                    geodesic_m,
-                    hops,
-                ),
-                fact,
-            )
+        rank = _class4_emit_key(
+            src_id in unique_ids and goal_id in unique_ids,
+            turn_count,
+            geodesic_m,
+            hops,
         )
+        candidates.append((rank, fact))
+        if mc_route is not None:
+            mc_candidates.append((rank, _survey_mc_fact(fact, mc_route)))
 
-    if not candidates:
+    if not candidates and not mc_candidates:
         return [
             PlannedFact(
                 construct='survey_based_route_planning',
@@ -5075,7 +5504,43 @@ def plan_survey_based_route_planning(episode: dict, max_items: int = 2) -> list[
             )
         ]
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return [fact for _rank, fact in candidates[:max_items]]
+    mc_candidates.sort(key=lambda item: item[0], reverse=True)
+    return [fact for _rank, fact in mc_candidates[:max_items]] + [
+        fact for _rank, fact in candidates[:max_items]
+    ]
+
+
+def _survey_mc_fact(free: PlannedFact, mc_route: dict) -> PlannedFact:
+    """Multiple-choice twin of a free-action survey fact (same pair and reference)."""
+    import copy
+
+    fact = copy.copy(free)
+    extra = dict(free.extra)
+    extra.pop('diagnostic_subset', None)
+    extra.update(
+        {
+            'template_mode': 'route_mc',
+            'answer_format': 'route_mc',
+            'scoring': 'mcq',
+            'route_steps': mc_route['route_steps'],
+            'n_route_steps': mc_route['n_route_steps'],
+            'named_turns': mc_route['route_steps']['named_turns'],
+            'total_turns': mc_route['route_steps']['total_turns'],
+            'consensus_heuristic_agrees': mc_route['consensus_heuristic_agrees'],
+            'route_options_key': mc_route['route_options_key'],
+            'turn_landmark_ids': mc_route['turn_landmark_ids'],
+            'frame_variants': mc_route['frame_variants'],
+        }
+    )
+    fact.extra = extra
+    fact.answer_label = mc_route['answer_label']
+    fact.answer_source = [
+        *free.answer_source,
+        *(f'object_catalog[{oid}].aabb' for oid in mc_route['turn_landmark_ids']),
+    ]
+    fact.options_pool = mc_route['options_pool']
+    fact.distractor_seeds = mc_route['distractor_seeds']
+    return fact
 
 
 def _co_visible_distinguishable_step(

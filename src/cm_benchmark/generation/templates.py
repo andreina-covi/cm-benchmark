@@ -42,7 +42,8 @@ _ACTIONS_HOOKS = frozenset(
         'spatial_updating',
     }
 )
-# Free-form collected-format actions; scored by graph reach, not MCQ.
+# Free-form collected-format actions (answer_format 'action_sequence'), scored by
+# graph reach. Class 4 is now multiple choice (answer_format 'route_mc').
 _FREEFORM_ACTION_CONSTRUCTS = frozenset(
     {
         'route_knowledge',
@@ -567,6 +568,12 @@ def _slide_context(fact: PlannedFact) -> dict:
         'dist_a_c_m',
         'abc_co_visible',
         'abc_pair_together',
+        'route_steps',
+        'n_route_steps',
+        'named_turns',
+        'total_turns',
+        'diagnostic_subset',
+        'consensus_heuristic_agrees',
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
     return ctx
@@ -575,7 +582,7 @@ def _slide_context(fact: PlannedFact) -> dict:
 def _item_context(episode: dict, fact: PlannedFact) -> Optional[dict]:
     """Stored item context. Class-4 keeps the reference, not edge dumps."""
     ctx = _slide_context(fact)
-    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS:
+    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS and ctx.get('answer_format') == 'action_sequence':
         seq = list(ctx.get('action_sequence') or [])
         ctx['reference_length'] = len(seq)
         path = episode.get('nav_graph_path')
@@ -782,7 +789,7 @@ def fact_to_items(
             )
         ]
 
-    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS:
+    if fact.construct in _FREEFORM_ACTION_CONSTRUCTS and extra.get('answer_format') == 'action_sequence':
         options, rationale, answer_key = {}, {}, fact.answer_label
     else:
         options, rationale, answer_key = _shuffle_options(
@@ -818,7 +825,7 @@ def fact_to_items(
             question_style=style,
             paired_item_id=paired,
             displacement_event=fact.displacement_event,
-            difficulty=extra.get('k', extra.get('disparity_bin')),
+            difficulty=extra.get('k', extra.get('disparity_bin', extra.get('n_route_steps'))),
             image_roles=infer_image_roles(fact) or None,
             context=_item_context(episode, fact),
             disambiguation=extra.get('disambiguation') or 'none',

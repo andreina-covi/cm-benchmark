@@ -38,11 +38,32 @@ def folder_episode(tmp_path):
     return gen.collect_episode_data(extra_data={'scene': 'ignore'})
 
 
+_CORNER_LANDMARKS = ('Armchair', 'Sofa', 'Dresser', 'Bed')
+
+
+def _free_action(facts):
+    """Class-4 landmark-pair facts (free-action diagnostic subset)."""
+    return [
+        f for f in facts
+        if f.status == 'ok' and (f.extra or {}).get('diagnostic_subset') == 'free_action'
+    ]
+
+
+def _route_mc(facts):
+    """Class-4 multiple-choice facts."""
+    return [
+        f for f in facts
+        if f.status == 'ok' and (f.extra or {}).get('answer_format') == 'route_mc'
+    ]
+
+
 def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> dict:
     """Synthetic episode whose navigable space is a corridor along ``cells``.
 
     The agent walks the cells in order; a Fridge sits at the first cell and a
-    Toilet at the last, both distinguishable at the near end of the walk.
+    Toilet at the last, both distinguishable at the near end of the walk. Each
+    corner holds a distinct landmark, in view while the agent turns there, so
+    multiple-choice class-4 routes can name their turns.
     """
 
     def ego(target):
@@ -94,6 +115,8 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
         }
     }
     poses, action_rows = [], []
+    corner_of_pose: dict[int, tuple[str, tuple]] = {}  # pose index -> (type, xz)
+    n_corners = 0
     yaw = 0.0
     rot = 45.0
     x0, z0 = cells[0]
@@ -114,6 +137,11 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
         dyaw = (desired - yaw + 180.0) % 360.0 - 180.0
         nrot = int(round(abs(dyaw) / rot))
         token = 'rotate_right' if dyaw > 0 else 'rotate_left'
+        if nrot and i > 1 and n_corners < len(_CORNER_LANDMARKS):
+            corner = (_CORNER_LANDMARKS[n_corners], (px, pz))
+            n_corners += 1
+            for k in range(len(poses) - 1, len(poses) + nrot + 1):
+                corner_of_pose[k] = corner
         for _ in range(nrot):
             yaw = (yaw + rot) % 360.0 if token == 'rotate_right' else (yaw - rot) % 360.0
             poses.append({'position': [px, 1.0, pz], 'rotation': [0.0, yaw, 0.0]})
@@ -135,6 +163,10 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
             last = cells[-1]
             visible['Toilet|1'] = detection('Toilet', [last[0], 1.0, last[1]])
             ego_edges.append(ego('Toilet|1'))
+        if i in corner_of_pose:
+            cat, (cx, cz) = corner_of_pose[i]
+            visible[f'{cat}|1'] = detection(cat, [cx, 1.0, cz])
+            ego_edges.append(ego(f'{cat}|1'))
         act = action_rows[i]
         steps.append(
             {
@@ -151,6 +183,16 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
                 'edges_inferred': [],
             }
         )
+    catalog = {}
+    for cat, (cx, cz) in set(corner_of_pose.values()):
+        catalog[f'{cat}|1'] = {
+            'category': cat,
+            'position': [cx, 1.0, cz],
+            'aabb_min': [cx - 0.2, 0.0, cz - 0.2],
+            'aabb_max': [cx + 0.2, 1.0, cz + 0.2],
+            'pickupable': False,
+            'moveable': False,
+        }
     return {
         'episode_id': scene_id,
         'scene_id': scene_id,
@@ -159,6 +201,7 @@ def _corridor_episode(cells, grid: float = 0.25, scene_id: str = 'corridor') -> 
             'camera': {'width': 396, 'height': 224, 'fov_vertical_deg': 59},
             'agent': {'rotation_deg': 45, 'movement_constant': grid},
         },
+        **({'object_catalog': catalog} if catalog else {}),
         'nav_graph': nav_graph,
         'agent_trajectory': trajectory,
         'steps': steps,
@@ -343,6 +386,35 @@ def _two_room_episode() -> dict:
             {'step': i, 'action': 'move_ahead', 'degrees': 45} for i in range(len(walk))
         ],
     }
+
+
+@pytest.fixture
+def stub_route_mc(monkeypatch):
+    """Survey-gate tests: skip the landmark-and-turn options.
+
+    The two-room BFS references turn away from any landmark, so the real
+    builder rejects them; these tests check the survey gates, ranking and
+    frames. ``tests/test_route_mc.py`` and the U-corridor route test cover it.
+    """
+    import cm_benchmark.generation.planner as planner_mod
+
+    def fake(episode, graph, ref, variants, *, source_id, goal_id, key):
+        texts = [f'route {c} ({key})' for c in 'ABCD']
+        return {
+            'answer_label': texts[0],
+            'options_pool': texts,
+            'distractor_seeds': [f'mirrored_turn::{t}' for t in texts[1:]],
+            'frame_variants': variants,
+            'route_steps': {'start_turn': 'straight', 'turns': ['left'],
+                            'landmark_ids': [None], 'landmark_names': [None], 'landmark_gaps_m': [None],
+                            'named_turns': 0, 'total_turns': 1},
+            'route_options_key': key,
+            'turn_landmark_ids': [],
+            'n_route_steps': 2,
+            'consensus_heuristic_agrees': None,
+        }
+
+    monkeypatch.setattr(planner_mod, '_class4_route_mc', fake)
 
 
 @pytest.fixture
@@ -1123,8 +1195,7 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
     )
     from cm_benchmark.generation.nav_graph import score_route_action_sequence
 
-    facts = [f for f in plan_route_knowledge(u_corridor_episode, max_items=2)
-             if f.status == 'ok']
+    facts = _free_action(plan_route_knowledge(u_corridor_episode, max_items=2))
     assert facts, 'a U-shaped corridor must support route_knowledge'
     fact = facts[0]
     extra = fact.extra
@@ -1154,6 +1225,7 @@ def test_route_reference_is_smoothed_and_scores_valid_success(u_corridor_episode
     assert score['sdtw'] == pytest.approx(1.0)
     assert score['efficiency'] == score['route_efficiency']
     assert extra.get('scoring') == 'success_spl_sdtw'
+    assert extra.get('answer_format') == 'action_sequence'
     assert extra.get('max_shown_gap_steps', 0) <= get_generation_config().frames.max_gap_steps
     roles = extra.get('image_roles') or []
     assert roles and roles[0].startswith('frame 1 of ')
@@ -1170,17 +1242,51 @@ def test_route_rejects_straight_and_turnless_pairs(straight_corridor_episode):
     assert 'turns_lt_' in reason or 'geodesic_euclidean_ratio_lt_' in reason
 
 
+def test_route_stretch_is_multiple_choice_2x2(u_corridor_episode):
+    """The walk between the two corners becomes one landmark-and-turn MC item."""
+    from cm_benchmark.generation.config import get_generation_config
+    from cm_benchmark.generation.planner import plan_route_knowledge
+    from cm_benchmark.generation.route_mc import consensus_pick
+
+    facts = _route_mc(plan_route_knowledge(u_corridor_episode, max_items=5))
+    assert len(facts) == 1
+    fact = facts[0]
+    extra = fact.extra
+    assert extra['scoring'] == 'mcq' and extra['template_mode'] == 'route_mc'
+    assert 'source_landmark_id' not in extra
+    steps = extra['route_steps']
+    assert steps['turns'] == ['right', 'right']
+    assert steps['landmark_names'] == ['Armchair', 'Sofa']
+    assert (extra['named_turns'], extra['total_turns']) == (2, 2)
+    assert fact.answer_label == (
+        'Walk to the Armchair, turn right, walk to the Sofa, turn right, walk to the end point'
+    )
+    shown = extra['shown_frame_steps']
+    cfg = get_generation_config().frames
+    assert extra['source_frame'] == 1 and extra['goal_frame'] == len(shown)
+    for variant in extra['frame_variants']:
+        assert len(variant['shown_frame_steps']) <= max(variant['budgets'])
+        assert variant['max_shown_gap_steps'] <= cfg.max_gap_steps
+    assert len(set(fact.options_pool)) == 4
+    tags = [seed.split('::')[0] for seed in fact.distractor_seeds]
+    assert tags == ['mirrored_turn', 'swapped_landmarks', 'mirrored_turn+swapped_landmarks']
+    assert extra['consensus_heuristic_agrees'] == (
+        consensus_pick(fact.options_pool, extra['route_options_key']) == 0
+    )
+    q = _core_question(fact)
+    assert 'frame 1' in q and f'frame {len(shown)}' in q
+
+
 def test_route_emits_hardest_pairs_first(u_corridor_episode):
     """Emitted pairs are ranked by difficulty, not by first-in-walk-order."""
     from cm_benchmark.generation.planner import plan_route_knowledge
 
-    facts = [f for f in plan_route_knowledge(u_corridor_episode, max_items=5)
-             if f.status == 'ok']
+    facts = _free_action(plan_route_knowledge(u_corridor_episode, max_items=5))
     ranks = [(f.extra['turn_count'], f.extra['geodesic_m']) for f in facts]
     assert ranks == sorted(ranks, reverse=True)
 
 
-def test_survey_emits_hardest_pairs_first(two_room_episode):
+def test_survey_emits_hardest_pairs_first(two_room_episode, stub_route_mc):
     """Survey ranks by difficulty like route, instead of returning enumeration order.
 
     ``ids`` is salience-ordered, so the first pair the loop reaches can be the
@@ -1194,11 +1300,7 @@ def test_survey_emits_hardest_pairs_first(two_room_episode):
         select_landmark_candidates,
     )
 
-    every = [
-        f
-        for f in plan_survey_based_route_planning(two_room_episode, max_items=99)
-        if f.status == 'ok'
-    ]
+    every = _free_action(plan_survey_based_route_planning(two_room_episode, max_items=99))
     assert len(every) >= 3, 'fixture must offer several survey pairs to rank'
     ranks = [
         (f.extra['turn_count'], f.extra['geodesic_m'], f.extra['hop_count'])
@@ -1228,7 +1330,7 @@ def test_survey_emits_hardest_pairs_first(two_room_episode):
         return (min(a, b), max(a, b))
 
     enum_top = sorted(every, key=enumeration_key)[:2]
-    top = plan_survey_based_route_planning(two_room_episode, max_items=2)
+    top = _free_action(plan_survey_based_route_planning(two_room_episode, max_items=2))
     assert [f.extra['turn_count'] for f in top] == [r[0] for r in ranks[:2]]
     # Salience order is not difficulty order. The sighting-pose target can
     # make the first salience pair the hardest, so compare the pairs themselves.
@@ -1237,7 +1339,7 @@ def test_survey_emits_hardest_pairs_first(two_room_episode):
     ]
 
 
-def test_survey_reference_scores_valid_success(two_room_episode):
+def test_survey_reference_scores_valid_success(two_room_episode, stub_route_mc):
     """Survey stores a viewed-edge path, so the scorer must accept it."""
     from cm_benchmark.generation.planner import (
         _load_nav_graph_or_none,
@@ -1247,12 +1349,9 @@ def test_survey_reference_scores_valid_success(two_room_episode):
     from cm_benchmark.generation.nav_graph import score_survey_action_sequence
 
     graph = _load_nav_graph_or_none(two_room_episode)
-    facts = [
-        f
-        for f in plan_survey_based_route_planning(two_room_episode, max_items=99)
-        if f.status == 'ok'
-    ]
+    facts = _free_action(plan_survey_based_route_planning(two_room_episode, max_items=99))
     assert facts
+    assert len(_route_mc(plan_survey_based_route_planning(two_room_episode, max_items=99))) == len(facts)
     for fact in facts:
         extra = fact.extra
         score = score_survey_action_sequence(
@@ -1275,7 +1374,7 @@ def test_survey_reference_scores_valid_success(two_room_episode):
         assert (extra.get('image_roles') or [''])[0].startswith('frame ')
 
 
-def test_survey_does_not_require_through_door_evidence(two_room_episode):
+def test_survey_does_not_require_through_door_evidence(two_room_episode, stub_route_mc):
     """Viewed-edge path existence is the visual-grounding gate, not a door instant."""
     from cm_benchmark.generation.planner import plan_survey_based_route_planning
 
@@ -1997,7 +2096,7 @@ def test_route_frames_include_sightings_within_budget(u_corridor_episode):
     assert len(fact.image_paths) == len(steps)
 
 
-def test_survey_frames_include_sightings_within_budget(two_room_episode):
+def test_survey_frames_include_sightings_within_budget(two_room_episode, stub_route_mc):
     from cm_benchmark.generation.config import get_generation_config
     from cm_benchmark.generation.planner import plan_survey_based_route_planning
 
@@ -2035,12 +2134,12 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     assert fact.extra.get('source')
     assert fact.extra.get('goal')
     assert fact.extra.get('path_nodes')
-    assert fact.extra.get('answer_format') == 'action_sequence'
-    assert fact.extra.get('scoring') == 'success_spl_sdtw'
+    assert fact.extra.get('answer_format') == 'route_mc'
+    assert fact.extra.get('scoring') == 'mcq'
     assert fact.extra.get('graph_scope') == 'traversed'
     assert fact.extra.get('traversed_edges') is not None
     assert fact.extra.get('action_sequence')
-    assert 'move_ahead' in (fact.answer_label or '')
+    assert 'move_ahead' not in (fact.answer_label or '')
     q = _core_question(fact).lower()
     assert 'move_ahead' not in q
     assert 'rotate_left' not in q
@@ -2050,9 +2149,9 @@ def test_route_knowledge_is_retrace_not_plan(folder_episode):
     gi = fact.extra['goal_frame']
     assert f'start at your position in frame {si}'.lower() in q
     assert f'the {fact.extra["source"]} is in view'.lower() in q
-    assert f'ending at your position in frame {gi}'.lower() in q
+    assert f'the end point is your position in frame {gi}'.lower() in q
     assert f'the {fact.extra["goal"]} is in view'.lower() in q
-    assert 'retrace the route you walked' in q
+    assert 'which route retraces the walk you took' in q
     assert 'which of these' not in q
     shown = fact.extra.get('shown_frame_steps') or []
     assert shown[int(fact.extra['source_frame']) - 1] == fact.encoding_step
@@ -2077,13 +2176,13 @@ def test_survey_based_route_planning_unsupported_without_novel_path(folder_episo
         )
         return
     fact = facts[0]
-    assert fact.extra.get('answer_format') == 'action_sequence'
-    assert fact.extra.get('scoring') == 'success_spl'
+    assert fact.extra.get('answer_format') == 'route_mc'
+    assert fact.extra.get('scoring') == 'mcq'
     assert fact.extra.get('graph_scope') == 'viewed'
     assert fact.extra.get('viewed_edges') is not None
     assert fact.extra.get('traversed_edges') is not None
     assert fact.extra.get('action_sequence')
-    assert 'move_ahead' in (fact.answer_label or '')
+    assert 'move_ahead' not in (fact.answer_label or '')
     roles = fact.extra.get('image_roles') or []
     assert any('source' in r for r in roles)
     assert any('goal' in r for r in roles)
@@ -2276,14 +2375,8 @@ def test_class4_reference_answers_score_success_and_report_frames(
     )
 
     max_gap = get_generation_config().frames.max_gap_steps
-    route_facts = [
-        f for f in plan_route_knowledge(u_corridor_episode, max_items=2) if f.status == 'ok'
-    ]
-    survey_facts = [
-        f
-        for f in plan_survey_based_route_planning(two_room_episode, max_items=2)
-        if f.status == 'ok'
-    ]
+    route_facts = _free_action(plan_route_knowledge(u_corridor_episode, max_items=2))
+    survey_facts = _free_action(plan_survey_based_route_planning(two_room_episode, max_items=2))
     assert route_facts, 'U-corridor must yield route items'
     ndtw_vals: list[float] = []
     rows: list[dict] = []
@@ -2355,19 +2448,21 @@ def test_class4_templates_match_taxonomy_wording():
     from cm_benchmark.generation.constructs import pick_template_index, template_count
 
     route = select_template('route_knowledge')
-    assert isinstance(route, str)
-    assert '{source}' in route and '{goal}' in route
+    assert route == select_template('route_knowledge', 'route_mc')
     assert '{i}' in route and '{j}' in route
-    assert 'the {source}' in route and 'the {goal}' in route
-    assert 'retrace the route you walked' in route.lower()
+    assert '{source}' not in route and '{goal}' not in route
+    assert 'which route retraces the walk you took' in route.lower()
     assert 'move_ahead' not in route
-    assert 'which of these' not in route.lower()
+    free = select_template('route_knowledge', 'action_sequence')
+    assert 'the {source}' in free and 'the {goal}' in free
+    assert 'retrace the route you walked' in free.lower()
 
-    assert template_count('survey_based_route_planning') == 1
+    assert template_count('survey_based_route_planning', 'route_mc') == 1
+    assert 'list the actions' in select_template('survey_based_route_planning', 'action_sequence').lower()
     survey = select_template('survey_based_route_planning', index=0)
     assert '{i}' in survey and '{j}' in survey
     assert 'the {source}' in survey and 'the {goal}' in survey
-    assert 'ends at your position in frame {j}' in survey.lower()
+    assert 'the end point is your position in frame {j}' in survey.lower()
     assert 'shortest' not in survey.lower()
     assert 'move_ahead' not in survey
     assert pick_template_index('survey_based_route_planning', None, 'a', 'b') == 0

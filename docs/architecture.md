@@ -151,9 +151,14 @@ question but never the answer (a no-op without a provider).
 
 `protocol.py` holds the one system instruction shared by every model (it
 states the class-4 action vocabulary once) and wraps an item for a model.
-`score.py` scores class-4 action sequences through the same simulator the
-generator used to verify its reference answers. MCQ items are scored by exact
-option match.
+MCQ items, class 4 included, are scored by exact option match (`score_mcq`).
+`route_mc_metrics` reports class-4 accuracy with 95% Wilson intervals, chance,
+invalid replies, accuracy by route length, question style and naming (fully
+vs partly named routes), distractor-tag choice rates and the text-only
+consensus shortcut. The free-action diagnostic subset is scored through the
+same simulator the generator used (`score_route_knowledge`,
+`score_survey_based_route_planning`) and summarised by
+`free_action_descriptives`.
 
 ## Each construct, in call order
 
@@ -266,20 +271,32 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 7. every valid triple is collected, then `_pt_spread` draws `max_items` round-robin over (answer label, disparity bin, image shortcut agrees), emptiest group first and the control bin 0 last (inside a group, items with `abc_pair_together` first), with no object used as A more than `max_uses_as_a` times and the same A with B and C swapped taken once, so "behind" and high-disparity triples are kept on purpose;
 8. whole set (`generate_items._trim_control_share`): bin-0 items (imagined heading within 45° of the camera's) are the control and are capped at `perspective_taking.max_control_share`; headline perspective-taking accuracy is reported on the other bins.
 
-### route_knowledge (class 4, free action sequence) — "Start at your position in frame i … (the S is in view). Retrace … frame j (the G is in view)."
+### route_knowledge (class 4, multiple choice) — "Start at your position in frame 1, facing as in frame 1. The end point is your position in frame n. Which route retraces the walk you took?"
+
+Options are whole landmark-and-turn routes, e.g. "Walk ahead, turn sharply left, walk to the Buffet marked with the number 2, turn right, walk to the end point".
+
+1. `_walk_turn_boundaries` — the recorded walk (complete glances dropped), runs of turns summed, turns within `class4.mc.turn_merge_m` of travel merged, labelled exactly by `route_mc.turn_label` (`class4.mc.turn_labels_deg`: net 45° is a correction, 90° turn left/right, 135° turn sharply left/right, 180° turn around);
+2. `_plan_route_stretches` — for every run of `min_turns`–`max_turns` consecutive labelled turns, the stretch runs from after the previous turn to before the next one. No landmark-pair gates (length, detour, floor-standing endpoints);
+3. frames — the frame before and after each labelled turn stay; the rest is thinned to `frames.max_gap_steps`, one list per `frames.budgets`; the first and last legs are halved until a budget fits. A route depends on its turns and landmarks, not on continuous motion, so unlike spatial updating not every frame is shown;
+4. the recorded actions from the start pose (glances dropped, turn runs collapsed) are replayed and must end within `goal_success_m` of the end pose;
+5. `_class4_route_mc` — recomputes the turns on that replay; each labelled turn is named by the nearest clearly seen object that never moves (catalog `pickupable` and `moveable` both false; no sub-parts, never-named types or doors) within `class4.mc.turn_landmark_max_m`, not confusable with another named turn; otherwise the leg is "walk ahead". At least one turn must be named. Frame variants where a named landmark is not clearly visible are dropped;
+6. options — `route_mc.route_distractors`, a 2×2 design {correct, X, Y, X+Y}: X a mirrored turn (left↔right, "sharply" kept), Y a landmark swap (or a second mirrored turn), at different steps; X+Y is tagged with both. Every option is the same distance from the others, so the "most typical option" shortcut is at chance; `consensus_heuristic_agrees` stores whether it would be right;
+7. naming — turn landmarks join the whole-item naming pass (proximity phrase or numbered mark for duplicates), and `_rename_route_options` rebuilds the option texts with the final names;
+8. stored: `route_steps`, `named_turns` / `total_turns`, `n_route_steps`, the replayed `action_sequence`.
+
+Free-action diagnostic subset (`diagnostic_subset: free_action`, template mode `action_sequence`): the landmark-pair walk below, answered as an action sequence and scored by continuous replay (success, SPL, SDTW). Report it descriptively only (`evaluation.score.free_action_descriptives`).
 
 1. `_load_nav_graph_or_none` → `build_nav_graph`;
 2. `_episode_traversed_subgraph` — snap the trajectory, keep walked edges;
-3. `select_landmark_candidates(unique_category=False, floor_standing=True)` — endpoints are SPOC floor-standing landmarks, passages excluded — and `_build_landmark_node_map` snapping each landmark to a *visited* node within `ROUTE_LANDMARK_SNAP_M`;
-4. `_scene_class4_floors` — median pair geodesic and detour ratio (capped) over walked `traversed_edges` landmark pairs (survey keeps the full-scene pool);
-5. for every pair in walk order: `_class4_pair_reject_reason` (at least 2 m geodesic, ≤ 30 m, ≥ scene median, detour ratio), names for both endpoints, reject confusable endpoint pairs, `shortest_path` on walked edges, hop count, real move;
-6. recorded `agent_actions` between source and goal sightings (complete glances dropped), with each run of consecutive turns collapsed to its net turn (`collapse_rotations`: SPOC done-override spins and turn-backs vanish), replayed with continuous kinematics; must end within ObjectNav 1.0 m of the goal;
-7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]` via `count_direction_changes`;
-8. frames (`_class4_frame_variants`, once per budget in `frames.budgets`): lock source/goal sightings and the FOV frames just before/after every rotation between them; fill the remaining budget evenly on straight segments; enforce `frames.max_gap_steps` between consecutive shown frames (that budget is not offered if unmet; the item is dropped if no budget fits). Labels are `frame i of n`;
-9. scoring is continuous replay: success, SPL, nDTW (`d_th = goal_success_m`), headline SDTW = success × nDTW; edge-membership validity is diagnostic only;
-10. all passing pairs are ranked by (turns, geodesic, hops) and the hardest are emitted.
+3. `select_landmark_candidates(unique_category=False, floor_standing=True)` and `_build_landmark_node_map` snapping each landmark to a *visited* node within `ROUTE_LANDMARK_SNAP_M`;
+4. `_scene_class4_floors` — detour-ratio floor over walked landmark pairs;
+5. per pair in walk order: `_class4_pair_reject_reason` (2–30 m geodesic, detour ratio), names, no confusable endpoints, a walked path, hop count, real move;
+6. recorded `agent_actions` between the sightings (complete glances dropped, turn runs collapsed), replayed; must end within 1.0 m of the goal sighting;
+7. turn band `[ROUTE_MIN_TURN_COUNT, ROUTE_MAX_TURN_COUNT]`;
+8. frames via `_class4_frame_variants` (sightings and rotation neighbours locked, `frames.max_gap_steps`);
+9. ranked by (turns, geodesic, hops), hardest first.
 
-### survey_based_route_planning (class 4) — "Start at your position in frame i … Using the layout, list a route that ends at frame j …" over a never-walked path
+### survey_based_route_planning (class 4) — "Start at your position in frame i … You never walked this way. Using what you have seen of the layout, which route leads from the start to the end point?" over a never-walked path
 
 1. graph and walked subgraph as above; floor-standing landmarks snapped to any navigable node within `ROUTE_LANDMARK_SNAP_M`;
 2. `calibrate_view_radius_m` + `viewed_edges_from_trajectory` — edges near the trajectory count as "seen";
@@ -288,7 +305,8 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 5. `_agent_near_landmark` — the agent must be ≥ 1 m from the source at its sighting frame; the reference must contain at least `class4.survey.min_turns` real turns;
 6. frames (`_class4_frame_variants`, once per budget): lock source/goal sightings, frames covering the unwalked planned-path edges, and rotation neighbors; fill straight segments; enforce `frames.max_gap_steps` (a budget is not offered if required covers/gap unmet). Labels are `frame i of n`;
 7. scoring: success (headline) and SPL; no answer-level validity gate (validity remains a diagnostic);
-8. ranked hardest-first like route.
+8. ranked hardest-first like route;
+9. each pair gives a free-action item (`diagnostic_subset: free_action`) and, when `_class4_route_mc` passes on the BFS reference, a multiple-choice twin (`_survey_mc_fact`) with the same 2×2 options as route knowledge.
 
 ## Where an item's fields come from
 

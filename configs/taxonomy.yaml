@@ -52,11 +52,10 @@ shared_rules:
   - frame_of_reference must be unambiguous (stated or fixed by construct)
   - >-
     options are real scene locations/directions; exactly one correct
-    (class-4 is free action-sequence: empty options; [CODE] metric simulation
-    with success / validity / SPL — not MCQ match)
+    (class-4 options are whole landmark-and-turn routes with the same steps
+    and landmarks; exactly one matches the reference walk)
   - >-
     distractors are diagnostic: each wrong option = a specific failure mode
-    (class-4 has no MCQ distractors)
   - item enters frozen set only if vision_necessary == true
     (both blind-LLM and caption->LLM baselines FAIL it)
 
@@ -245,22 +244,36 @@ class_4:
     route_knowledge:
       class: 4
       frame_of_reference: egocentric
-      definition: Retrace an experienced path as an ordered action sequence.
+      definition: Retrace an experienced path as an ordered landmark-and-turn route.
       what_moves: observer (along a previously traversed route)
       answer_type: >
-        ordered sequence of collected navigation actions
-        (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] replays the sequence continuously from the source-sighting
-        pose; success is the final position within goal_success_m of the
-        goal-sighting pose; SPL; nDTW / SDTW (headline) vs the reference
-        pose sequence. Edge-membership validity is diagnostic only.
+        MCQ over whole routes ("walk ahead, turn left, walk to the sofa, turn
+        right, walk to the end point") on a stretch of the walk with 2 to 4
+        labelled turns (class4.mc). Turn runs merge within
+        class4.mc.turn_merge_m and are labelled left/right/turn around past
+        class4.mc.turn_edges_deg with directions.label_margin_deg (a lone 45°
+        correction is no turn, 135° is ambiguous and rejects the stretch).
+        Each turn is named by the nearest clearly seen object that never
+        moves (not pickupable, not moveable) within
+        class4.mc.turn_landmark_max_m, duplicates by proximity or a numbered
+        mark; otherwise "walk ahead". At least one turn is named. Options are
+        a 2x2 design {correct, X, Y, X+Y} of two single changes at different
+        steps; X+Y is tagged with both. Exact option match. A small
+        free-action diagnostic subset (landmark pairs, replay-scored success /
+        SPL / SDTW, diagnostic_subset: free_action) is reported descriptively.
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
-        Start at your position in frame {i}, facing as in frame {i}
-        (the {source} is in view). List the actions that retrace the route
-        you walked, ending at your position in frame {j}
-        (the {goal} is in view).
+        Start at your position in frame {i}, facing as in frame {i}.
+        The end point is your position in frame {j}. Which route retraces
+        the walk you took from the start to the end point?
       ground_truth_method: >
+        Multiple choice: for each run of 2-4 consecutive labelled turns of the
+        recorded walk (glances dropped), the stretch runs from after the
+        previous turn to before the next one, trimmed evenly to
+        max(frames.budgets) frames; every frame is shown, so {i} = 1 and
+        {j} = the last frame. The recorded actions replayed from the start
+        pose must end within goal_success_m of the end pose. No landmark-pair
+        gates. The free-action subset keeps the pair method below:
         Source and goal are floor-standing landmarks on the walked trajectory.
         They are not confusable with each other. {i} / {j} (aliases
         {source_frame} / {goal_frame}) are 1-based indices into the shown
@@ -278,13 +291,17 @@ class_4:
         (headline). Edge-membership validity is logged only.
         Keep only non-trivial walks (at least 2 m, detour, and at least
         one real turn). There is no scene-percentile length gate. A scene
-        with no such walk is unsupported.
-      distractor_pattern: []
+        with no such walk is unsupported. The answer is the route text of
+        those recorded actions (see answer_type); the replay stays stored
+        (action_sequence) for diagnostics.
+      distractor_pattern:
+        - mirrored_turn (one turn flipped left <-> right; one step)
+        - swapped_landmarks (two turn slots trade landmarks; one may be unnamed)
       discriminators:
         - the queried route was previously traversed (path on traversed_edges)
         - source and goal are named landmarks, not graph nodes
         - the walk is non-trivial (not a short straight shot)
-        - free action sequence; [CODE] scores success / SPL / SDTW
+        - every option has the same legs and landmarks; only turns or order differ
         - INVALID if that source–goal walk was not previously traversed
 
     survey_based_route_planning:
@@ -295,17 +312,17 @@ class_4:
         seen, not a walked route.
       what_moves: none required
       answer_type: >
-        ordered sequence of collected navigation actions
-        (move_ahead, rotate_left, rotate_right, move_back). Not MCQ.
-        [CODE] replays the sequence continuously from the source-sighting
-        pose; success (headline) is the final position within goal_success_m
-        of the goal-sighting pose, then SPL. No answer-level validity gate.
+        MCQ over whole landmark-and-turn routes, built from the continuous
+        BFS reference of a never-walked landmark pair exactly as
+        route_knowledge builds them from the recorded actions (class4.mc,
+        2x2 options). Exact option match. The same pairs also give the
+        free-action diagnostic subset (replay-scored success / SPL).
       required_temporal_fields: [agent_trajectory, nav_graph]
       question_template: >
         Start at your position in frame {i}, facing as in frame {i}
-        (the {source} is in view). Using what you have seen of the layout,
-        list the actions of a route that ends at your position in frame {j}
-        (the {goal} is in view).
+        (the {source} is in view). The end point is your position in frame {j}
+        (the {goal} is in view). You never walked this way. Using what you have
+        seen of the layout, which route leads from the start to the end point?
       ground_truth_method: >
         Source and goal are floor-standing landmarks with no path on
         traversed_edges and a path on viewed_edges. They are not confusable
@@ -321,13 +338,15 @@ class_4:
         route_knowledge (headline). SPL is given success. Edge-membership
         validity is diagnostic only. Keep only non-trivial pairs (at least
         2 m and at least one real turn); emit the hardest surviving ones.
-      distractor_pattern: []
+      distractor_pattern:
+        - mirrored_turn (one turn flipped left <-> right; one step)
+        - swapped_landmarks (two turn slots trade landmarks; one may be unnamed)
       discriminators:
         - queried path was never walked (absent from traversed_edges)
         - a path exists on viewed_edges (answerable from what was seen)
         - agent is not standing at the source when it is first sighted
         - the planned walk is non-trivial
-        - free action sequence; [CODE] scores success + SPL
+        - every option has the same legs and landmarks; only turns or order differ
 # ============================================================
 # Cross-reference: how construct specifics map onto item schema fields
 # (Core fields are always present; these are the construct-dependent ones.)

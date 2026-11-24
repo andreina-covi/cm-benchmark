@@ -90,11 +90,18 @@ def recorded_actions_between(
     A glance the window cuts (start or end pose mid-glance) keeps its turns,
     which the agent needs from that pose.
     """
+    return [act for _step, act in recorded_steps_between(episode, t0, t1, skip_glances=skip_glances)]
+
+
+def recorded_steps_between(
+    episode: dict, t0: int, t1: int, *, skip_glances: bool = False
+) -> list[tuple[int, str]]:
+    """``(step, action)`` pairs of ``recorded_actions_between``."""
     lo, hi = int(t0), int(t1)
     if hi < lo:
         lo, hi = hi, lo
     dropped = _complete_glance_steps(episode, lo, hi) if skip_glances else set()
-    out: list[str] = []
+    out: list[tuple[int, str]] = []
     for rec in episode.get('agent_actions') or []:
         try:
             step = int(rec.get('step'))
@@ -106,7 +113,7 @@ def recorded_actions_between(
             continue
         act = rec.get('action')
         if act:
-            out.append(str(act))
+            out.append((step, str(act)))
     return out
 
 

@@ -93,7 +93,8 @@ def concise_ok(items: list[dict]) -> list[dict]:
 
 
 def is_nav(item: dict) -> bool:
-    return item.get('construct') in NAV_CONSTRUCTS
+    """Free action-sequence item; multiple-choice class-4 items render as MC."""
+    return item.get('construct') in NAV_CONSTRUCTS and not item.get('options')
 
 
 def nav_action_gold(item: dict) -> str:

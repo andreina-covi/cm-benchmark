@@ -301,6 +301,18 @@ class4:
     min_agent_source_dist_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m
     view_radius_percentile: 0.5  # none found (5b4cb02)
     min_turns: 1  # none found; at least one real turn
+  mc:
+    # Class 4 is multiple choice (user decision 2026-11-24): each option is a whole
+    # landmark-and-turn route ("turn left, walk to the sofa, turn right, walk ahead, ...").
+    # Route knowledge samples stretches of the walk between turns; their frames are sampled like
+    # the other class-4 items (frames around each turn kept, frames.max_gap_steps, frames.budgets).
+    # Survey keeps its never-walked pairs. Turns are the recorded (route)
+    # or planned (survey) rotations, merged and labelled below.
+    turn_landmark_max_m: 1.0  # literature: ObjectNav / GOAT success distance 1.0 m ("at the sofa" = reached it); a turn is named by a static object box this close, else it is "walk ahead"; a route names at least one turn
+    turn_merge_m: 1.0  # none found; turn runs closer than this along the walk are summed into one turn (two 45° corrections = one 90° turn), same reach as turn_landmark_max_m
+    turn_labels_deg: [90.0, 135.0, 180.0]  # derived: SPOC turns in 45° steps, so labels are exact (user decision 2026-11-24): net 45° is a correction (no turn), 90° turn left/right, 135° turn sharply left/right, 180° turn around
+    min_turns: 2  # user decision 2026-11-24: labelled turns per route, start turn included; two are needed for the 2x2 option set
+    max_turns: 4  # user decision 2026-11-24: longer options measure reading, not route memory
   follower:
     ladder_multipliers: [1.5, 1.0, 1.0, 0.5]  # derived: multiples of max(grid, move) / grid
     arrive_fraction: 0.75  # none found (274e5ff)

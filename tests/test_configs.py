@@ -61,9 +61,12 @@ def test_route_does_not_require_agent_actions():
     assert 'route_knowledge' in hooks['nav_graph']['required_for']
 
 
-def test_class4_is_free_action_sequence_not_mcq():
+def test_class4_is_route_mcq():
+    from cm_benchmark.generation.route_mc import ROUTE_DISTRACTOR_TAGS
+
     for name in ('route_knowledge', 'survey_based_route_planning'):
         cfg = _taxonomy_constructs()[name]
         assert cfg['class'] == 4
-        assert cfg['distractor_pattern'] == []
-        assert 'Not MCQ' in cfg['answer_type'] or 'not MCQ' in cfg['answer_type']
+        tags = [entry.split(' ')[0] for entry in cfg['distractor_pattern']]
+        assert tags == list(ROUTE_DISTRACTOR_TAGS)
+        assert 'MCQ' in cfg['answer_type']

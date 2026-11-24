@@ -96,22 +96,43 @@ CONSTRUCT_TEMPLATES = {
     'perspective_taking': [
         'Imagine standing next to the {A}, facing the {B}. From that position, where is the {C}?',
     ],
-    'route_knowledge': [
-        (
-            'Start at your position in frame {i}, facing as in frame {i} '
-            '(the {source} is in view). List the actions that retrace the route '
-            'you walked, ending at your position in frame {j} '
-            '(the {goal} is in view).'
-        ),
-    ],
-    'survey_based_route_planning': [
-        (
-            'Start at your position in frame {i}, facing as in frame {i} '
-            '(the {source} is in view). Using what you have seen of the layout, '
-            'list the actions of a route that ends at your position in frame {j} '
-            '(the {goal} is in view).'
-        ),
-    ],
+    # Class 4: ``route_mc`` is the benchmark item (multiple choice); ``action_sequence``
+    # is the free-action diagnostic subset scored by replay.
+    'route_knowledge': {
+        'route_mc': [
+            (
+                'Start at your position in frame {i}, facing as in frame {i}. '
+                'The end point is your position in frame {j}. Which route retraces '
+                'the walk you took from the start to the end point?'
+            ),
+        ],
+        'action_sequence': [
+            (
+                'Start at your position in frame {i}, facing as in frame {i} '
+                '(the {source} is in view). List the actions that retrace the route '
+                'you walked, ending at your position in frame {j} '
+                '(the {goal} is in view).'
+            ),
+        ],
+    },
+    'survey_based_route_planning': {
+        'route_mc': [
+            (
+                'Start at your position in frame {i}, facing as in frame {i} '
+                '(the {source} is in view). The end point is your position in frame {j} '
+                '(the {goal} is in view). You never walked this way. Using what you have '
+                'seen of the layout, which route leads from the start to the end point?'
+            ),
+        ],
+        'action_sequence': [
+            (
+                'Start at your position in frame {i}, facing as in frame {i} '
+                '(the {source} is in view). Using what you have seen of the layout, '
+                'list the actions of a route that ends at your position in frame {j} '
+                '(the {goal} is in view).'
+            ),
+        ],
+    },
 }
 
 

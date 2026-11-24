@@ -226,6 +226,15 @@ class Class4SurveyConfig:
 
 
 @dataclass(frozen=True)
+class Class4McConfig:
+    turn_landmark_max_m: float
+    turn_merge_m: float
+    turn_labels_deg: tuple[float, float, float]
+    min_turns: int
+    max_turns: int
+
+
+@dataclass(frozen=True)
 class Class4FollowerConfig:
     ladder_multipliers: tuple[float, ...]
     arrive_fraction: float
@@ -261,6 +270,7 @@ class Class4Config:
     move_block_slack_m: float
     route: Class4RouteConfig
     survey: Class4SurveyConfig
+    mc: Class4McConfig
     follower: Class4FollowerConfig
     fallback: Class4FallbackConfig
 
@@ -551,6 +561,13 @@ def generation_config_from_mapping(
                 min_agent_source_dist_m=float(c4['survey']['min_agent_source_dist_m']),
                 view_radius_percentile=float(c4['survey']['view_radius_percentile']),
                 min_turns=int(c4['survey']['min_turns']),
+            ),
+            mc=Class4McConfig(
+                turn_landmark_max_m=float(c4['mc']['turn_landmark_max_m']),
+                turn_merge_m=float(c4['mc']['turn_merge_m']),
+                turn_labels_deg=tuple(float(x) for x in c4['mc']['turn_labels_deg'][:3]),
+                min_turns=int(c4['mc']['min_turns']),
+                max_turns=int(c4['mc']['max_turns']),
             ),
             follower=Class4FollowerConfig(
                 ladder_multipliers=tuple(float(x) for x in c4['follower']['ladder_multipliers']),
