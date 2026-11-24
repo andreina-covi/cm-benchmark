@@ -1,7 +1,7 @@
 # cm-benchmark — Evaluation Process Manual
 
 **Scope:** How we decide an item is well-built before FREEZE. This is the Item
-Generation Pipeline, not model scoring. Class-4 scoring details:
+Generation Pipeline, not model scoring. Class-4 route details:
 [`docs/generation.md`](docs/generation.md).
 
 **Non-goal:** This is not a rubric for grading VLM answers. Item correctness and model scoring are separate concerns (invariant #3: scoring is deterministic code, no LLM judge). For a manual VLM chat/tool pilot (attach `prompt.txt` + frames, paste the kit upload message, score with `analyze_review.py --vlm-kit`), see **VLM chat kit** in [`docs/generation.md`](docs/generation.md).
@@ -31,7 +31,7 @@ Runs on every candidate item before it's eligible for human review. This is the 
 
 ### 2.1 Structural checks (schema-level, per item)
 - `answer_source` is non-null and resolves to a real field/row in the episode store (invariant #2).
-- For MCQ constructs, `answer` is one of `options`; exactly one option is correct. Class-4 (`route_knowledge`, `survey_based_route_planning`) has empty `options`: the model writes a free action sequence; [CODE] scoring is metric simulation (route: success / SPL / nDTW / SDTW; survey: success / SPL; edge-membership validity is diagnostic only), not option match. The allowed action names are stated once in `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION` (the Model Runner wraps every item with it) — not in the per-item question.
+- `answer` is one of `options`; exactly one option is correct. Class 4 (`route_knowledge`, `survey_based_route_planning`) is multiple choice too: each option is a whole landmark-and-turn route, the four options form a 2×2 of a mirrored turn and a landmark swap. The class-4 free-action diagnostic subset (`diagnostic_subset: free_action`) has empty `options`; models answer it with an action sequence scored by replay (route: success / SPL / nDTW / SDTW; survey: success / SPL), reported descriptively only. Its action names are stated once in `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`, not in the per-item question.
 - `frame_of_reference` is set and matches what the construct requires (fixed per construct, or explicit in multi-frame items).
 - For temporal constructs (class 2–4): question text names its reference frames by number (“in frame 1 (k frames before the last frame)”, “in the last frame (frame n)”); never “now” or “k steps ago”
   relative to the live navigation stream (online sequential protocol). Do **not** require
@@ -52,13 +52,13 @@ Re-derive the answer independently from the episode DB and compare to the stored
 - `invisible_displacement` → confirm the destination leaves view within `invisible_displacement.max_delay`, the object / old pose / destination stay out of view until then, and a clear pre-query sighting of the destination (or swap partner / floor landmark) exists; recompute ego bearing at the query pose. Destination identity is exact `obj-id`. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
 - `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers. `image_paths` must be every FOV frame from encode through query in time order.
 - `perspective_taking` → confirm A, B, and C are distinguishable together in the one shown frame; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
-- `route_knowledge` → path exists on traversed_edges; score with `score_route_action_sequence` (success / SPL / nDTW; headline SDTW = success × nDTW; validity diagnostic). Frames lock sightings + rotation neighbors, fill straight parts within `class4.n_frames`, enforce `max_frame_gap_steps`.
-- `survey_based_route_planning` → no path on traversed_edges; a path on viewed_edges; score with `score_survey_action_sequence` (success + SPL; no answer-level validity gate). Frames also lock covers of the unwalked planned path; drop if they do not fit.
+- `route_knowledge` → the stretch's recorded actions (glances dropped) replay from the start pose to within `goal_success_m` of the end pose; recompute the turn labels (exact 90 / 135 / 180°) and the turn landmarks (static, clearly seen, within `class4.mc.turn_landmark_max_m`); every named landmark is clearly visible in a shown frame. Frames keep the frame before and after each turn, the rest within `frames.max_gap_steps`.
+- `survey_based_route_planning` → no path on traversed_edges; a path on viewed_edges; the BFS reference replays to the goal; turns and landmarks recomputed as for route. Frames also lock covers of the unwalked planned path; drop if they do not fit.
 
 Mismatch between recomputed and stored answer = automatic reject, routed back to the generator/template, not to human review.
 
 ### 2.3 Distractor diagnosticity checks
-Class-4 items have empty `options` / `distractor_pattern` (free action sequences). For every **MCQ** construct, confirm:
+For every construct (the class-4 free-action subset has no options and is skipped), confirm:
 - each distractor maps to a named failure mode in that construct's pattern (not a generic random option),
 - `distractor_rationale` names which failure mode each wrong option encodes,
 - no distractor is accidentally also geometrically correct (recompute each distractor the same way as the answer — this catches a common generator bug where two options tie).
@@ -80,8 +80,8 @@ This is the part you flagged as necessary because some judgments (construct-fait
 
 ### 3.1 Who reviews, and with what
 - **Annotators:** 2 independent reviewers minimum per sampled item (`--reviews-per-item`). Reviewers should be spatial-reasoning-literate but *not* the person who wrote the generator/template for that construct.
-- **Tooling:** `scripts/build_review_package.py` writes one zip-ready folder per reviewer. Each folder has `index.html` and **exactly the frames in that item's `image_paths`** (marked copies when the item uses marks). Gold stays in `manifest.json` at the package root; class-4 items also get `private/items/*.json` for simulator scoring. The question is always shown beside the frames; single-image items show no frame navigation. Route/survey use an on-page route builder (CSV `answer` = expanded actions, `answerable` = yes/no). Class-4 study load per reviewer defaults to 5 (`review.class4_per_reviewer` / `--class4-per-reviewer`). After review, `scripts/analyze_review.py` merges the downloaded CSVs against the manifest (MC accuracy / α / flags; class-4 success, SPL, nDTW/SDTW). Commands: [`docs/generation.md`](docs/generation.md).
-- **Blinding:** reviewers see the same frames the model gets, plus the question. For MCQ they pick an option (or Can't tell). For route / survey they answer whether the route can be worked out (yes/no) and build an action sequence with the on-page route builder; the CSV `answer` is the expanded action list (scored like models). They do **not** see the stored gold until after they submit (practice items are the exception: they show the stored answer and are skipped by analysis).
+- **Tooling:** `scripts/build_review_package.py` writes one zip-ready folder per reviewer. Each folder has `index.html` and **exactly the frames in that item's `image_paths`** (marked copies when the item uses marks). Gold stays in `manifest.json` at the package root. The question is always shown beside the frames; single-image items show no frame navigation. Every item, class 4 included, is answered by picking an option (or Can't tell); the free-action diagnostic subset is never sampled for human review. Class-4 study load per reviewer defaults to 5 (`review.class4_per_reviewer` / `--class4-per-reviewer`), since those items carry up to 32 frames. After review, `scripts/analyze_review.py` merges the downloaded CSVs against the manifest (accuracy / α / flags per construct). Commands: [`docs/generation.md`](docs/generation.md).
+- **Blinding:** reviewers see the same frames the model gets, plus the question. They pick an option (or Can't tell). They do **not** see the stored gold until after they submit (practice items are the exception: they show the stored answer and are skipped by analysis).
 
 ### 3.2 What each reviewer judges, per item
 A checklist derived from the construct's `discriminators` in `taxonomy.yaml`. The HTML flags are shared across constructs: ambiguous reference, unclear question, object not visible, more than one option looks correct.
@@ -89,18 +89,18 @@ A checklist derived from the construct's `discriminators` in `taxonomy.yaml`. Th
 For every construct (from `shared_rules`):
 - [ ] Question does not name the answer, a direction, or a move/event
 - [ ] Frame of reference is unambiguous
-- [ ] The frames shown are enough to answer (for MCQ: exactly one option is defensibly correct; for route/survey: the route from the start pose in frame i — the source in view — to the end pose in frame j — the goal in view — can be worked out from these frames)
+- [ ] The frames shown are enough to answer: exactly one option is defensibly correct
 
 Construct-specific checks that matter in review:
 - [ ] **spatial_updating / spatial_working_memory:** the sequence is consecutive FOV frames for the stated `k` (no missing turn in the middle)
 - [ ] **invisible_displacement:** the destination place is clearly visible in some shown frame before the query
 - [ ] **perspective_taking:** A, B, and C appear together in the one shown frame
-- [ ] **route / survey:** the shown walk is enough to work out A→B; the built action sequence is scored with the same simulator as models
+- [ ] **route / survey:** each named turn landmark is visible near its turn in the shown frames, and the turn directions (left / right / sharply / around) match the walk
 
 Plus one holistic item:
 - [ ] **Can you personally answer this from the images alone**, and would you expect a spatially competent adult to agree? (Catches cases where automated gates passed but the image is ambiguous, blurry, or the object is only technically visible.)
 
-On MCQ items the reviewer selects an option *before* seeing gold. On route/survey items they mark answerable yes/no and build a route; `analyze_review.py` scores the expanded action list (success / SPL; nDTW/SDTW for route).
+The reviewer selects an option *before* seeing gold.
 
 ### 3.3 Decision rule
 - **Agree + checklist clean, both reviewers:** item promoted, `status: verified`.

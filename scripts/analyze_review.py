@@ -6,14 +6,16 @@ alpha, and the share of reviews with any problem flag. Check-item accuracy
 is reported per reviewer. Items that both reviewers flagged, or that both
 answered wrongly, are listed.
 
-Class-4 (route / survey) answers are expanded action sequences scored with
-the same simulator as models (success, SPL; nDTW/SDTW for route). The
-yes/no ``answerable`` column is reported separately and does not gate
-success. Practice rows are ignored. Gold / private items come from
-``manifest.json`` and ``private/items/`` written by ``build_review_package.py``.
+Every item is scored by option letter against ``manifest.json``, class 4
+included (route / survey are multiple choice). Round-1 packages marked
+class-4 items ``kind: nav`` (free action sequences); those rows are still
+scored with the same simulator as models (success, SPL; nDTW/SDTW for route)
+from ``private/items/``, and their yes/no ``answerable`` column is reported
+separately. Practice rows are ignored.
 
 With ``--vlm-kit``, score a filled VLM chat-kit results CSV against
-``answers.csv`` (MC letter match; class-4 via the route/survey scorers) and
+``answers.csv`` (letter match; ``kind: nav`` rows of older kits via the
+route/survey scorers) and
 optionally compare to human accuracy on the same items.
 
 ``--json-out`` writes a machine-readable summary for plotting
@@ -50,6 +52,7 @@ CONSTRUCTS = (
     'route_knowledge',
     'survey_based_route_planning',
 )
+# Class-4 constructs; only used to read round-1 CSVs (free action sequences).
 NAV_CONSTRUCTS = frozenset({
     'route_knowledge',
     'survey_based_route_planning',
@@ -214,7 +217,7 @@ def _row_correct(
     package: Path | None,
 ) -> bool:
     construct = meta.get('construct') or row.get('construct') or ''
-    if meta.get('kind') == 'nav' or construct in NAV_CONSTRUCTS:
+    if meta.get('kind') == 'nav':
         ok = _nav_success(meta, row, package=package)
         return bool(ok)
     return _correct_mc(meta, row.get('answer') or '')
@@ -248,7 +251,12 @@ def collect_human_analysis(
             for meta in items.values()
         ):
             continue
-        is_nav = construct in NAV_CONSTRUCTS
+        # Round-1 packages: class-4 items were free action sequences (kind nav).
+        is_nav = any(
+            meta.get('kind') == 'nav'
+            for meta in items.values()
+            if meta.get('role') == 'review' and meta.get('construct') == construct
+        )
         answered = [row for row in group if row.get('answer')]
         scored_rows: list[tuple[dict, dict]] = []
         n_correct = 0
@@ -308,6 +316,8 @@ def collect_human_analysis(
     for construct in ('route_knowledge', 'survey_based_route_planning'):
         group = study_rows.get(construct) or []
         judged = [row for row in group if row.get('answerable')]
+        if not judged:
+            continue
         n_yes = sum(1 for row in judged if row['answerable'].casefold() == 'yes')
         answerable.append(
             {
@@ -404,8 +414,9 @@ def format_human_analysis(data: dict) -> str:
             f'{spl_s:>10} {ndtw_s:>10} {sdtw_s:>10}'
         )
 
-    lines.append('')
-    lines.append('class-4 answerable (yes/no; not a success gate)')
+    if data.get('answerable'):
+        lines.append('')
+        lines.append('class-4 answerable (round-1 free-action items; yes/no, not a success gate)')
     for entry in data.get('answerable') or []:
         judged = int(entry.get('n_judged') or 0)
         if not judged:
@@ -565,7 +576,7 @@ def score_vlm_reply(
         return False, '', False
     if is_cant_tell(raw_reply):
         return False, CANT_TELL, True
-    if kind == 'nav' or construct in NAV_CONSTRUCTS:
+    if kind == 'nav':
         # Score only the first line so an optional comment does not break parse.
         first = raw_reply.splitlines()[0].strip()
         parsed = parse_nav_actions(first)
@@ -664,6 +675,8 @@ def collect_vlm_analysis(
         if abstain:
             cant_tell[key] += 1
 
+    # Constructs answered as free action sequences in this kit (older kits).
+    nav_kinds = {meta['construct'] for meta in answers.values() if meta.get('kind') == 'nav'}
     human = (
         human_accuracy_by_construct(human_package, item_ids)
         if human_package is not None
@@ -689,7 +702,7 @@ def collect_vlm_analysis(
                     'accuracy': rate,
                     'cant_tell_rate': n_ct / len(group),
                     'n_cant_tell': n_ct,
-                    'chance': None if construct in NAV_CONSTRUCTS else MC_CHANCE,
+                    'chance': None if construct in nav_kinds else MC_CHANCE,
                     'human_accuracy': human.get(construct),
                 }
             )
@@ -704,7 +717,7 @@ def collect_vlm_analysis(
                 vision = row['accuracy']
         if (
             blind is not None
-            and construct not in NAV_CONSTRUCTS
+            and construct not in nav_kinds
             and blind >= BLIND_ABOVE_CHANCE
         ):
             flags.append(

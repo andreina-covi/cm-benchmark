@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Build one zip-ready review folder per reviewer.
 
-Reads concise ``status=ok`` items from an items folder. Samples up to
-``--per-construct`` items per construct, stratified across scenes. Class-4
-(route / survey) study items are further capped so each reviewer sees at
-most ``review.class4_per_reviewer`` of them (default 5; CLI override).
+Reads concise ``status=ok`` multiple-choice items from an items folder
+(every construct, class 4 included). The class-4 free-action diagnostic
+subset has no options and is evaluated on models only, so it is never
+sampled. Samples up to ``--per-construct`` items per construct, stratified
+across scenes. Class-4 (route / survey) study items are further capped so
+each reviewer sees at most ``review.class4_per_reviewer`` of them (default 5;
+CLI override): they carry up to 32 frames each.
 Each sampled item is given to ``--reviews-per-item`` reviewers (default 2)
 by a rotating pairing, so each reviewer sees a balanced mix of constructs.
 
@@ -12,11 +15,8 @@ Five extra check items, from different constructs, are added to every
 reviewer. Two practice items, also from different constructs, open the
 session and show the stored answer.
 
-Route / survey items use an on-page route builder (Forward/Back ×N, 45° /
-90° turns). The CSV ``answer`` column stores the expanded action list;
-``answerable`` stores the yes/no judgment. Private item JSON under
-``private/items/`` lets ``analyze_review.py`` score those answers with the
-same simulator as models.
+Every item is answered by picking an option or ``Can't tell``; the CSV
+``answer`` column stores the letter.
 
 Each reviewer folder contains ``index.html`` and the frames that item
 uses (the marked copies, when the item points at them). Gold answers for
@@ -45,7 +45,7 @@ CONSTRUCTS = (
     'route_knowledge',
     'survey_based_route_planning',
 )
-NAV_CONSTRUCTS = frozenset({
+CLASS4_CONSTRUCTS = frozenset({
     'route_knowledge',
     'survey_based_route_planning',
 })
@@ -88,29 +88,15 @@ def concise_ok(items: list[dict]) -> list[dict]:
             continue
         if item.get('construct') not in CONSTRUCTS:
             continue
+        if not item.get('options'):
+            # Class-4 free-action diagnostic subset: models only.
+            continue
         out.append(item)
     return out
 
 
-def is_nav(item: dict) -> bool:
-    """Free action-sequence item; multiple-choice class-4 items render as MC."""
-    return item.get('construct') in NAV_CONSTRUCTS and not item.get('options')
-
-
-def nav_action_gold(item: dict) -> str:
-    """Expanded reference action list for a class-4 item."""
-    answer = item.get('answer')
-    if answer is not None and str(answer).strip():
-        return str(answer).strip()
-    seq = (item.get('context') or {}).get('action_sequence') or []
-    return ', '.join(str(a) for a in seq)
-
-
 def stored_display(item: dict) -> str:
     """Practice-screen text for the stored benchmark answer."""
-    if is_nav(item):
-        gold = nav_action_gold(item)
-        return gold or '(no stored actions)'
     answer = item.get('answer')
     letter = '' if answer is None else str(answer)
     text = (item.get('options') or {}).get(letter, '')
@@ -120,9 +106,7 @@ def stored_display(item: dict) -> str:
 
 
 def review_gold(item: dict) -> str:
-    """Gold for analysis: MC letter, or class-4 expanded action sequence."""
-    if is_nav(item):
-        return nav_action_gold(item)
+    """Gold for analysis: the option letter."""
     return '' if item.get('answer') is None else str(item.get('answer'))
 
 
@@ -191,14 +175,14 @@ def _take_class4_study(
     total: int,
     rng: random.Random,
 ) -> dict[str, list[dict]]:
-    """Round-robin class-4 items across nav constructs up to ``total``."""
-    out: dict[str, list[dict]] = {c: [] for c in NAV_CONSTRUCTS}
+    """Round-robin class-4 items across route and survey up to ``total``."""
+    out: dict[str, list[dict]] = {c: [] for c in CLASS4_CONSTRUCTS}
     if total <= 0:
         return out
     pools = {
-        c: take_stratified(groups[c], len(groups[c]), rng) for c in NAV_CONSTRUCTS
+        c: take_stratified(groups[c], len(groups[c]), rng) for c in CLASS4_CONSTRUCTS
     }
-    order = [c for c in CONSTRUCTS if c in NAV_CONSTRUCTS]
+    order = [c for c in CONSTRUCTS if c in CLASS4_CONSTRUCTS]
     taken = 0
     while taken < total and any(pools.values()):
         for construct in order:
@@ -228,7 +212,7 @@ def sample_items(
     if class4_total is not None:
         nav_study = _take_class4_study(groups, int(class4_total), rng)
         for construct in CONSTRUCTS:
-            if construct in NAV_CONSTRUCTS:
+            if construct in CLASS4_CONSTRUCTS:
                 study[construct] = nav_study.get(construct) or []
             else:
                 study[construct] = take_stratified(groups[construct], per_construct, rng)
@@ -420,19 +404,12 @@ def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
     return labels
 
 
-def page_item(item: dict, role: str, frames: list[str], *, move_m: float) -> dict:
-    ctx = item.get('context') or {}
+def page_item(item: dict, role: str, frames: list[str]) -> dict:
     payload = {
         'item_id': item['item_id'],
         'construct': item['construct'],
         'role': role,
-        'kind': 'nav' if is_nav(item) else 'mc',
         'question': item.get('question') or '',
-        'route_from': str(ctx.get('source') or ''),
-        'route_to': str(ctx.get('goal') or ''),
-        'route_i': ctx.get('source_frame'),
-        'route_j': ctx.get('goal_frame'),
-        'move_m': float(move_m),
         'frames': frames,
         'frame_labels': _frame_labels_for_review(item, len(frames)),
         'options': _option_rows(item),
@@ -443,7 +420,7 @@ def page_item(item: dict, role: str, frames: list[str], *, move_m: float) -> dic
     return payload
 
 
-def render_html(reviewer_id: str, payload: list[dict], *, move_m: float) -> str:
+def render_html(reviewer_id: str, payload: list[dict]) -> str:
     """One self-contained review page."""
     data = json.dumps(payload).replace('<', '\\u003c')
     flags = json.dumps(list(FLAGS))
@@ -451,7 +428,6 @@ def render_html(reviewer_id: str, payload: list[dict], *, move_m: float) -> str:
         _PAGE.replace('__REVIEWER_ID__', reviewer_id)
         .replace('__PAYLOAD__', data)
         .replace('__FLAGS__', flags)
-        .replace('__MOVE_M__', f'{float(move_m):g}')
     )
 
 
@@ -539,16 +515,6 @@ _PAGE = r"""<!DOCTYPE html>
   .banner p { margin: 4px 0; }
   .answer { font-weight: 600; }
   ul { margin: 8px 0; padding-left: 1.2rem; }
-  .route-builder { margin-top: 8px; }
-  .route-builder .controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
-  .route-builder .controls button { font-size: 0.9rem; padding: 6px 10px; }
-  .route-builder .hint { color: var(--muted); font-size: 0.9rem; }
-  .route-builder .seq {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85rem; background: var(--bg); border-radius: 8px;
-    padding: 8px; min-height: 2.4em; white-space: pre-wrap; word-break: break-word;
-  }
-  .route-builder input[type="number"] { width: 3.5rem; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -557,7 +523,6 @@ _PAGE = r"""<!DOCTYPE html>
 const REVIEWER_ID = "__REVIEWER_ID__";
 const PAYLOAD = __PAYLOAD__;
 const FLAGS = __FLAGS__;
-const MOVE_M = Number("__MOVE_M__") || 0.2;
 const KEY = "cm-review:" + REVIEWER_ID;
 const CONSTRUCT_INITIALS = {
   egocentric_encoding: "EE",
@@ -573,27 +538,11 @@ const CONSTRUCT_INITIALS = {
 function blank() {
   return {
     answer: "",
-    answerable: "",
     flags: [],
     comment: "",
-    route_chunks: [],
     seconds: 0,
     frames_viewed: []
   };
-}
-function expandChunks(chunks) {
-  const out = [];
-  (chunks || []).forEach(function (chunk) {
-    (chunk.actions || []).forEach(function (a) { out.push(a); });
-  });
-  return out;
-}
-function formatSeq(actions) {
-  if (!actions || !actions.length) return "(empty)";
-  return actions.join(", ");
-}
-function syncRouteAnswer(rec) {
-  rec.answer = expandChunks(rec.route_chunks).join(", ");
 }
 function loadState() {
   try {
@@ -637,22 +586,19 @@ function downloadCsv() {
   if (activeId) timerStart = Date.now();
   save();
   const header = [
-    "reviewer_id", "item_id", "construct", "answer", "answerable",
+    "reviewer_id", "item_id", "construct", "answer",
     "flags", "comment", "seconds", "role", "frames_viewed"
   ];
   const lines = [header.join(",")];
   PAYLOAD.forEach(function (item) {
     const rec = state.items[item.item_id] || blank();
-    if (item.kind === "nav") syncRouteAnswer(rec);
     const flags = (rec.flags || []).filter(function (flag) { return FLAGS.indexOf(flag) >= 0; });
     const seen = [];
     (rec.frames_viewed || []).forEach(function (n) {
       if (seen.indexOf(n) < 0) seen.push(n);
     });
-    const answerCol = item.kind === "nav" ? (rec.answer || "") : (rec.answer || "");
-    const answerableCol = item.kind === "nav" ? (rec.answerable || "") : "";
     const row = [
-      REVIEWER_ID, item.item_id, item.construct, answerCol, answerableCol,
+      REVIEWER_ID, item.item_id, item.construct, rec.answer || "",
       flags.join("|"), rec.comment || "", rec.seconds || 0, item.role, seen.join("|")
     ].map(csvEscape);
     lines.push(row.join(","));
@@ -669,8 +615,7 @@ function instructionsHtml() {
     + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n". Questions name the frames they refer to by these numbers; "the last frame" is frame n. Where a question counts frames back, the label also says how far back each frame is.</p>'
     + '<p>The question is shown next to the frames. Read it, then look through the frames it refers to. When an item has more than one frame, move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded. On a narrow screen the question sits under the frames.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
-    + '<p>For route and survey questions, the prompt asks you to start at your pose in frame i (the source in view) and end at your pose in frame j (the goal in view). Answer <strong>Can that route be worked out from these frames?</strong> Yes or no, then build the action sequence with the route builder (Forward/Back ×N at '
-    + MOVE_M + ' m per step, 45° / 90° turns). Undo and Clear are available. The expanded action list is saved as your answer.</p>'
+    + '<p>Route questions ask which route takes you from your position in frame i to your position in frame j. Each option lists the turns in order and the landmark where each turn happens; "walk ahead" means that turn has no landmark. "Turn sharply" is a 135° turn, "turn around" 180°. The options differ in a turn\'s direction or in where a landmark comes.</p>'
     + '<p>Also tick any problem that applies:</p><ul>'
     + '<li>ambiguous reference</li><li>unclear question</li>'
     + '<li>object not visible</li><li>more than one option looks correct</li></ul>'
@@ -733,48 +678,10 @@ function viewerHtml(item) {
     + '<input id="frame-slider" type="range" min="1" max="' + n + '" value="' + (frameIndex + 1) + '">'
     + '<div class="thumbs" id="thumbs">' + thumbs + '</div>';
 }
-function navPrompt(item) {
-  const a = item.route_from || "source";
-  const b = item.route_to || "goal";
-  const i = item.route_i != null ? String(item.route_i) : "?";
-  const j = item.route_j != null ? String(item.route_j) : "?";
-  return "Can the route from your position in frame " + i
-    + " (the " + a + " is in view) to your position in frame " + j
-    + " (the " + b + " is in view) be worked out from these frames?";
-}
-function routeBuilderHtml(item, rec) {
-  const move = (item.move_m != null ? Number(item.move_m) : MOVE_M) || 0.2;
-  const nVal = rec.route_n || 1;
-  const actions = expandChunks(rec.route_chunks);
-  const dist = (actions.filter(function (a) {
-    return a === "move_ahead" || a === "move_back";
-  }).length * move).toFixed(2);
-  return ''
-    + '<div class="route-builder" id="route-builder">'
-    + '<h2>Build the route</h2>'
-    + '<p class="hint">Each Forward/Back step is ' + move + ' m. Turn 90° inserts two 45° actions.</p>'
-    + '<div class="controls">'
-    + '<label>N <input type="number" id="route-n" min="1" max="40" value="' + esc(nVal) + '"></label>'
-    + '<button type="button" class="secondary" data-route="forward">Forward (×N)</button>'
-    + '<button type="button" class="secondary" data-route="back">Back (×N)</button>'
-    + '<button type="button" class="secondary" data-route="left45">Turn left 45°</button>'
-    + '<button type="button" class="secondary" data-route="right45">Turn right 45°</button>'
-    + '<button type="button" class="secondary" data-route="left90">Turn left 90°</button>'
-    + '<button type="button" class="secondary" data-route="right90">Turn right 90°</button>'
-    + '<button type="button" class="secondary" data-route="undo">Undo</button>'
-    + '<button type="button" class="secondary" data-route="clear">Clear</button>'
-    + '</div>'
-    + '<p class="hint">Sequence (<span id="route-count">' + actions.length + '</span> actions'
-    + '; travel <span id="route-dist">' + dist + '</span> m):</p>'
-    + '<div class="seq" id="route-seq">' + esc(formatSeq(actions)) + '</div>'
-    + '</div>';
-}
 function questionBlock(item, answers, flags, prompt) {
   const rec = itemState(item.item_id);
-  const route = item.kind === "nav" ? routeBuilderHtml(item, rec) : '';
   return '<div class="card"><p class="question">' + esc(item.question) + '</p>'
     + '<h2>' + prompt + '</h2>' + answers
-    + route
     + '<h2>Problems</h2><div class="flags">' + flags + '</div>'
     + '<h2>Comment</h2><textarea id="comment">' + esc(rec.comment || "") + '</textarea>'
     + '</div>';
@@ -782,7 +689,7 @@ function questionBlock(item, answers, flags, prompt) {
 function isAnswered(item) {
   const rec = state.items[item.item_id];
   if (!rec) return false;
-  return item.kind === "nav" ? !!rec.answerable : !!rec.answer;
+  return !!rec.answer;
 }
 function hasNote(item) {
   const rec = state.items[item.item_id];
@@ -848,28 +755,20 @@ function itemHtml(item, index) {
     ? ('Practice ' + index + ' of ' + practiceN)
     : ('Item ' + index + ' of ' + n);
   let answers = '';
-  if (item.kind === "nav") {
-    ["yes", "no"].forEach(function (value) {
-      const checked = rec.answerable === value ? " checked" : "";
-      answers += '<label class="choice"><input type="radio" name="answerable" value="' + value + '"' + checked + '> '
-        + (value === "yes" ? "Yes" : "No") + '</label>';
-    });
-  } else {
-    (item.options || []).forEach(function (opt) {
-      const checked = rec.answer === opt.letter ? " checked" : "";
-      answers += '<label class="choice"><input type="radio" name="answer" value="' + esc(opt.letter) + '"' + checked + '> '
-        + '<span><strong>' + esc(opt.letter) + '.</strong> ' + esc(opt.text) + '</span></label>';
-    });
-    const cant = rec.answer === "Can't tell" ? " checked" : "";
-    answers += '<label class="choice"><input type="radio" name="answer" value="Can\'t tell"' + cant + '> Can\'t tell</label>';
-  }
+  (item.options || []).forEach(function (opt) {
+    const checked = rec.answer === opt.letter ? " checked" : "";
+    answers += '<label class="choice"><input type="radio" name="answer" value="' + esc(opt.letter) + '"' + checked + '> '
+      + '<span><strong>' + esc(opt.letter) + '.</strong> ' + esc(opt.text) + '</span></label>';
+  });
+  const cant = rec.answer === "Can't tell" ? " checked" : "";
+  answers += '<label class="choice"><input type="radio" name="answer" value="Can\'t tell"' + cant + '> Can\'t tell</label>';
   let flags = '';
   FLAGS.forEach(function (flag) {
     const checked = (rec.flags || []).indexOf(flag) >= 0 ? " checked" : "";
     const text = flag.replace(/_/g, " ");
     flags += '<label class="choice"><input type="checkbox" name="flag" value="' + flag + '"' + checked + '> ' + esc(text) + '</label>';
   });
-  const prompt = item.kind === "nav" ? navPrompt(item) : "Your answer";
+  const prompt = "Your answer";
   let banner = '';
   if (practice) {
     banner = '<div class="banner"><p>Practice. This one is not part of the scored review.</p>'
@@ -896,24 +795,12 @@ function itemHtml(item, index) {
 }
 function readForm(item) {
   const rec = itemState(item.item_id);
-  if (item.kind === "nav") {
-    const selected = document.querySelector('input[name="answerable"]:checked');
-    if (selected) rec.answerable = selected.value;
-    const nInput = document.getElementById("route-n");
-    if (nInput) {
-      const n = Math.max(1, Math.min(40, parseInt(nInput.value, 10) || 1));
-      rec.route_n = n;
-      nInput.value = String(n);
-    }
-    syncRouteAnswer(rec);
-  } else {
-    if (!document.querySelector('input[name="answer"]')) {
-      save();
-      return;
-    }
-    const selected = document.querySelector('input[name="answer"]:checked');
-    rec.answer = selected ? selected.value : "";
+  if (!document.querySelector('input[name="answer"]')) {
+    save();
+    return;
   }
+  const selected = document.querySelector('input[name="answer"]:checked');
+  rec.answer = selected ? selected.value : "";
   rec.flags = Array.prototype.map.call(
     document.querySelectorAll('input[name="flag"]:checked'),
     function (el) { return el.value; }
@@ -922,67 +809,6 @@ function readForm(item) {
   rec.comment = comment ? comment.value : "";
   save();
   refreshNavigator();
-}
-function refreshRouteDisplay(item) {
-  const rec = itemState(item.item_id);
-  syncRouteAnswer(rec);
-  const move = (item.move_m != null ? Number(item.move_m) : MOVE_M) || 0.2;
-  const actions = expandChunks(rec.route_chunks);
-  const seq = document.getElementById("route-seq");
-  const count = document.getElementById("route-count");
-  const dist = document.getElementById("route-dist");
-  if (seq) seq.textContent = formatSeq(actions);
-  if (count) count.textContent = String(actions.length);
-  if (dist) {
-    const travel = actions.filter(function (a) {
-      return a === "move_ahead" || a === "move_back";
-    }).length * move;
-    dist.textContent = travel.toFixed(2);
-  }
-  save();
-}
-function pushRouteChunk(item, label, actions) {
-  const rec = itemState(item.item_id);
-  if (!rec.route_chunks) rec.route_chunks = [];
-  rec.route_chunks.push({label: label, actions: actions.slice()});
-  refreshRouteDisplay(item);
-}
-function bindRouteBuilder(item) {
-  const builder = document.getElementById("route-builder");
-  if (!builder) return;
-  const nInput = document.getElementById("route-n");
-  if (nInput) nInput.addEventListener("change", function () { readForm(item); });
-  builder.querySelectorAll("[data-route]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      const rec = itemState(item.item_id);
-      const n = Math.max(1, Math.min(40, parseInt((nInput && nInput.value) || "1", 10) || 1));
-      rec.route_n = n;
-      const kind = btn.getAttribute("data-route");
-      if (kind === "forward") {
-        const acts = [];
-        for (let i = 0; i < n; i++) acts.push("move_ahead");
-        pushRouteChunk(item, "Forward ×" + n, acts);
-      } else if (kind === "back") {
-        const acts = [];
-        for (let i = 0; i < n; i++) acts.push("move_back");
-        pushRouteChunk(item, "Back ×" + n, acts);
-      } else if (kind === "left45") {
-        pushRouteChunk(item, "Turn left 45°", ["rotate_left"]);
-      } else if (kind === "right45") {
-        pushRouteChunk(item, "Turn right 45°", ["rotate_right"]);
-      } else if (kind === "left90") {
-        pushRouteChunk(item, "Turn left 90°", ["rotate_left", "rotate_left"]);
-      } else if (kind === "right90") {
-        pushRouteChunk(item, "Turn right 90°", ["rotate_right", "rotate_right"]);
-      } else if (kind === "undo") {
-        if (rec.route_chunks && rec.route_chunks.length) rec.route_chunks.pop();
-        refreshRouteDisplay(item);
-      } else if (kind === "clear") {
-        rec.route_chunks = [];
-        refreshRouteDisplay(item);
-      }
-    });
-  });
 }
 function bindChrome(index) {
   const start = document.getElementById("start");
@@ -1034,13 +860,12 @@ function show(index) {
 }
 function bindItem(item, index) {
   document.querySelectorAll(
-    'input[name="answer"], input[name="answerable"], input[name="flag"]'
+    'input[name="answer"], input[name="flag"]'
   ).forEach(function (el) {
     el.addEventListener("change", function () { readForm(item); });
   });
   const comment = document.getElementById("comment");
   if (comment) comment.addEventListener("input", function () { readForm(item); });
-  bindRouteBuilder(item);
   const prev = document.getElementById("prev-frame");
   const next = document.getElementById("next-frame");
   if (prev) prev.addEventListener("click", function () { setFrame(frameIndex - 1); });
@@ -1073,27 +898,14 @@ show(state.index || 0);
 """
 
 
-def _default_review_settings() -> tuple[int, float]:
-    """``(class4_per_reviewer, move_m)`` from generation.yaml."""
+def _default_review_settings() -> int:
+    """``review.class4_per_reviewer`` from generation.yaml."""
     try:
         from cm_benchmark.generation.config import get_generation_config
 
-        rev = get_generation_config().review
-        return int(rev.class4_per_reviewer), float(rev.move_m)
+        return int(get_generation_config().review.class4_per_reviewer)
     except Exception:
-        return 5, 0.2
-
-
-def _write_private_item(output: Path, item: dict) -> None:
-    """Store full item JSON for class-4 scoring in analyze_review."""
-    if not is_nav(item):
-        return
-    dest = output / 'private' / 'items'
-    dest.mkdir(parents=True, exist_ok=True)
-    safe = str(item['item_id']).replace('/', '_').replace('\\', '_')
-    (dest / f'{safe}.json').write_text(
-        json.dumps(item, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-    )
+        return 5
 
 
 def build_package(
@@ -1105,16 +917,14 @@ def build_package(
     reviews: int = 2,
     seed: int = 0,
     class4_per_reviewer: Optional[int] = None,
-    move_m: Optional[float] = None,
 ) -> dict:
     """Write reviewer folders and ``manifest.json``. Return the manifest."""
     if per_construct < 1:
         raise ValueError('items per construct must be at least 1')
     if n_reviewers < 1:
         raise ValueError('need at least 1 reviewer')
-    cfg_cap, cfg_move = _default_review_settings()
+    cfg_cap = _default_review_settings()
     c4_cap = cfg_cap if class4_per_reviewer is None else int(class4_per_reviewer)
-    step_m = cfg_move if move_m is None else float(move_m)
     if c4_cap < 0:
         raise ValueError('class4-per-reviewer must be >= 0')
     class4_total = class4_study_total(
@@ -1137,7 +947,7 @@ def build_package(
     nav_study = [
         item
         for construct in CONSTRUCTS
-        if construct in NAV_CONSTRUCTS
+        if construct in CLASS4_CONSTRUCTS
         for item in sampled['study'][construct]
     ]
     nav_slots = assign_slots(len(nav_study), n_reviewers, reviews, offset=0)
@@ -1146,7 +956,7 @@ def build_package(
         for reviewer in slot:
             study_by_reviewer[reviewer].append(item)
     for offset, construct in enumerate(CONSTRUCTS):
-        if construct in NAV_CONSTRUCTS:
+        if construct in CLASS4_CONSTRUCTS:
             continue
         study = sampled['study'][construct]
         slots = assign_slots(len(study), n_reviewers, reviews, offset + 1)
@@ -1156,9 +966,6 @@ def build_package(
                 study_by_reviewer[reviewer].append(item)
 
     output.mkdir(parents=True, exist_ok=True)
-    private = output / 'private' / 'items'
-    if private.exists():
-        shutil.rmtree(private)
     manifest_items: dict[str, dict] = {}
 
     def remember(item: dict, role: str) -> None:
@@ -1166,11 +973,10 @@ def build_package(
             'construct': item['construct'],
             'scene_id': item.get('scene_id') or '',
             'role': role,
-            'kind': 'nav' if is_nav(item) else 'mc',
+            'kind': 'mc',
             'gold': review_gold(item),
             'stored_answer': None if item.get('answer') is None else str(item.get('answer')),
         }
-        _write_private_item(output, item)
 
     for item in sampled['practice']:
         remember(item, 'practice')
@@ -1197,8 +1003,8 @@ def build_package(
         for item in ordered:
             role = manifest_items[item['item_id']]['role']
             frames = copy_frames(item, folder, items_root)
-            payload.append(page_item(item, role, frames, move_m=step_m))
-        (folder / 'index.html').write_text(render_html(name, payload, move_m=step_m))
+            payload.append(page_item(item, role, frames))
+        (folder / 'index.html').write_text(render_html(name, payload))
         assignments[name] = [item['item_id'] for item in ordered]
 
     manifest = {
@@ -1206,7 +1012,6 @@ def build_package(
         'per_construct': per_construct,
         'class4_per_reviewer': c4_cap,
         'class4_total': class4_total,
-        'move_m': step_m,
         'reviewers': n_reviewers,
         'reviews_per_item': reviews,
         'practice_item_ids': [item['item_id'] for item in sampled['practice']],
@@ -1246,7 +1051,7 @@ def _print_summary(
     for name in names:
         study_ids = [i for i in assignments[name] if i not in held]
         n_class4 = sum(
-            1 for i in study_ids if study_by_id.get(i, {}).get('construct') in NAV_CONSTRUCTS
+            1 for i in study_ids if study_by_id.get(i, {}).get('construct') in CLASS4_CONSTRUCTS
         )
         print(
             f'{name}: {len(study_ids)} study ({n_class4} class-4) + checks and practice → {name}/'
@@ -1254,7 +1059,7 @@ def _print_summary(
 
 
 def main(argv: list[str] | None = None) -> int:
-    cfg_cap, _cfg_move = _default_review_settings()
+    cfg_cap = _default_review_settings()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--items', type=Path, required=True, help='Items folder or one items JSON')
     parser.add_argument('--output', type=Path, required=True, help='Package root (one folder per reviewer)')

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A spatial-cognition QA benchmark for vision-language models. Each item is a multi-image frame sequence from SPOC / AI2-THOR exports plus a question. Classes 1–3 are multiple choice. Class 4 (`route_knowledge`, `survey_based_route_planning`) asks for a free navigation-action sequence. There are 8 constructs in 4 classes, defined in `configs/taxonomy.yaml`.
+A spatial-cognition QA benchmark for vision-language models. Each item is a multi-image frame sequence from SPOC / AI2-THOR exports plus a question. Every construct is multiple choice. Class 4 (`route_knowledge`, `survey_based_route_planning`) offers whole landmark-and-turn routes (`route_mc.py`); its free navigation-action sequence survives only as a model-only diagnostic subset (`diagnostic_subset: free_action`). There are 8 constructs in 4 classes, defined in `configs/taxonomy.yaml`.
 
 ## Invariants (never break)
 
@@ -68,9 +68,9 @@ collection folder → episode GT → items → FREEZE → evaluation
   - `planner.py` decides items. It has one `plan_<construct>` per construct, each applying gates and returning `PlannedFact`s (query and encode steps, locked answer, `answer_source`, frames, option pool, `distractor_seeds`). If nothing survives, it returns an `unsupported` fact with per-gate reject counts. `allocentric_encoding` always returns unsupported, because there is no trusted object facing.
   - `constructs.py` holds the label vocabulary, templates, bearing→label rules and visibility gates. `geometry.py` turns a pose and a world point into an ego label using yaw only, and refuses a label when the object straddles a sector edge. `disambiguation.py` handles naming, proximity and marks.
   - `templates.py` turns facts into items. It writes one item per style (concise and verbose) linked by `paired_item_id`, and shuffles options with a seed.
-  - `nav_graph.py` / `route_replay.py` are the class-4 graph and the continuous-walk simulator. The same simulator scores model action sequences in `evaluation/score.py`.
+  - `nav_graph.py` / `route_replay.py` are the class-4 graph and the continuous-walk simulator; `route_mc.py` turns a replayed walk into labelled turns, landmark names and the 2×2 route options. The simulator also scores the free-action diagnostic subset in `evaluation/score.py`.
   - `schema.py` defines `CandidateItem`. Verification fields (`blind_llm_correct`, `caption_llm_correct`, `vision_necessary`) start null.
-- **`evaluation/`** contains `protocol.py` (the shared system prompt and item wrapping) and `score.py`. MCQ items are scored by exact option match.
+- **`evaluation/`** contains `protocol.py` (the shared system prompt and item wrapping) and `score.py`. Every item is scored by exact option match; `route_mc_metrics` adds the class-4 breakdowns and `free_action_descriptives` summarises the diagnostic subset.
 - **`storage/episode_store.py`** is the SQLite `EpisodeStore`.
 
 `docs/architecture.md` walks through each construct's planner gates step by step. Read it before changing a planner. `docs/parameters_report.md` justifies each config value, and `Evaluation_process_manual.md` defines what a well-built item is.

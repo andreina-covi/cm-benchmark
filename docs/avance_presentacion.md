@@ -13,8 +13,10 @@ La pregunta de investigación no es “¿el modelo describe la escena?”, sino
 **¿construye y usa un mapa interno del espacio a lo largo del tiempo?**
 
 Los ítems son **secuencias de frames** (AI2-THOR / SPOC) + pregunta.
-Clases 1–3: opción múltiple. Clase 4: secuencia libre de acciones
-(`move_ahead`, `rotate_left`, `rotate_right`, `move_back`).
+Todas las clases son de opción múltiple. En la clase 4 cada opción es una ruta
+completa de giros y landmarks; la secuencia libre de acciones (`move_ahead`,
+`rotate_left`, `rotate_right`, `move_back`) queda solo como subconjunto de
+diagnóstico para modelos.
 
 **Estado del loop (hoy):** carpeta exportada SPOC → ground truth de episodio →
 ítems generados por código. Aún no: validador GT, *vision-necessity*, FREEZE
@@ -39,7 +41,7 @@ constructo × marco.
 | 1 | Codificación espacial | `egocentric_encoding` · `allocentric_encoding` | Todo está en la vista actual |
 | 2 | Memoria espacial | `spatial_working_memory` · `invisible_displacement` | La info ya no está en la vista final |
 | 3 | Operación sobre el mapa | `spatial_updating` · `perspective_taking` | Hay que transformar el punto de vista |
-| 4 | Navegación | `route_knowledge` · `survey_based_route_planning` | Camino de acciones, no MCQ |
+| 4 | Navegación | `route_knowledge` · `survey_based_route_planning` | Opción múltiple sobre rutas (giros + landmarks) |
 
 Definiciones canónicas: `configs/taxonomy.yaml`.
 

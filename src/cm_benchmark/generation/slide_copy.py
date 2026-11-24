@@ -115,8 +115,14 @@ def class4_slide_panel(
     *,
     answer: Optional[str] = None,
 ) -> dict[str, str]:
-    """Human-readable class-4 summary: source, goal, action walk, scoring."""
+    """Human-readable class-4 summary: task, route, stored walk, scoring.
+
+    Multiple-choice items (``answer_format: route_mc``) describe the
+    landmark-and-turn route; free-action diagnostic items the replay scoring.
+    """
     ctx = context or {}
+    if ctx.get('answer_format') == 'route_mc':
+        return _class4_mc_panel(construct, ctx, answer)
     src = ctx.get('source') or '?'
     goal = ctx.get('goal') or '?'
     nodes = ctx.get('path_nodes') or []
@@ -152,6 +158,39 @@ def class4_slide_panel(
             'headline SDTW = success × nDTW. '
             'Edge-membership validity is diagnostic only.'
         ),
+    }
+
+
+_TURN_WORDS = {
+    'left': 'left',
+    'right': 'right',
+    'sharp_left': 'sharp left',
+    'sharp_right': 'sharp right',
+    'around': 'around',
+}
+
+
+def _class4_mc_panel(construct: str, ctx: dict, answer: Optional[str]) -> dict[str, str]:
+    """Panel for a multiple-choice class-4 item."""
+    steps = ctx.get('route_steps') or {}
+    turns = [_TURN_WORDS.get(t, str(t)) for t in steps.get('turns') or []]
+    named = ctx.get('named_turns')
+    total = ctx.get('total_turns')
+    i, j = ctx.get('source_frame', '?'), ctx.get('goal_frame', '?')
+    if construct == 'survey_based_route_planning':
+        task = f'Plan (never walked): {ctx.get("source") or "?"}  →  {ctx.get("goal") or "?"}'
+    else:
+        task = f'Retrace (walked): frame {i}  →  frame {j}'
+    return {
+        'task': task,
+        'graph': (
+            f'Turns: {", ".join(turns) or "none"} · '
+            f'{named if named is not None else "?"} of {total if total is not None else "?"} '
+            'named by a static landmark within 1.0 m'
+        ),
+        'path': f'Answer: {answer or "?"}',
+        'actions': 'Options: 2×2 of a mirrored turn and a landmark swap (or a second mirrored turn).',
+        'scoring': 'Score: exact option match (multiple choice).',
     }
 
 

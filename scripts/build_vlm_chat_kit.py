@@ -33,15 +33,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from cm_benchmark.evaluation.protocol import ACTION_VOCAB
-
 REPO = Path(__file__).resolve().parent
-NAV_CONSTRUCTS = frozenset({
-    'route_knowledge',
-    'survey_based_route_planning',
-})
 DEFAULT_ITEMS_PER_CONSTRUCT = 2
-_ACTION_LIST = ', '.join(ACTION_VOCAB)
 
 # Pilot chat instruction: same task framing as SYSTEM_INSTRUCTION, but MC
 # matches human review (Can't tell + optional comment). Final cm-evaluation
@@ -57,17 +50,9 @@ CHAT_SYSTEM_INSTRUCTION = (
     'Directions ("left", "right", "ahead", "behind") are relative to where you are '
     'facing in the last image, unless the question asks you to imagine another position. '
     'An object "marked with the number <n>" is the object under that numbered badge in the images. '
-    'Your actions: move_ahead (0.2 m forward), move_back (0.2 m backward), '
-    'rotate_left (turn 45° left), rotate_right (turn 45° right). '
-    'Multiple-choice questions: on the first line, answer with only the option letter '
-    '(A, B, C or D), or write Can\'t tell if you cannot decide. '
-    'Route and survey questions: start at your position and facing in the named '
-    'start frame (the source landmark is in view) and list actions that end at '
-    'your position in the named end frame (the goal landmark is in view). On the '
-    'first line, answer with the actions in order, comma-separated, using only the '
-    'action names above, or write Can\'t tell. Optionally, add one short comment '
-    'on a second line (you may describe the route using landmarks). The comment '
-    'is not scored.'
+    'On the first line, answer with only the option letter (A, B, C or D), or '
+    'write Can\'t tell if you cannot decide. Optionally, add one short comment on a '
+    'second line. The comment is not scored.'
 )
 
 # Paste this as the chat/tool message when attaching prompt.txt (+ frames for vision).
@@ -97,26 +82,9 @@ def _safe(item_id: str) -> str:
     return item_id.replace('/', '_').replace('\\', '_')
 
 
-def is_nav(item: dict) -> bool:
-    return item.get('construct') in NAV_CONSTRUCTS
-
-
 def gold_for_answers(item: dict) -> str:
-    """Letter for MC; reference action string for class-4."""
-    if is_nav(item):
-        answer = item.get('answer')
-        if answer is None:
-            ctx = item.get('context') or {}
-            seq = ctx.get('action_sequence') or []
-            return ', '.join(str(a) for a in seq)
-        return str(answer)
+    """The option letter (the kit holds the review's multiple-choice items)."""
     return '' if item.get('answer') is None else str(item.get('answer'))
-
-
-def _frame_labels(item: dict) -> list[str]:
-    """``frame i of n`` lines aligned with ``image_paths`` (questions cite these numbers)."""
-    n = len(item.get('image_paths') or [])
-    return [f'frame {i + 1} of {n}' for i in range(n)]
 
 
 def build_prompt(item: dict, *, blind: bool) -> str:
@@ -127,22 +95,14 @@ def build_prompt(item: dict, *, blind: bool) -> str:
             'No images are available for this item. Answer from the question text alone.'
         )
         parts.append('')
-    elif is_nav(item):
-        labels = _frame_labels(item)
-        if labels:
-            parts.append('Attached frames (chronological):')
-            for i, label in enumerate(labels, start=1):
-                parts.append(f'  frame_{i:02d}: {label}')
-            parts.append('')
     question = (item.get('question') or '').strip()
     parts.append(question)
-    if not is_nav(item):
-        options = item.get('options') or {}
-        if isinstance(options, dict) and options:
-            parts.append('')
-            for letter in sorted(options):
-                parts.append(f'{letter}. {options[letter]}')
-            parts.append("Can't tell")
+    options = item.get('options') or {}
+    if isinstance(options, dict) and options:
+        parts.append('')
+        for letter in sorted(options):
+            parts.append(f'{letter}. {options[letter]}')
+        parts.append("Can't tell")
     parts.append('')
     return '\n'.join(parts)
 
@@ -186,7 +146,7 @@ def study_items_from_sample(
 ) -> list[dict]:
     """Same study sample as the human package, then keep N per construct."""
     review = _load_review()
-    cfg_cap, _move = review._default_review_settings()
+    cfg_cap = review._default_review_settings()
     c4_cap = cfg_cap if class4_per_reviewer is None else int(class4_per_reviewer)
     class4_total = review.class4_study_total(
         n_reviewers=n_reviewers,
@@ -328,7 +288,7 @@ def build_kit(
         )
         construct = item.get('construct') or ''
         by_construct[construct].append(rel_vision)
-        kind = 'nav' if is_nav(item) else 'mc'
+        kind = 'mc'
         for condition, folder in (('vision', rel_vision), ('blind', rel_blind)):
             results_rows.append(
                 {
@@ -426,8 +386,7 @@ def build_kit(
                 'Do not attach answers.csv, private/, or any other kit file.',
                 'Turn off web search / browsing if the tool offers it.',
                 '',
-                'MC answers: A–D or Can\'t tell; optional comment on the next line.',
-                'Nav answers: action list or Can\'t tell; optional comment.',
+                'Answers: A–D or Can\'t tell; optional comment on the next line.',
                 '',
                 'Fill results_template.csv (or copy to results.csv):',
                 '  set model, raw_reply, and optional comment for each row.',
@@ -452,7 +411,7 @@ def build_kit(
 
 def main(argv: list[str] | None = None) -> int:
     review = _load_review()
-    cfg_cap, _move = review._default_review_settings()
+    cfg_cap = review._default_review_settings()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--items', type=Path, required=True, help='Items folder or one items JSON')
     parser.add_argument('--output', type=Path, required=True, help='Kit root')

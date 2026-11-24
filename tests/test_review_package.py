@@ -30,7 +30,6 @@ def _load(name: str):
 
 
 def _item(construct: str, scene: str, n: int) -> dict:
-    nav = construct in NAV
     return {
         'item_id': f'{scene}_{construct}_{n}',
         'construct': construct,
@@ -38,9 +37,20 @@ def _item(construct: str, scene: str, n: int) -> dict:
         'status': 'ok',
         'question_style': 'concise',
         'question': f'Where is {construct} {n} in {scene}?',
-        'options': {} if nav else {'A': 'left', 'B': 'right', 'C': 'ahead', 'D': 'behind'},
-        'answer': 'move_ahead' if nav else 'B',
+        'options': {'A': 'left', 'B': 'right', 'C': 'ahead', 'D': 'behind'},
+        'answer': 'B',
         'image_paths': [],
+    }
+
+
+def _free_action(construct: str, scene: str, n: int) -> dict:
+    """Class-4 free-action diagnostic item: no options, never reviewed."""
+    return {
+        **_item(construct, scene, n),
+        'item_id': f'{scene}_{construct}_free_{n}',
+        'options': {},
+        'answer': 'move_ahead',
+        'context': {'diagnostic_subset': 'free_action', 'answer_format': 'action_sequence'},
     }
 
 
@@ -50,6 +60,8 @@ def _pool(per_scene: int = 10, scenes: tuple[str, ...] = ('s0', 's1', 's2')) -> 
         for scene in scenes:
             for n in range(per_scene):
                 items.append(_item(construct, scene, n))
+                if construct in NAV:
+                    items.append(_free_action(construct, scene, n))
     return items
 
 
@@ -129,15 +141,14 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert len(reviewers) == 2
         assert len(set(reviewers)) == 2
         meta = manifest['items'][item_id]
-        if meta['kind'] == 'nav':
-            assert meta['gold'] == 'move_ahead'
-            assert (out / 'private' / 'items' / f'{item_id}.json').is_file()
-        else:
-            assert meta['gold'] == 'B'
+        assert meta['kind'] == 'mc' and meta['gold'] == 'B'
+    # Free-action diagnostic items are never sampled; nothing private is written.
+    assert not any('_free_' in item_id for item_id in manifest['items'])
+    assert not (out / 'private').exists()
 
     per_reviewer_class4 = Counter()
     for item_id, reviewers in manifest['reviewers_for_item'].items():
-        if manifest['items'][item_id]['kind'] != 'nav':
+        if manifest['items'][item_id]['construct'] not in NAV:
             continue
         if manifest['items'][item_id]['role'] != 'review':
             continue
@@ -160,12 +171,12 @@ def test_package_assigns_pairs_and_shared_checks(tmp_path: Path):
         assert 'reveal-question' not in html
         assert 'Show the question' not in html
         assert "Can't tell" in html
-        assert 'worked out from these frames' in html
-        assert 'route-builder' in html
-        assert 'Forward (×N)' in html
-        assert 'Turn left 90°' in html
-        assert 'answerable' in html
-        assert 'id="route"' not in html
+        assert 'Route questions ask which route' in html
+        assert 'route-builder' not in html
+        assert 'Forward (×N)' not in html
+        assert 'answerable' not in html
+        assert 'MOVE_M' not in html
+        assert all(row['options'] for row in payload)
         assert 'construct-tag' in html
         assert 'CONSTRUCT_INITIALS' in html
         assert 'Download CSV' in html
@@ -419,7 +430,7 @@ def test_class4_per_reviewer_cli_override(tmp_path: Path):
     for item_id, reviewers in manifest['reviewers_for_item'].items():
         if manifest['items'][item_id]['role'] != 'review':
             continue
-        if manifest['items'][item_id]['kind'] != 'nav':
+        if manifest['items'][item_id]['construct'] not in NAV:
             continue
         for name in reviewers:
             per_reviewer[name] += 1

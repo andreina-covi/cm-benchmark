@@ -216,7 +216,14 @@ A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `-
   VSI’s small-room margin is unused: collector regions have no area, so
   VSI always uses 0.30 m.
 
-Class 4 is not MCQ. The action vocabulary is stated once in
+Class 4 is multiple choice over whole landmark-and-turn routes (see
+`docs/architecture.md`): route knowledge samples stretches of the walk with
+2–4 labelled turns, survey keeps its never-walked pairs, and the four options
+are a 2×2 of a mirrored turn and a landmark swap. The rest of this section is
+about the replay that verifies every class-4 reference and scores the
+free-action diagnostic subset (`diagnostic_subset: free_action`, the landmark
+pairs answered as an action sequence, reported descriptively). Its action
+vocabulary is stated once in
 `cm_benchmark.evaluation.protocol.SYSTEM_INSTRUCTION`. Scoring replays
 continuous xz + heading (`x += m·sin(h)`, `z += m·cos(h)` from
 `episode_meta.motion`); a move whose landing point is farther than a
@@ -233,7 +240,7 @@ Validity: route stays on `traversed_edges`; survey stays on `viewed_edges`
 and uses at least one unwalked edge. SPL is unchanged. Stored `answer` is a
 reference sequence for analysis, not exclusive gold.
 
-Pair selection (both class-4 constructs): geodesic in 1–30 m **and** at least
+Pair selection (survey, and the route free-action subset): geodesic in 1–30 m **and** at least
 the scene’s own typical landmark-pair length; a detour ratio of at least this
 scene’s typical geo/eucl (capped at 1.1 for route, 1.05 for survey); emit the
 hardest surviving pairs. Route also requires real turns. Constants: `planner.py`.
@@ -248,8 +255,10 @@ at that budget, and the planner skips spans longer than the largest budget.
 Otherwise required frames are kept (ID and PT: every frame) and the rest fill
 the gaps. Each list becomes its own item with
 `frame_budgets` and a shared `frame_group_id`; ids carry `f<budget>` when a
-fact has more than one list. Class-4 frames per budget: lock source/goal sightings and the FOV frames just before/after
-every rotation between them; survey also locks frames covering the unwalked
+fact has more than one list. Class-4 frames per budget: route stretches lock
+the FOV frames just before and after each labelled turn; survey and the
+free-action pairs lock source/goal sightings and the frames around every
+rotation between them, and survey also locks frames covering the unwalked
 planned-path edges. Fill remaining budget evenly on straight segments.
 Consecutive shown frames must be at most `frames.max_gap_steps` pool frames
 apart (default 5; repeated-pose frames do not count); a budget that cannot meet it is not offered, and the item is dropped
@@ -271,17 +280,13 @@ and a clear destination sighting through the query.
 ## Human review package
 
 Build zip-ready reviewer folders from generated items. Reviewers see exactly
-the frames in each item’s `image_paths`. For route and survey the question
-asks them to start at their pose in frame i (the source in view) and end at
-their pose in frame j (the goal in view). They answer whether that route can
-be worked out from those frames (yes/no), then build an action sequence with
-Forward/Back (×N at `review.move_m`),
-45° / 90° turns, Undo, and Clear. The CSV `answer` column stores the expanded
-action list; `answerable` stores yes/no. Class-4 study load is capped at
-`review.class4_per_reviewer` in `configs/generation.yaml` (default 5), and
-can be overridden per run with `--class4-per-reviewer N`. MCQ items use the
-options (or Can't tell). Multi-frame items hide the question until **Show the
-question**.
+the frames in each item’s `image_paths`, with the question beside them, and
+pick an option or Can't tell; the CSV `answer` column stores the letter.
+Class 4 is reviewed like every other construct: each option is a route. The
+class-4 free-action diagnostic subset has no options and is never sampled.
+Class-4 study load is capped at `review.class4_per_reviewer` in
+`configs/generation.yaml` (default 5; those items carry up to 32 frames), and
+can be overridden per run with `--class4-per-reviewer N`.
 
 ```bash
 python scripts/build_review_package.py \
@@ -337,7 +342,8 @@ class-4 caps and sampling stay aligned.
 Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
 `blind/` (prompt only). `prompt.txt` holds the task instruction, question,
 and answer format (MC may use A–D or **Can't tell**, plus an optional
-comment). Attached frames are listed as `frame i of n`.
+comment). Every kit item is multiple choice, class 4 included; frames are
+named `frame_01` … in time order, as the upload message says.
 Gold is only in `answers.csv` / `private/`. Final cm-evaluation still uses
 forced A–D via `protocol.SYSTEM_INSTRUCTION`.
 

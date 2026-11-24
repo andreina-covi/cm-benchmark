@@ -5,8 +5,10 @@ a model builds and uses an internal cognitive map — not whether it can answer 
 language priors.
 
 Items are **multi-image frame sequences** from 3D environments plus a question.
-Classes 1–3 are multiple-choice. Class 4 (`route_knowledge`,
-`survey_based_route_planning`) is a free navigation-action sequence. Every answer
+Every construct is multiple choice. Class 4 (`route_knowledge`,
+`survey_based_route_planning`) offers whole landmark-and-turn routes as options;
+a small free-action subset (an action sequence scored by replay) is kept as a
+model-only diagnostic. Every answer
 is composed from simulator metadata, never invented by an LLM.
 
 ---
@@ -164,8 +166,8 @@ python -m cm_benchmark.generation.generate_items \
 items/house_007514/items_house_007514.json
 ```
 
-Quality knobs (visibility floors, direction wedges, delays, class-4 pair
-gates, the class-4 frame budget, …) are read from
+Quality knobs (visibility floors, direction wedges, delays, class-4 route
+rules, the frame budgets, …) are read from
 [`configs/generation.yaml`](configs/generation.yaml).
 Pass `--config path/to/generation.yaml` to use another file (an ablation is
 a copy of that file with different values). These CLI flags override the
@@ -180,9 +182,11 @@ it) are the image limits of the VLMs to evaluate. Every multi-frame item gets
 one frame list per budget it fits, after frames that repeat the previous pose
 are dropped: a span that fits is shown whole. Spatial working memory and
 spatial updating are never sampled. A longer class-4 span is sampled keeping
-the required frames (source/goal sightings, frames around each turn, survey
-path covers) with at most `frames.max_gap_steps` pool frames between shown
-frames. A budget that cannot meet
+the required frames (the frames before and after each turn; for survey and the
+free-action pairs also source/goal sightings and survey path covers) with at
+most `frames.max_gap_steps` pool frames between shown frames. A route answer
+depends on its turns and landmarks, not on continuous motion, so not every
+frame is needed. A budget that cannot meet
 that is not offered, and an item that fits no budget is dropped. Each item
 records `frame_budgets`; items with the same `frame_group_id` ask the same
 question with different frame lists. Evaluate a model on the items whose

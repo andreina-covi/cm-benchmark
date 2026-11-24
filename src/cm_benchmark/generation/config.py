@@ -297,7 +297,6 @@ class ReviewConfig:
     """Human review package sampling and route-builder display."""
 
     class4_per_reviewer: int
-    move_m: float
 
 
 @dataclass(frozen=True)
@@ -582,7 +581,6 @@ def generation_config_from_mapping(
         ),
         review=ReviewConfig(
             class4_per_reviewer=int(rev.get('class4_per_reviewer', 5)),
-            move_m=float(rev.get('move_m', egt.get('mov_constant_m', 0.2))),
         ),
         episode_gt=EpisodeGtConfig(
             frame_w=int(egt['frame_w']),

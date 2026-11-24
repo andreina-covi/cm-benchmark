@@ -797,9 +797,9 @@ def add_example_slide(
     add_textbox(slide, rx, Inches(0.95), rw, q_h, text=q, size=11, color=DARK)
 
     if construct in _CLASS4_CONSTRUCTS:
-        panel = class4_slide_panel(
-            construct, _item_context(item), answer=item.get("answer")
-        )
+        # Multiple-choice items show the answer option's text, not its letter.
+        answer = (item.get("options") or {}).get(item.get("answer"), item.get("answer"))
+        panel = class4_slide_panel(construct, _item_context(item), answer=answer)
         add_textbox(
             slide,
             rx,

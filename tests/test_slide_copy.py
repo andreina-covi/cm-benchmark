@@ -177,3 +177,23 @@ def test_overlay_skips_bbox_from_a_different_still(tmp_path: Path):
     painted = Image.open(paths[0])
     assert painted.size == (240, 160)
     assert painted.getpixel((50, 55)) == (90, 90, 90)
+
+
+def test_class4_mc_panel_describes_route_and_option_scoring():
+    from cm_benchmark.generation.slide_copy import class4_slide_panel
+
+    ctx = {
+        'answer_format': 'route_mc',
+        'source_frame': 1,
+        'goal_frame': 24,
+        'route_steps': {'turns': ['right', 'sharp_left']},
+        'named_turns': 1,
+        'total_turns': 2,
+    }
+    answer = 'Walk to the Sofa, turn right, walk ahead, turn sharply left, walk to the end point'
+    panel = class4_slide_panel('route_knowledge', ctx, answer=answer)
+    assert panel['task'] == 'Retrace (walked): frame 1  →  frame 24'
+    assert 'right, sharp left' in panel['graph'] and '1 of 2 named' in panel['graph']
+    assert panel['path'] == f'Answer: {answer}'
+    assert 'exact option match' in panel['scoring']
+    assert 'SPL' not in panel['scoring']

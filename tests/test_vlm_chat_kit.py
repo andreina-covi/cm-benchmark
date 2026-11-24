@@ -30,6 +30,7 @@ def _load(name: str):
 
 
 def _item(construct: str, scene: str, n: int) -> dict:
+    # Class 4 is multiple choice too; it keeps the replayed reference in context.
     nav = construct in NAV
     return {
         'item_id': f'{scene}_{construct}_{n}',
@@ -38,8 +39,8 @@ def _item(construct: str, scene: str, n: int) -> dict:
         'status': 'ok',
         'question_style': 'concise',
         'question': f'Where is the Cup relative to you now? ({construct} {n})',
-        'options': {} if nav else {'A': 'left', 'B': 'right', 'C': 'ahead', 'D': 'behind'},
-        'answer': 'move_ahead, rotate_left' if nav else 'B',
+        'options': {'A': 'left', 'B': 'right', 'C': 'ahead', 'D': 'behind'},
+        'answer': 'B',
         'image_paths': [],
         'context': {
             'action_sequence': ['move_ahead', 'rotate_left'] if nav else None,
@@ -124,8 +125,8 @@ def test_kit_matches_review_sample_and_hides_gold(tmp_path: Path):
         assert upload.strip() == build_kit.CHAT_UPLOAD_MESSAGE.strip()
         item = next(row for row in items if row['item_id'] == item_id)
         gold = str(item['answer'])
-        if item['construct'] not in NAV:
-            assert f'Answer: {gold}' not in vision_prompt
+        assert f'Answer: {gold}' not in vision_prompt
+        assert 'A. left' in vision_prompt
 
     answers = list(csv.DictReader((kit_out / 'answers.csv').open()))
     assert len(answers) == 2
