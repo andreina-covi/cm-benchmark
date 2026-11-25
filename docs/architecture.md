@@ -199,8 +199,12 @@ Relation mode (most of the budget):
 
 Count mode (reserved `max(1, max_items // 3)` slots): for each step,
 `_count_category_seen` counts distinct, distinguishable instances per
-category; categories with ≥ 2 instances become "How many X have you seen?"
-items with off-by-one distractors, encoded at `_first_step_with_category`.
+category; categories with ≥ 2 instances become "how many different Xs have you
+seen (count each one once)?" items with off-by-one distractors, encoded at
+`_first_step_with_category`. `_count_category_on_screen` then counts every
+same-name instance with any pixels on the shown frames (`present_objects`, before
+any visibility filter); the item is dropped unless both counts agree, so the
+answer never depends on a threshold the viewer cannot see.
 
 ### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Where is the X relative to you in the last frame (frame n)?"
 
@@ -227,6 +231,8 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 9. `swap_partner_ok`: `_placement_swap_decision`. When another object already occupies the destination point, the item is a swap if that partner is pickupable and has a clear sighting. If the partner fails, a receptacle or floor placement stays a plain move and any other placement is dropped;
 10. `label_changes_with_move` (`invisible_displacement.require_label_change`): `_id_label_changes_with_move` labels the object's box at its old position and at the destination from the query pose, each clear of `directions.label_margin_deg`, and requires the two labels to differ. Otherwise answering with where the object was (the A-not-B error) would also be right, and 0.5 m seen from 4 m away (about 7°) rarely changes the label. The old location is then always an option, tagged `original_location` in `distractor_rationale`; `evaluation/score.py` `distractor_choice_rates` reports how often wrong answers pick it (the perseveration rate) against chance. The event path applies the same check inside `_try_ego_direction_fact`;
 11. `diagnostic_options`: `_try_ego_direction_fact` needs the answer plus at least `invisible_displacement.min_diagnostic_labels` distinct bearings among the object's other candidates (`_specs_from_placement`).
+12. inside `_try_ego_direction_fact`: the object's new centre must be within `directions.near_cardinal_max_deg` of an axis at the query pose (`near_cardinal`, as in perspective taking and spatial updating), and, unless the item is a swap, the landmark named in "onto / near the Y" (`floor_anchor_id`, else the receptacle) must get the same clear label as the answer over its whole floor box (`_landmark_ego_label`, `invisible_displacement.anchor_same_sector`), so the answer follows from Y.
+13. `rotation_since_last_seen` (`_total_turn_deg`): the agent's total turning, left and right both counted, from the last clear sighting of the cue the viewer must track (the named landmark, or the swap partner; the object's encode when neither is seen) to the query. It is stored, not capped: `evaluation/score.py` `rotation_metrics` and `analyze_review.py` report accuracy in <180 / 180–360 / >360° groups. Spatial updating stores the same field from the encode step.
 
 **Event path (older collections).**
 
@@ -251,7 +257,7 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 3. `_net_pose_changed_between` — position > 0.1 m or heading > 5°;
 4. `_object_static_between` — the object did not move;
 5. the object must not be visible at the query step: no mask pixel in any exported detection (`present_objects`), not only below the question-visibility filter;
-6. `ego_label_from_world_pose` at the query pose with the 45° wedge (full circle);
+6. `ego_label_from_world_pose` at the query pose with the 45° wedge (full circle); the object's centre bearing must be within `directions.near_cardinal_max_deg` of an axis (`near_cardinal`, same rule as perspective taking), stored as `axis_offset_deg`;
 7. the pre-move bearing (`_ego_label_at` at encode, 20° wedge) becomes the "non-updating" distractor;
 8. `_referring_disambiguator` at the encoding step; repeated (object, encode, answer) triples are dropped;
 9. frames = `_images_between(encode, query)` — every FOV frame in that window, in time order. A turn in place is kept, because the question counts that step. As for SWM: `_fits_whole`, never sampled, repeated poses dropped.
@@ -261,10 +267,10 @@ ordinary steps here. The gates, in the order `id_placement_funnel` counts them:
 1. `select_landmark_candidates` (category-unique, `top_n_per_region=4`, `max_total=18`) ← `_distinguishable_landmark_candidates` (salience ranking); A must also be a floor-standing landmark (`_salient_floor_landmark_ids`, SPOC `salient_landmarks`);
 2. frames: with `perspective_taking.multi_frame` false, `_co_visible_distinguishable_step` keeps a triple only when A, B, and C are distinguishable with mask pixels in one frame. With it true, `_pt_best_window` finds a window of at most `perspective_taking.max_window_frames` consecutive FOV frames holding one such sighting of each, preferring one with a frame where two of A/B/C are seen together (`abc_pair_together`), then the fewest frames, then the latest; a triple with no such window is dropped. Every FOV frame of the window is shown (it must fit the largest `frames.budgets`, and `_pt_frames_continuous` requires consecutive frames to differ by at most `continuity_max_turn_deg` / `continuity_max_move_m`, i.e. one SPOC step), and `abc_co_visible` / `abc_window_steps` record which kind the item is. Disparity uses the last frame's heading;
 3. `_referring_display_name` for A, B, C on that frame;
-4. `imagined_perspective_label` — signed A→B vs A→C angle → the four 90° sectors of spatial updating (ahead within ±`directions.ahead_half_width_full_deg`, left / right to ±`pt_back_deg`, behind beyond), refused within `pt_boundary_margin_deg` of any edge;
+4. `imagined_perspective_label` — signed A→B vs A→C angle → the four 90° sectors of spatial updating (ahead within ±`directions.ahead_half_width_full_deg`, left / right to ±`pt_back_deg`, behind beyond), refused within `pt_boundary_margin_deg` of any edge; the triple is dropped when A and C are closer than `perspective_taking.min_dist_a_c_m` (centres, XZ) or when the centre angle is more than `directions.near_cardinal_max_deg` from ahead / left / right / behind (`near_cardinal`), so a C about 30° off an axis, read as "ahead and to the left", is never asked;
 4a. `_pt_objects_entangled` — drop the triple if two of A/B/C are parts of one combined asset (4-part id, same first three parts, e.g. `television|7|1|0` TV stand and `television|7|1|1` television) or one rests on another (`object_catalog[..].receptacle_object_ids`);
 4a'. `_pt_pairs_well_spaced` — every pair of A, B, C must be `perspective_taking.min_pair_gap_m`..`max_pair_gap_m` apart (AABB gap, XZ; centre distance when a box is missing), so "standing at A, facing B" never uses two nearly touching objects;
-4b. `_pt_label_stable` — drop it if the label flips at any combination of A's stand points (`_a_standpoints`: A's centre plus the `footprint_grid`² grid of its box grown by `a_standoff_m`, kept only on the half facing B — "next to A, facing B"), B's box (a long B swings the heading) and C's box; points inside the boundary margin are ignored;
+4b. `_pt_label_stable` — drop it if the label flips at any combination of A's stand points (`_a_standpoints`: A's centre plus the `footprint_grid`² grid of its box grown by `a_standoff_m`, kept only on the half facing B — "next to A, facing B"), B's box (a long B swings the heading) and C's box; a point inside the boundary margin also drops it when `perspective_taking.stand_point_margin_rejects` is true (ignored when false). `dist_a_c_m`, `a_footprint_m` and `axis_offset_deg` are stored per item;
 5. distractors: the camera-frame label of C, the mirrored left/right, and the answer under the reversed facing (B behind A). All four labels are offered (`PT_DIRECTION_OPTIONS`), so a distractor that equals the answer is replaced by the next unused label.
 5a. image shortcut: `_pt_image_heuristic` answers "right" if C's mark is right of A's in the shown frame, else "left"; stored as `image_heuristic_label` / `image_heuristic_agrees` (with `dist_a_c_m`) so accuracy can be split by whether the shortcut works;
 6. angular disparity = angle between the imagined heading (A→B) and the camera heading in the shown frame (`perspective_shift_magnitude`, 0–180°); `_pt_disparity_bin` maps it to a bin over `perspective_taking.disparity_bin_edges_deg` (45° bins), stored as `disparity_bin` and as the item's `difficulty`. The pair gap is a well-definedness check, not a difficulty variable;

@@ -163,6 +163,34 @@ def direction_extent_crosses_sector(
     return False
 
 
+def ego_bearing_deg(agent_pos, agent_rot, world_pos) -> Optional[float]:
+    """Yaw-only bearing of ``world_pos`` from the agent (0 = ahead), or None."""
+    if agent_pos is None or agent_rot is None or world_pos is None:
+        return None
+    try:
+        local = world_to_local(agent_pos, _yaw_only_rotation(agent_rot), world_pos)
+    except Exception:
+        return None
+    local = np.asarray(local, dtype=float)
+    return bearing_deg_xz(float(local[0]), float(local[2]))
+
+
+def off_axis_deg(bearing_deg: float) -> float:
+    """Degrees from the nearest of ahead / left / right / behind (0..45)."""
+    a = abs(float(bearing_deg)) % 90.0
+    return min(a, 90.0 - a)
+
+
+def near_cardinal(bearing_deg: Optional[float]) -> bool:
+    """True when ``directions.near_cardinal_max_deg`` is off or the bearing is within it."""
+    limit = get_generation_config().directions.near_cardinal_max_deg
+    if limit is None:
+        return True
+    if bearing_deg is None:
+        return False
+    return off_axis_deg(bearing_deg) <= float(limit) + 1e-9
+
+
 def ego_label_from_world_pose(
     agent_pos,
     agent_rot,

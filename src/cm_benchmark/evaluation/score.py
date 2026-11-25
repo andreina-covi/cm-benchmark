@@ -295,6 +295,55 @@ def route_mc_metrics(items: list[dict[str, Any]], choices: dict[str, Optional[st
     return out
 
 
+ROTATION_CONSTRUCTS = ('invisible_displacement', 'spatial_updating')
+ROTATION_BIN_EDGES_DEG = (180.0, 360.0)
+
+
+def rotation_bin(deg: Optional[float], edges=ROTATION_BIN_EDGES_DEG) -> Optional[str]:
+    """Group label for ``rotation_since_last_seen``: ``<180``, ``180-360``, ``>360``."""
+    if deg is None:
+        return None
+    edges = [float(e) for e in edges]
+    if float(deg) < edges[0]:
+        return f'<{edges[0]:g}'
+    for lo, hi in zip(edges, edges[1:]):
+        if float(deg) <= hi:
+            return f'{lo:g}-{hi:g}'
+    return f'>{edges[-1]:g}'
+
+
+def rotation_metrics(
+    items: list[dict[str, Any]],
+    choices: dict[str, Optional[str]],
+    edges=ROTATION_BIN_EDGES_DEG,
+) -> dict:
+    """Accuracy by ``rotation_since_last_seen`` group, per construct.
+
+    ``rotation_since_last_seen`` is the agent's total turning (left and right both
+    add) between the last frame showing the cue the viewer must track and the
+    query: the object for spatial updating, the named destination landmark (or
+    swap partner) for invisible displacement. Accuracy that falls as rotation
+    grows is a finding about updating load, not an item defect. Items without the
+    field are left out.
+    """
+    out: dict[str, dict] = {}
+    for construct in ROTATION_CONSTRUCTS:
+        table: dict[str, list[int]] = {}
+        for it in items:
+            if it.get('construct') != construct or it.get('item_id') not in choices:
+                continue
+            group = rotation_bin(_item_extra(it).get('rotation_since_last_seen'), edges)
+            if group is None:
+                continue
+            cell = table.setdefault(group, [0, 0])
+            cell[0] += int(score_mcq(it, choices[it['item_id']])['correct'])
+            cell[1] += 1
+        if table:
+            order = [rotation_bin(e - 1.0, edges) for e in edges] + [rotation_bin(edges[-1] + 1.0, edges)]
+            out[construct] = {g: _acc_row(*table[g]) for g in order if g in table}
+    return out
+
+
 def free_action_descriptives(
     items: list[dict[str, Any]], scores: dict[str, dict[str, Any]]
 ) -> dict:

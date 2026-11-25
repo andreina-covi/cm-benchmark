@@ -39,6 +39,18 @@ def _disable_named_frame_fraction(request):
     if not request.node.get_closest_marker('label_margin'):
         # Fixtures put objects a few degrees from sector edges; test_label_margin keeps it on.
         cfg = replace(cfg, directions=replace(cfg.directions, label_margin_deg=0.0))
+    if not request.node.get_closest_marker('near_cardinal'):
+        # Fixtures place targets off the four axes; test_pt_separation keeps the rule on.
+        cfg = replace(cfg, directions=replace(cfg.directions, near_cardinal_max_deg=None))
+        cfg = replace(
+            cfg, perspective_taking=replace(cfg.perspective_taking, min_dist_a_c_m=None)
+        )
+    if not request.node.get_closest_marker('anchor_sector'):
+        # ID fixtures put the named landmark away from the object's new spot.
+        cfg = replace(
+            cfg,
+            invisible_displacement=replace(cfg.invisible_displacement, anchor_same_sector=False),
+        )
     if not request.node.get_closest_marker('label_change'):
         # ID fixtures put the old and new positions behind the query pose (one label).
         cfg = replace(

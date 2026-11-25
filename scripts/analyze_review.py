@@ -37,6 +37,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from cm_benchmark.evaluation.score import (
+    rotation_bin,
     score_route_knowledge,
     score_survey_based_route_planning,
 )
@@ -261,6 +262,7 @@ def collect_human_analysis(
         scored_rows: list[tuple[dict, dict]] = []
         n_correct = 0
         alpha_labels: dict[str, list[str]] = defaultdict(list)
+        by_rotation: dict[str, list[int]] = {}
         for row in answered:
             meta = items[row['item_id']]
             if is_nav:
@@ -280,6 +282,11 @@ def collect_human_analysis(
                 ok = _correct_mc(meta, row['answer'])
                 n_correct += int(ok)
                 alpha_labels[row['item_id']].append(row['answer'])
+                rot_group = rotation_bin(meta.get('rotation_since_last_seen'))
+                if rot_group is not None:
+                    cell = by_rotation.setdefault(rot_group, [0, 0])
+                    cell[0] += int(ok)
+                    cell[1] += 1
         n_scored = len(scored_rows) if is_nav else len(answered)
         alpha = krippendorff_alpha(list(alpha_labels.values()))
         flagged = sum(1 for row in group if row['flags'])
@@ -296,6 +303,8 @@ def collect_human_analysis(
             'mean_spl': None,
             'mean_ndtw': None,
             'mean_sdtw': None,
+            # Total turning since the tracked cue was last seen (ID / SU items).
+            'by_rotation': {g: {'n_correct': c, 'n': n} for g, (c, n) in by_rotation.items()},
         }
         if is_nav and scored_rows:
             entry['mean_spl'] = sum(
@@ -412,6 +421,18 @@ def format_human_analysis(data: dict) -> str:
             f'{entry["construct"]:<32} {int(entry.get("n_reviews") or 0):>8} '
             f'{accuracy:>16} {alpha_s:>8} {flag_s:>10} '
             f'{spl_s:>10} {ndtw_s:>10} {sdtw_s:>10}'
+        )
+
+    rot_rows = [e for e in data.get('constructs') or [] if e.get('by_rotation')]
+    if rot_rows:
+        lines.append('')
+        lines.append('accuracy by rotation_since_last_seen (total turning, degrees)')
+    for entry in rot_rows:
+        order = ['<180', '180-360', '>360']
+        cells = sorted(entry['by_rotation'].items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else 9)
+        lines.append(
+            f'  {entry["construct"]:<30} '
+            + '  '.join(f'{g}: {c["n_correct"]}/{c["n"]}' for g, c in cells)
         )
 
     if data.get('answerable'):

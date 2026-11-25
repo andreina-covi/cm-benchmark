@@ -4,4 +4,6 @@ markers = [
     "frame_fraction_floor: keep visibility.named_min_frame_fraction on (conftest turns it off)",
     "label_margin: keep directions.label_margin_deg on (conftest turns it off)",
     "label_change: keep invisible_displacement.require_label_change on (conftest turns it off)",
+    "anchor_sector: keep invisible_displacement.anchor_same_sector on (conftest turns it off)",
+    "near_cardinal: keep directions.near_cardinal_max_deg and perspective_taking.min_dist_a_c_m on (conftest turns them off)",
 ]

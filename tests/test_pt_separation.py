@@ -1,5 +1,8 @@
 """Perspective-taking: no combined-asset parts, no resting pairs, stable label."""
 
+import pytest
+
+from cm_benchmark.generation.geometry import near_cardinal, off_axis_deg
 from cm_benchmark.generation.planner import (
     _asset_group,
     _pt_label_stable,
@@ -117,9 +120,28 @@ def test_label_flips_when_b_is_long():
     label = imagined_perspective_label(_pos(0, 0), _pos(0, 3), _pos(-3.5, 2.0))
     assert label is not None
     assert not _pt_label_stable(episode, ['A', 'B', 'C'], _pos(0, 0), _pos(0, 3), _pos(-3.5, 2.0), label)
-    # A point-like B gives a stable answer for the same A and C.
+    # A point-like B and a C square to the left (90 deg) give a stable answer.
     episode['object_catalog']['B'] = _box(0, 3, 0.05, 0.05)
-    assert _pt_label_stable(episode, ['A', 'B', 'C'], _pos(0, 0), _pos(0, 3), _pos(-3.5, 2.0), label)
+    episode['object_catalog']['C'] = _box(-3.5, 0.0, 0.1, 0.1)
+    left = imagined_perspective_label(_pos(0, 0), _pos(0, 3), _pos(-3.5, 0.0))
+    assert _pt_label_stable(episode, ['A', 'B', 'C'], _pos(0, 0), _pos(0, 3), _pos(-3.5, 0.0), left)
+
+
+def test_stand_point_inside_margin_rejects():
+    # C 60 deg left at ~4 m: the centre is clear, but from the 0.5 m stand ring the
+    # angle reaches the 45 deg edge's margin, so the triple is rejected.
+    episode = {
+        'object_catalog': {
+            'A': _box(0, 0, 0.1, 0.1),
+            'B': _box(0, 3, 0.05, 0.05),
+            'C': _box(-3.5, 2.0, 0.1, 0.1),
+        }
+    }
+    from cm_benchmark.generation.constructs import imagined_perspective_label
+
+    label = imagined_perspective_label(_pos(0, 0), _pos(0, 3), _pos(-3.5, 2.0))
+    assert label is not None
+    assert not _pt_label_stable(episode, ['A', 'B', 'C'], _pos(0, 0), _pos(0, 3), _pos(-3.5, 2.0), label)
 
 
 def test_image_heuristic_reads_marks():
@@ -207,3 +229,17 @@ def test_frames_continuous_rejects_jumps():
     assert _pt_frames_continuous(ep([(0, 0, 0), (0, 0.2, 0), (0, 0.2, 45)]), [0, 1, 2])
     assert not _pt_frames_continuous(ep([(0, 0, 0), (0, 0, 90)]), [0, 1])
     assert not _pt_frames_continuous(ep([(0, 0, 0), (0, 1.0, 0)]), [0, 1])
+
+
+@pytest.mark.near_cardinal
+def test_near_cardinal_keeps_only_bearings_close_to_an_axis():
+    # directions.near_cardinal_max_deg is 20: 19 deg off "ahead" passes, 23 deg does not.
+    assert off_axis_deg(19.0) == 19.0 and off_axis_deg(-71.0) == 19.0
+    assert near_cardinal(19.0) and near_cardinal(181.0) and near_cardinal(-90.0)
+    assert not near_cardinal(23.0) and not near_cardinal(146.0)
+    assert not near_cardinal(None)
+
+
+def test_near_cardinal_off_when_null():
+    # conftest sets near_cardinal_max_deg to None: every bearing passes.
+    assert near_cardinal(35.0)

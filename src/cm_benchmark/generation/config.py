@@ -87,6 +87,7 @@ class DirectionsConfig:
     pt_boundary_margin_deg: float
     refuse_straddling_objects: bool
     label_margin_deg: float
+    near_cardinal_max_deg: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,7 @@ class InvisibleDisplacementConfig:
     floor_anchor_radius_m: float
     min_displacement_m: float
     min_landmark_gap_m: float
+    anchor_same_sector: bool
     min_diagnostic_labels: int
     max_delay: Optional[int]
     require_label_change: bool
@@ -192,6 +194,8 @@ class PerspectiveTakingConfig:
     disparity_bin_edges_deg: tuple[float, ...]
     max_control_share: float
     a_standoff_m: float
+    stand_point_margin_rejects: bool
+    min_dist_a_c_m: Optional[float]
     max_uses_as_a: int
     multi_frame: bool
     continuity_max_turn_deg: float
@@ -449,6 +453,11 @@ def generation_config_from_mapping(
             pt_boundary_margin_deg=float(raw['directions']['pt_boundary_margin_deg']),
             refuse_straddling_objects=bool(raw['directions']['refuse_straddling_objects']),
             label_margin_deg=float(raw['directions']['label_margin_deg']),
+            near_cardinal_max_deg=(
+                None
+                if raw['directions'].get('near_cardinal_max_deg') is None
+                else float(raw['directions']['near_cardinal_max_deg'])
+            ),
         ),
         options=OptionsConfig(
             n_options=int(raw['options']['n_options']),
@@ -491,6 +500,7 @@ def generation_config_from_mapping(
             floor_anchor_radius_m=float(raw['invisible_displacement']['floor_anchor_radius_m']),
             min_displacement_m=float(raw['invisible_displacement']['min_displacement_m']),
             min_landmark_gap_m=float(raw['invisible_displacement']['min_landmark_gap_m']),
+            anchor_same_sector=bool(raw['invisible_displacement'].get('anchor_same_sector', True)),
             min_diagnostic_labels=int(raw['invisible_displacement']['min_diagnostic_labels']),
             require_label_change=bool(raw['invisible_displacement']['require_label_change']),
             max_delay=(
@@ -522,6 +532,14 @@ def generation_config_from_mapping(
             ),
             max_control_share=float(raw['perspective_taking']['max_control_share']),
             a_standoff_m=float(raw['perspective_taking']['a_standoff_m']),
+            stand_point_margin_rejects=bool(
+                raw['perspective_taking']['stand_point_margin_rejects']
+            ),
+            min_dist_a_c_m=(
+                None
+                if raw['perspective_taking'].get('min_dist_a_c_m') is None
+                else float(raw['perspective_taking']['min_dist_a_c_m'])
+            ),
             max_uses_as_a=int(raw['perspective_taking']['max_uses_as_a']),
             multi_frame=bool(raw['perspective_taking']['multi_frame']),
             continuity_max_turn_deg=float(raw['perspective_taking']['continuity_max_turn_deg']),

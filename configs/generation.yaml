@@ -45,6 +45,15 @@ directions:
   # behind beyond it; a triple within this margin of any edge gives no label.
   pt_boundary_margin_deg: 10.0  # none found (c87ae77; not a published VSI/ViewSpatial constant)
   refuse_straddling_objects: true  # derived: drop when 2D bbox edges (visible) or AABB corners (hidden) span >1 sector; ang-width fallback
+  # Near-cardinal rule for the four 90-deg sectors (perspective taking, hidden-object
+  # spatial updating and invisible displacement): the centre bearing must lie within this many degrees of
+  # ahead / left / right / behind, so a target ~20-40 deg off an axis, which reviewers
+  # read as a combination ("ahead and to the left"), is never asked. null = off.
+  # Round-2 step-6 review 2026-11-25: 4 of 4 "ahead" PT items at 19-23 deg missed.
+  # User rule: +-20 once the stand-point fix removes the ambiguous items (it removed
+  # all 5 missed PT items); +-15 drops every "right" PT answer and 29% of SU.
+  # Round 2 (14 houses): PT 25 -> 25, SU 1081 -> 918.
+  near_cardinal_max_deg: 20.0
   label_margin_deg: 10.0  # calibrated: round-1 review, human acc 13% (<5°) / 45% (5-10°) / 54-62% (≥10°) by distance to the nearest sector edge; every extent bearing must be this far from an edge
 
 options:
@@ -108,6 +117,11 @@ invisible_displacement:
   # box, so "moved onto / near Y" is never Y the object was already on or beside.
   # Long Time No See names counter areas by nearby landmarks for the same reason.
   min_landmark_gap_m: 0.5
+  # The landmark named in "moved onto / near the Y" must get the same clear ego
+  # label (whole floor box, label margin) as the object at the query, so the answer
+  # follows from Y. A floor spot "near" Y can be 1.2 m away and in another sector
+  # (step-6 review 2026-11-25, item 31: lamp right, plant behind). Swaps exempt.
+  anchor_same_sector: true
   min_diagnostic_labels: 2  # derived: invariant 7 (at least one diagnostic distractor)
   # The answer must depend on the move: at the query step the object's old box and
   # its new box each get an ego label clear of directions.label_margin_deg, and the
@@ -154,6 +168,16 @@ perspective_taking:
   # wide on the half of A facing B (user decision 2026-11-20: one-sided; the full
   # ring removed every "behind" answer in Round 2).
   a_standoff_m: 0.5  # none found; reviewer feedback 2026-11-20
+  # true: a stand point (A/B/C combination) whose angle falls inside
+  # directions.pt_boundary_margin_deg of a sector edge rejects the triple, like a
+  # label flip; false ignores such points. User decision 2026-11-25 (step-6 review:
+  # item 46's angle runs 8-52 deg over the stand area and passed).
+  stand_point_margin_rejects: true
+  # Minimum A-C centre distance (XZ). The angle spread over the stand area falls
+  # with distance: a 0.5 m ring moves the angle ~+-14 deg at 2 m, ~+-7 deg at 4 m.
+  # null = off. Stored per item with A's footprint (dist_a_c_m, a_footprint_m).
+  # User decision 2026-11-25 ("something like 2.5 m"); Round 2: 25 -> 24 PT items.
+  min_dist_a_c_m: 2.5
   # Max items in one scene that use the same object as A (the stand-at landmark), so
   # one landmark ("House Plant") does not become a learnable cue.
   max_uses_as_a: 2  # none found; reviewer feedback 2026-11-20

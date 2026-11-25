@@ -1599,8 +1599,13 @@ def test_class4_pair_gate_is_geodesic_metres_not_percentile():
     )
 
 
-def test_swm_reserves_recall_count_slots():
-    """Count/load mode must not be starved by relation filling max_items first."""
+@pytest.mark.parametrize('dim_third_chair', [False, True])
+def test_swm_reserves_recall_count_slots(dim_third_chair):
+    """Count/load mode must not be starved by relation filling max_items first.
+
+    A third Chair on screen that the visibility filter drops makes the count
+    ambiguous (a viewer may count 3), so no count item is made.
+    """
     from cm_benchmark.generation.planner import plan_spatial_working_memory
 
     # Minimal episode: two Chairs seen early, then navigate so delay+move hold.
@@ -1665,8 +1670,13 @@ def test_swm_reserves_recall_count_slots():
         ],
         'displacement_events': [],
     }
+    if dim_third_chair:
+        episode['steps'][1]['present_objects'] = {'Chair|3': 40.0}
     facts = plan_spatial_working_memory(episode, max_items=3, min_delay=2)
     modes = {(f.extra or {}).get('template_mode') for f in facts if f.status == 'ok'}
+    if dim_third_chair:
+        assert 'recall_count' not in modes
+        return
     assert 'recall_count' in modes, f'expected recall_count among {facts}'
     count = next(f for f in facts if (f.extra or {}).get('template_mode') == 'recall_count')
     assert count.answer_label == '2'

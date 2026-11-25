@@ -976,6 +976,9 @@ def build_package(
             'kind': 'mc',
             'gold': review_gold(item),
             'stored_answer': None if item.get('answer') is None else str(item.get('answer')),
+            'rotation_since_last_seen': (item.get('context') or {}).get(
+                'rotation_since_last_seen'
+            ),
         }
 
     for item in sampled['practice']:

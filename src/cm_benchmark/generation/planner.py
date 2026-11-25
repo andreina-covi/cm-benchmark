@@ -41,6 +41,7 @@ from cm_benchmark.generation.constructs import (
     is_fov_step,
     humanize_receptacle,
     imagined_perspective_label,
+    signed_rel_bearing_deg_xz,
     net_pose_changed,
     object_type_from_id,
     pick_template_index,
@@ -50,7 +51,10 @@ from cm_benchmark.generation.constructs import (
 )
 from cm_benchmark.generation.geometry import (
     agent_pose_at_step,
+    ego_bearing_deg,
     ego_label_from_world_pose,
+    near_cardinal,
+    off_axis_deg,
     point_in_camera_frustum,
 )
 from cm_benchmark.generation.nav_graph import (
@@ -1392,6 +1396,28 @@ def _count_category_seen(episode: dict, category: str, up_to_step: int) -> int:
     return len([oid for oid in seen if objects_are_confusable(episode, seed, oid)])
 
 
+def _count_category_on_screen(episode: dict, category: str, from_step: int, to_step: int) -> int:
+    """Distinct ids confusable with ``category`` with any pixels on frames ``from..to``.
+
+    Counts every exported detection (``present_objects``) plus ``visible_objects``,
+    before any visibility filter: what a viewer may count on screen. A count item
+    whose answer differs from this is ambiguous (user decision 2026-11-25).
+    """
+    ids: set[str] = set()
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si < int(from_step) or si > int(to_step):
+            continue
+        ids.update(str(o) for o in (step.get('visible_objects') or {}))
+        for oid, pix in (step.get('present_objects') or {}).items():
+            if pix is None or pix > 0:
+                ids.add(str(oid))
+    seed = next((oid for oid in ids if type_of(episode, oid) == category), None)
+    if seed is None:
+        return 0
+    return len([oid for oid in ids if objects_are_confusable(episode, seed, oid)])
+
+
 def _first_step_with_category(episode: dict, category: str) -> int:
     """First FOV step listing any object confusable with ``category`` (0 if none)."""
     for step in episode.get('steps') or []:
@@ -1573,6 +1599,10 @@ def plan_spatial_working_memory(
                 if not _has_real_move_between(episode, enc_idx, step_idx):
                     continue
                 if not _fits_whole(episode, enc_idx, step_idx):
+                    continue
+                # Every instance on screen must be one the answer counts, else
+                # the answer hinges on a visibility threshold the viewer cannot see.
+                if _count_category_on_screen(episode, cat, enc_idx, step_idx) != n:
                     continue
                 counts.append(
                     PlannedFact(
@@ -2426,6 +2456,52 @@ def _images_for_steps(episode: dict, frame_steps: list[int]) -> list[str]:
     ]
 
 
+def _total_turn_deg(episode: dict, from_step: int, to_step: int) -> Optional[float]:
+    """Total agent turning (sum of |yaw change|, degrees) from ``from_step`` to ``to_step``.
+
+    Left and right turns both add, so turning 90 deg left then back counts 180.
+    Stored as ``rotation_since_last_seen``: how far the viewer must track a
+    cue that is out of view (user decision 2026-11-25: measured, not capped).
+    """
+    total = 0.0
+    prev = None
+    for si in range(int(from_step), int(to_step) + 1):
+        _pos, rot = agent_pose_at_step(episode, si)
+        if rot is None:
+            continue
+        yaw = float(rot['y'] if isinstance(rot, dict) else rot[1])
+        if prev is not None:
+            total += abs((yaw - prev + 180.0) % 360.0 - 180.0)
+        prev = yaw
+    return None if prev is None else round(total, 1)
+
+
+def _landmark_ego_label(episode: dict, landmark_id: Optional[str], query_step: int) -> Optional[str]:
+    """Clear ego label of a landmark's whole floor box at ``query_step``, or None."""
+    if not landmark_id or _is_floor_receptacle(landmark_id):
+        return None
+    rec = (episode.get('object_catalog') or {}).get(landmark_id) or {}
+    amin, amax = rec.get('aabb_min'), rec.get('aabb_max')
+    if amin and amax:
+        pos = [(float(amin[i]) + float(amax[i])) / 2.0 for i in range(3)]
+    else:
+        pos = _object_world_pos(episode, landmark_id)
+        amin = amax = None
+    if pos is None:
+        return None
+    ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+    return ego_label_from_world_pose(
+        ag_pos,
+        ag_rot,
+        list(pos),
+        episode,
+        ahead_half_width=_cfg().directions.ahead_half_width_full_deg,
+        aabb_min=amin,
+        aabb_max=amax,
+        visible=False,
+    )
+
+
 def _try_ego_direction_fact(
     episode: dict,
     ev: dict,
@@ -2456,6 +2532,29 @@ def _try_ego_direction_fact(
         episode, specs, query_step, obj_id=obj_id, answer_dir=answer_dir
     ):
         return None
+    ag_pos, ag_rot = agent_pose_at_step(episode, query_step)
+    if not near_cardinal(ego_bearing_deg(ag_pos, ag_rot, ev.get('to_position'))):
+        return None
+    partner_id = extra_fields.get('swap_partner_id')
+    landmark_id = (
+        extra_fields.get('floor_anchor_id')
+        or extra_fields.get('destination_landmark_id')
+        or (
+            None
+            if _is_floor_receptacle(extra_fields.get('to_receptacle'))
+            else extra_fields.get('to_receptacle')
+        )
+    )
+    # "Moved onto / near the Y" must lead to the answer: Y's box gets the same
+    # clear label as the object (a swap puts the object at the partner's old spot).
+    if (
+        template_mode != 'swap'
+        and _cfg().invisible_displacement.anchor_same_sector
+        and _landmark_ego_label(episode, landmark_id, query_step) != answer_dir
+    ):
+        return None
+    cue_id = partner_id if template_mode == 'swap' else landmark_id
+    cue_seen = _last_mask_step_before(episode, cue_id, query_step)
     dir_pool, dir_seeds = _pad_id_ego_options(answer_dir, dir_pool, dir_seeds)
     return PlannedFact(
         construct='invisible_displacement',
@@ -2475,6 +2574,9 @@ def _try_ego_direction_fact(
             'frame_of_reference': 'egocentric',
             'k': max(1, int(query_step) - int(enc_idx)),
             'disambiguator': disambiguator,
+            'rotation_since_last_seen': _total_turn_deg(
+                episode, enc_idx if cue_seen is None else cue_seen, query_step
+            ),
             **extra_fields,
         },
     )
@@ -3579,6 +3681,9 @@ def plan_spatial_updating(
             key = (obj_id, enc_idx)
             if not label or seen_answers.get(key) == label:
                 continue  # no label, or same encode/answer already emitted
+            bearing = ego_bearing_deg(ag_pos, ag_rot, obj_pos)
+            if not near_cardinal(bearing):
+                continue
             enc_vis = (enc.get('visible_objects') or {}).get(obj_id) or {}
             pre = _ego_label_at(
                 episode,
@@ -3616,6 +3721,10 @@ def plan_spatial_updating(
                     extra={
                         'object_type': object_type_from_id(obj_id, {obj_id: mem}),
                         'pre_move_label': pre,
+                        'axis_offset_deg': (
+                            None if bearing is None else round(off_axis_deg(bearing), 1)
+                        ),
+                        'rotation_since_last_seen': _total_turn_deg(episode, enc_idx, step_idx),
                         'k': k,
                         'frame_of_reference': 'egocentric',
                         'disambiguator': disambiguator,
@@ -5625,9 +5734,10 @@ def _pt_label_stable(
 
     A's points are its centre plus a ring ``perspective_taking.a_standoff_m``
     wide on the half of A facing B ("standing next to A", facing B); B's and C's boxes are used as they are, so a long B
-    cannot swing the heading into another sector. Points inside the boundary
-    margin give no label and are ignored; only a flip to another label
-    rejects. See ``perspective_taking.footprint_grid``.
+    cannot swing the heading into another sector. A flip to another label
+    rejects; a point inside the boundary margin (no label) rejects too when
+    ``perspective_taking.stand_point_margin_rejects`` is true, else it is
+    ignored. See ``perspective_taking.footprint_grid``.
     """
     pt = _cfg().perspective_taking
     n = int(pt.footprint_grid)
@@ -5638,9 +5748,20 @@ def _pt_label_stable(
         for pb in pts_b:
             for pc in pts_c:
                 other = imagined_perspective_label(pa, pb, pc)
+                if other is None and pt.stand_point_margin_rejects:
+                    return False
                 if other is not None and other != label:
                     return False
     return True
+
+
+def _xz_footprint_m(episode: dict, obj_id: str) -> Optional[float]:
+    """Longer XZ side of the object's AABB (m), or None without a box."""
+    rec = (episode.get('object_catalog') or {}).get(obj_id) or {}
+    amin, amax = rec.get('aabb_min'), rec.get('aabb_max')
+    if not amin or not amax:
+        return None
+    return round(max(float(amax[0]) - float(amin[0]), float(amax[2]) - float(amin[2])), 3)
 
 
 def _a_standpoints(
@@ -5887,6 +6008,17 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                 label = imagined_perspective_label(pos_a, pos_b, pos_c)
                 if not label or label not in PT_DIRECTION_OPTIONS:
                     continue
+                dist_a_c = math.hypot(pos_c['x'] - pos_a['x'], pos_c['z'] - pos_a['z'])
+                if pt.min_dist_a_c_m is not None and dist_a_c < float(pt.min_dist_a_c_m):
+                    continue
+                centre_deg = signed_rel_bearing_deg_xz(
+                    pos_b['x'] - pos_a['x'],
+                    pos_b['z'] - pos_a['z'],
+                    pos_c['x'] - pos_a['x'],
+                    pos_c['z'] - pos_a['z'],
+                )
+                if not near_cardinal(centre_deg):
+                    continue
                 triple = [a['obj_id'], b['obj_id'], c['obj_id']]
                 if _pt_objects_entangled(episode, triple):
                     continue
@@ -6017,9 +6149,9 @@ def plan_perspective_taking(episode: dict, max_items: int = 2) -> list[PlannedFa
                             'image_heuristic_agrees': (
                                 None if heuristic is None else heuristic == label
                             ),
-                            'dist_a_c_m': round(
-                                math.hypot(pos_c['x'] - pos_a['x'], pos_c['z'] - pos_a['z']), 3
-                            ),
+                            'dist_a_c_m': round(dist_a_c, 3),
+                            'a_footprint_m': _xz_footprint_m(episode, a['obj_id']),
+                            'axis_offset_deg': round(off_axis_deg(centre_deg), 1),
                             'frame_of_reference': 'allocentric',
                             'image_roles': image_roles,
                             'shown_frame_steps': shown_steps,

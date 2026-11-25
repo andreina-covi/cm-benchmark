@@ -121,7 +121,7 @@ class_2:
       required_temporal_fields: [agent_trajectory, agent_actions]
       question_template: >-
         Where was the {object_type}{disambiguator} relative to you in frame {enc_frame} ({k} frames before the last frame)?
-        / Across frames {enc_frame} to {last_frame}, how many distinct {objects} have you seen?
+        / Across frames {enc_frame} to {last_frame}, how many different {objects} have you seen (count each one once)?
       ground_truth_method: >
         Recalled relation, location, or count from the encoding step.
         The object is static; the queried info is gone from the final view.

@@ -63,8 +63,8 @@ CONSTRUCT_TEMPLATES = {
             )
         ],
         'recall_count': [
-            'Across frames {enc_frame} to {last_frame}, how many distinct '
-            '{object_category}s have you seen?',
+            'Across frames {enc_frame} to {last_frame}, how many different '
+            '{object_category}s have you seen (count each one once)?',
         ],
     },
     'invisible_displacement': {
