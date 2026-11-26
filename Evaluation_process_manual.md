@@ -46,9 +46,9 @@ Runs on every candidate item before it's eligible for human review. This is the 
 ### 2.2 Answer recomputation (per construct)
 Re-derive the answer independently from the episode DB and compare to the stored `answer`:
 
-- `egocentric_encoding` → recompute viewer→object direction from `agent_pose@shown_step` + object position.
+- `egocentric_encoding` → recompute viewer→object direction from `agent_pose@shown_step` + object position (for `condition: in_sequence`, the pose of frame i; `image_paths` must be every FOV frame from frame i through the last).
 - `allocentric_encoding` → recompute object→object relation using the reference object's intrinsic frame.
-- `spatial_working_memory` → recompute recalled relation/location/count at the stated `k` steps back; confirm object was static across shown frames. `image_paths` must be every FOV frame from encode through query in time order (turns in place stay).
+- `spatial_working_memory` (integration across frames: no single shown frame holds the answer) → count: recount distinct same-name instances over the shown frames and confirm at least one leaves view and returns (`n_reseen_instances`); heading change: recompute the net yaw change from frame i to the last frame and confirm at least two separate turn events (`n_turn_events`). `image_paths` must be every FOV frame from frame i through the last in time order (turns in place stay).
 - `invisible_displacement` → confirm the destination leaves view within `invisible_displacement.max_delay`, the object / old pose / destination stay out of view until then, and a clear pre-query sighting of the destination (or swap partner / floor landmark) exists; recompute ego bearing at the query pose. Destination identity is exact `obj-id`. For Floor destinations, confirm a distinguishable floor-anchor landmark within `FLOOR_ANCHOR_RADIUS` of the true final position (or reject that candidate).
 - `spatial_updating` → confirm **net pose change** (position *or* heading delta above tolerance) between encode and query — not action count alone; confirm object static via `object_state_track`; recompute bearing from `agent_pose@final` + object position; drop duplicate (object, encode) items with identical answers. `image_paths` must be every FOV frame from encode through query in time order.
 - `perspective_taking` → confirm A, B, and C are distinguishable together in the one shown frame; recompute `imagined_perspective_label(A, B, C)` (signed A→B vs A→C angle → left/right/behind; reject near 0°/±135°). Distractors: camera frame, mirrored L/R, wrong facing.
@@ -92,7 +92,7 @@ For every construct (from `shared_rules`):
 - [ ] The frames shown are enough to answer: exactly one option is defensibly correct
 
 Construct-specific checks that matter in review:
-- [ ] **spatial_updating / spatial_working_memory:** the sequence is consecutive FOV frames for the stated `k` (no missing turn in the middle)
+- [ ] **spatial_updating / spatial_working_memory / in-sequence egocentric encoding:** the sequence is consecutive FOV frames for the stated `k` (no missing turn in the middle)
 - [ ] **invisible_displacement:** the destination place is clearly visible in some shown frame before the query
 - [ ] **perspective_taking:** A, B, and C appear together in the one shown frame
 - [ ] **route / survey:** each named turn landmark is visible near its turn in the shown frames, and the turn directions (left / right / sharply / around) match the walk

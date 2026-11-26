@@ -183,7 +183,7 @@ Optional flags:
 | `--config FILE` | partial or full config merged onto `configs/generation.yaml` (e.g. `configs/generation_max.yaml`) |
 | `--max_per_construct N` | overrides `budget.max_per_construct` |
 | `--frame_budgets 16 24 32` | overrides `frames.budgets` |
-| `--swm_min_delay`, `--swm_max_delay` | override the `spatial_working_memory` delays |
+| `--swm_min_delay`, `--swm_max_delay` | override the `spatial_working_memory` delays (also the span of egocentric-encoding `in_sequence` items) |
 | `--su_min_delay`, `--su_max_delay` | override the `spatial_updating` delays |
 | `--styles concise,verbose` | question styles to write (default both) |
 | `--workers N` | scenes generated in parallel processes; the output is the same as with 1 |
@@ -194,7 +194,7 @@ A single scene database is `--db_path episodes/house_XXXXXX/episodes.db` plus `-
 
 - **concise** / **verbose** share the same answer. Verbose must not leak it.
 - Sequence questions name their reference frames by number, matching the `frame i of n` labels: `in frame {enc_frame} ({k} frames before the last frame)` and `in the last frame (frame {last_frame})`. k counts shown frames. No question says “now” about a sequence.
-- The verbose preamble adds the queried object's room, and for SWM and ID the objects visible in the encoding or last shown frame, without relations. It never restates the queried object, repeats the question, or tells the model how to answer.
+- The verbose preamble adds the queried object's room, and for SWM, ID and in-sequence egocentric encoding the objects visible in the encoding or last shown frame, without relations. It never restates the queried object, repeats the question, or tells the model how to answer.
 - Direction MC answers that straddle a sector are dropped (`directions.refuse_straddling_objects`): visible objects use 2D bbox edge angles; hidden objects use the eight AABB corners. Generation prints per-construct straddle drop counts at the end of the run.
 - `unsupported` is the correct outcome when a scene cannot prove a construct
   (e.g. a straight one-room walk for route knowledge).
@@ -249,7 +249,7 @@ Frames, all multi-frame constructs: one frame list per budget in
 `frames.budgets` (default 16, 24, 32; `--frame_budgets` overrides for one run).
 A frame whose agent pose (position, heading, pitch) repeats the previous kept
 frame, as after a failed move or turn, is dropped first. A span that fits a
-budget is shown whole. SWM and SU are never sampled: their question counts the
+budget is shown whole. SWM, SU and in-sequence EE are never sampled: their question counts the
 frames from encoding to query, so a span longer than a budget is not offered
 at that budget, and the planner skips spans longer than the largest budget.
 Otherwise required frames are kept (ID and PT: every frame) and the rest fill
@@ -268,8 +268,8 @@ still apply when those frames need them. Evaluation uses the item’s
 `image_paths`: unmarked originals when `disambiguation` is `none` or
 `proximity`, and the numbered-badge copies when it is `mark`.
 
-Spatial updating and spatial working memory show every FOV frame from the
-sighting through the query, in time order (including a turn in place), minus
+Spatial updating, spatial working memory and in-sequence egocentric encoding
+show every FOV frame from the first frame the question names through the query, in time order (including a turn in place), minus
 repeated-pose frames.
 Perspective taking shows the one frame where A, B, and C are all visible.
 Invisible displacement shows the walk from the earlier of the object encode

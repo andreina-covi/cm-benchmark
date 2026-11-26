@@ -71,19 +71,28 @@ class_1:
     egocentric_encoding:
       class: 1
       frame_of_reference: egocentric
-      definition: Relation of a visible object to the viewer's current pose.
+      definition: Relation of a visible object to the viewer's pose in the frame that shows it.
       what_moves: none
       answer_type: viewer-anchored direction (left / right / ahead / behind only)
-      required_temporal_fields: []
-      question_template: "From your current view, where is the {object} relative to you?"
+      conditions:
+        single_frame: one frame; the object is in view.
+        in_sequence: >-
+          every frame from frame i to the last is shown; the object is in view in
+          frame i (the former spatial_working_memory relation variant). The answer
+          can be read from frame i alone, so it tests encoding, not memory.
+      difficulty_axis: [n_frames_shown]
+      required_temporal_fields: []  # in_sequence items also carry agent_trajectory / agent_actions
+      question_template: >-
+        Where is the {object_type}{disambiguator} relative to you right now? (single_frame)
+        / Where was the {object_type}{disambiguator} relative to you in frame {enc_frame} ({k} frames before the last frame)? (in_sequence)
       ground_truth_method: >
-        Bearing of a visible object from the current agent pose.
+        Bearing of the object from the agent pose of the frame that shows it.
         "Behind you" cannot be the ground-truth answer (FOV); only a distractor.
-      distractor_pattern: [opposite_direction, orthogonal_direction, plausible_wrong_axis]
+      distractor_pattern: [opposite_direction, orthogonal_direction, plausible_wrong_axis, current_view_answer]
       discriminators:
-        - queried object is visible in the shown view
-        - no delay and no agent movement
-        - answer from current pose + object position
+        - queried object is visible in the frame the question names
+        - answer from that frame's pose + object position
+        - condition (single_frame / in_sequence) and n_frames_shown stored per item
 
     allocentric_encoding:
       class: 1
@@ -114,22 +123,30 @@ class_2:
     spatial_working_memory:
       class: 2
       frame_of_reference: [egocentric, allocentric]
-      difficulty_axis: [delay_steps, load_n_objects]
-      definition: Recall a previously seen location, relation, or count under load and delay.
-      what_moves: none
-      answer_type: recalled relation, location, or count of past-seen items
+      difficulty_axis: [n_turn_events, total_rotation_deg, load_n_objects, n_reseen_instances, n_frames_shown]
+      definition: >-
+        Integration across frames, not retention over a delay. Every frame is given
+        at once, so an item tests memory only if no single frame holds the answer:
+        a count needs an object recognised again after it left view, and a heading
+        change needs two or more separate turns added up.
+      what_moves: the agent (heading change); nothing else
+      answer_type: count of distinct objects, or net heading change (same / left / right / around)
       required_temporal_fields: [agent_trajectory, agent_actions]
       question_template: >-
-        Where was the {object_type}{disambiguator} relative to you in frame {enc_frame} ({k} frames before the last frame)?
-        / Across frames {enc_frame} to {last_frame}, how many different {objects} have you seen (count each one once)?
+        Across frames {enc_frame} to {last_frame}, how many different {objects} have you seen (count each one once)?
+        / Compared with frame {enc_frame}, which way are you facing in the last frame (frame {last_frame})?
       ground_truth_method: >
-        Recalled relation, location, or count from the encoding step.
-        The object is static; the queried info is gone from the final view.
-      distractor_pattern: [current_view_answer, adjacent_step_answer, off_by_one_count]
+        Count: distinct same-name instances clearly seen in the shown frames, at least
+        one of which leaves view (no pixels) and returns (after VSI-Bench object
+        counting, with re-identification). Heading change: net yaw change from frame
+        i to the last frame over every step, wrapped to (-180, 180] and labelled
+        within directions.near_cardinal_max_deg of 0 / -90 / +90 / 180 (after
+        OST-Bench "Agent State"); at least two separate turn events in the span.
+      distractor_pattern: [double_counted, off_by_one_count, off_by_two_count, partial_sum, mirrored, last_turn_only, remaining_label]
       discriminators:
-        - queried object/relation is not in the final view
+        - no single shown frame holds the answer
         - object positions unchanged (nothing relocates)
-        - delay k and load n are explicit per item
+        - n_reseen_instances / n_turn_events and total_rotation_deg stored per item
 
     invisible_displacement:
       class: 2

@@ -733,10 +733,10 @@ def test_allocentric_encoding_unsupported_without_facing(tiny_episode):
 
 
 def test_swm_encoding_uses_last_distinguishable_not_weak_last_seen():
-    """SWM encode walks back past a weak FOV scrape to a clear earlier sighting."""
+    """EE in_sequence (former SWM relation) encode walks back past a weak FOV scrape."""
     from cm_benchmark.generation.planner import (
         _last_distinguishable_sighting,
-        plan_spatial_working_memory,
+        _plan_ee_in_sequence,
     )
 
     def _vis(area, side, pix, pos=(0.0, 1.0, 1.0)):
@@ -835,9 +835,9 @@ def test_swm_encoding_uses_last_distinguishable_not_weak_last_seen():
     }
 
     assert _last_distinguishable_sighting(episode, 'CounterTop|1', 4) == 0
-    facts = plan_spatial_working_memory(episode, max_items=5, min_delay=2)
+    facts = _plan_ee_in_sequence(episode, max_items=5, min_delay=2)
     ok = [f for f in facts if f.status == 'ok' and f.queried_object_id == 'CounterTop|1']
-    assert ok, 'expected SWM fact using clear encode, not weak last_seen=2'
+    assert ok, 'expected EE in_sequence fact using clear encode, not weak last_seen=2'
     assert all(f.encoding_step == 0 for f in ok)
     assert all(f.encoding_step != 2 for f in ok)
     assert any(f.query_step >= 3 for f in ok)
@@ -1651,8 +1651,8 @@ def test_swm_reserves_recall_count_slots(dim_third_chair):
                 'Chair|1': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 1]},
                 'Chair|2': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 2]},
             }),
-            step(2, {}, non_vis={
-                'Chair|1': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 1]},
+            # Chair|1 leaves view at step 1 and comes back (re-identification).
+            step(2, {'Chair|1': chair('Chair|1', 1.0)}, non_vis={
                 'Chair|2': {'category': 'Chair', 'last_seen_step': 0, 'position': [0, 1, 2]},
             }),
         ],
@@ -1681,6 +1681,10 @@ def test_swm_reserves_recall_count_slots(dim_third_chair):
     count = next(f for f in facts if (f.extra or {}).get('template_mode') == 'recall_count')
     assert count.answer_label == '2'
     assert count.extra.get('load_n_objects') == 2
+    assert count.extra.get('n_reseen_instances') == 1
+    # Chair|1 counted twice (two sighting runs) + Chair|2 once.
+    assert count.extra.get('double_counted') == 3
+    assert 'double_counted::3' in count.distractor_seeds
 
 
 def test_merge_role_images_dedupes_with_combined_labels():
@@ -1968,10 +1972,10 @@ def test_border_scrape_cup_rejected_for_egocentric():
 
 def test_swm_question_states_explicit_delay_k(delayed_episode):
     facts = plan_episode(
-        delayed_episode, constructs=['spatial_working_memory'], max_per_construct=2
+        delayed_episode, constructs=['egocentric_encoding'], max_per_construct=2
     )
     relation = [f for f in facts if (f.extra or {}).get('template_mode') == 'recall_relation']
-    assert relation, 'expected at least one recall_relation SWM fact'
+    assert relation, 'expected at least one recall_relation (EE in_sequence) fact'
     fact = relation[0]
     assert fact.status == 'ok'
     assert fact.queried_object_id == 'Cup|1'
@@ -1993,14 +1997,17 @@ def test_swm_question_states_explicit_delay_k(delayed_episode):
 def test_swm_delay_range_is_configurable(delayed_episode):
     items = generate_items_for_episode(
         delayed_episode,
-        constructs=['spatial_working_memory'],
+        constructs=['egocentric_encoding'],
         max_per_construct=1,
         swm_min_delay=3,
         swm_max_delay=3,
         styles=('concise',),
     )
-    ok = [item for item in items if item.get('status') == 'ok']
-    assert ok, 'expected an SWM item at the requested delay'
+    ok = [
+        item for item in items
+        if item.get('status') == 'ok' and (item.get('context') or {}).get('condition') == 'in_sequence'
+    ]
+    assert ok, 'expected an EE in_sequence item at the requested delay'
     item = ok[0]
     assert item['query_step'] - item['encoding_step'] == 3
     assert len(item['image_paths']) == 4
@@ -2031,7 +2038,7 @@ def test_spatial_updating_mentions_now(delayed_episode):
 
 def test_delay_in_question_counts_shown_frames(delayed_episode):
     facts = plan_episode(
-        delayed_episode, constructs=['spatial_working_memory'], max_per_construct=2
+        delayed_episode, constructs=['egocentric_encoding'], max_per_construct=2
     )
     fact = next(f for f in facts if (f.extra or {}).get('template_mode') == 'recall_relation')
     enc, query = fact.encoding_step, fact.query_step

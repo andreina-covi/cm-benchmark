@@ -30,6 +30,7 @@ from cm_benchmark.generation.synsets import (
 )
 from cm_benchmark.generation.constructs import (
     EGO_DIRECTION_OPTIONS,
+    HEADING_OPTIONS,
     MIRRORED_LR,
     PT_DIRECTION_OPTIONS,
     OPPOSITE,
@@ -829,7 +830,10 @@ def _frame_variants_for_fact(episode: dict, fact: PlannedFact) -> list[dict]:
             steps,
             required,
             straight_pool=straight,
-            sample=fact.construct not in _CONTIGUOUS_SEQUENCE,
+            sample=not (
+                fact.construct in _CONTIGUOUS_SEQUENCE
+                or extra.get('condition') == 'in_sequence'
+            ),
         )
     ]
 
@@ -1298,6 +1302,23 @@ def _ego_label_at(
 
 
 def plan_egocentric_encoding(episode: dict, max_items: int = 3) -> list[PlannedFact]:
+    """Egocentric encoding in two conditions, each capped at ``max_items``.
+
+    ``single_frame``: one frame, "where is X right now?"; ``in_sequence``: all
+    frames from frame i to the last, "where was X in frame i?" (the former SWM
+    relation variant). The condition is stored on each fact (``condition``).
+    """
+    swm = _cfg().spatial_working_memory
+    single = _plan_ee_single_frame(episode, max_items)
+    for f in single:
+        f.extra = {**(f.extra or {}), 'condition': 'single_frame'}
+    seq = _plan_ee_in_sequence(
+        episode, max_items, min_delay=swm.min_delay, max_delay=swm.max_delay
+    )
+    return single + seq
+
+
+def _plan_ee_single_frame(episode: dict, max_items: int = 3) -> list[PlannedFact]:
     """Class 1: bearing of an object visible in the current frame.
 
     Walks steps in order and emits the first ``max_items`` (step, object) pairs
@@ -1429,32 +1450,312 @@ def _first_step_with_category(episode: dict, category: str) -> int:
     return 0
 
 
-def plan_spatial_working_memory(
+def _clearly_seen(step: dict, oid: str) -> bool:
+    """The object passed the visibility filter on this step."""
+    return oid in (step.get('visible_objects') or {})
+
+
+def _absent(step: dict, oid: str) -> bool:
+    """No pixels of the object on this step (not just below the visibility floor)."""
+    if oid in (step.get('visible_objects') or {}):
+        return False
+    present = step.get('present_objects') or {}
+    if oid not in present:
+        return True
+    pix = present[oid]
+    return pix is not None and pix <= 0
+
+
+def _swm_shown_steps(episode: dict, start_step: int, end_step: int) -> list[int]:
+    """Shown frames of a whole-window SWM item: FOV steps, repeated poses dropped."""
+    return _drop_repeated_poses(
+        episode, _fov_step_indices(episode, start_step, end_step), keep=[start_step, end_step]
+    )
+
+
+def _count_sighting_runs(episode: dict, category: str, from_step: int, to_step: int) -> dict[str, int]:
+    """Sighting runs per counted instance over the shown frames ``from..to``.
+
+    A run starts on a frame where the instance is clearly seen after the start or
+    after a frame where it has no pixels at all; a frame with only a few pixels
+    neither starts nor ends a run. ``runs >= 2`` means the instance left view and
+    came back (re-identification). The sum over instances is the count a viewer
+    gets by counting every return as a new object (``double_counted``).
+    """
+    seen = _ids_seen_distinguishable(episode, to_step)
+    seed = next((oid for oid in seen if type_of(episode, oid) == category), None)
+    if seed is None:
+        return {}
+    ids = [oid for oid in seen if objects_are_confusable(episode, seed, oid)]
+    shown = [step_by_index(episode, si) for si in _swm_shown_steps(episode, from_step, to_step)]
+    out: dict[str, int] = {}
+    for oid in ids:
+        runs, armed = 0, True
+        for step in shown:
+            if step is None:
+                continue
+            if _clearly_seen(step, oid):
+                if armed:
+                    runs += 1
+                    armed = False
+            elif _absent(step, oid):
+                armed = True
+        out[oid] = max(1, runs)
+    return out
+
+
+def _count_options(n: int, double_counted: int) -> tuple[list[str], list[str]]:
+    """Count option pool and tags: double_counted first, then off-by-one, then off-by-two.
+
+    ``double_counted`` (every return counted again) is offered unless it equals
+    the answer; the rest are ``n - 1``, ``n + 1`` and ``n + 2``. Each distractor
+    has exactly one tag.
+    """
+    n_opts = int(_cfg().options.n_options)
+    pool, seeds = [str(n)], []
+    candidates = []
+    if double_counted != n:
+        candidates.append(('double_counted', double_counted))
+    candidates += [('off_by_one_count', n - 1), ('off_by_one_count', n + 1), ('off_by_two_count', n + 2)]
+    for tag, value in candidates:
+        if len(pool) >= n_opts:
+            break
+        if value < 0 or str(value) in pool:
+            continue
+        pool.append(str(value))
+        seeds.append(_mode_seed(tag, str(value)))
+    return pool, seeds
+
+
+def _wrap180(deg: float) -> float:
+    """Angle wrapped to (-180, 180]."""
+    out = (float(deg) + 180.0) % 360.0 - 180.0
+    return 180.0 if abs(out + 180.0) < 1e-9 else out
+
+
+_HEADING_TARGETS = (('same', 0.0), ('right', 90.0), ('left', -90.0), ('around', 180.0))
+
+
+def heading_label(net_deg: Optional[float]) -> Optional[str]:
+    """``same`` / ``left`` / ``right`` / ``around`` for a net yaw change (right positive).
+
+    The net must lie within ``directions.near_cardinal_max_deg`` of 0, -90, +90 or
+    180; anything outside the cones (e.g. 45 or 135 deg) has no label.
+    """
+    if net_deg is None:
+        return None
+    limit = _cfg().directions.near_cardinal_max_deg
+    best = min(_HEADING_TARGETS, key=lambda t: abs(_wrap180(net_deg - t[1])))
+    if limit is not None and abs(_wrap180(net_deg - best[1])) > float(limit) + 1e-9:
+        return None
+    return best[0]
+
+
+def _yaw_at(episode: dict, step_idx: int) -> Optional[float]:
+    """Agent yaw at a step (degrees), or None."""
+    _pos, rot = agent_pose_at_step(episode, step_idx)
+    if rot is None:
+        return None
+    try:
+        return float(rot['y'] if isinstance(rot, dict) else rot[1])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def heading_turn_events(rows: Sequence[tuple[int, float, Optional[float], Optional[float]]]) -> tuple[float, float, list[dict]]:
+    """``(net_deg, total_deg, events)`` for ``rows`` of ``(step, yaw, x, z)`` in time order.
+
+    Each step's rotation is its wrapped yaw change (right positive); glance and
+    done-override steps count like any other. Rotations less than
+    ``class4.mc.turn_merge_m`` of travel apart are summed into one cluster, as for
+    route items; a cluster whose net is at least
+    ``spatial_working_memory.heading_event_min_deg`` is a turn event (a 45 deg
+    correction or a glance that returns to net 0 is not). Each event has
+    ``net_deg`` and ``start_step`` (the step its first rotation starts from).
+    """
+    merge_m = float(_cfg().class4.mc.turn_merge_m)
+    min_event = float(_cfg().spatial_working_memory.heading_event_min_deg)
+    net = total = 0.0
+    clusters: list[dict] = []
+    travel_since = None  # travel since the last rotation, None before any
+    for (s0, y0, x0, z0), (_s1, y1, x1, z1) in zip(rows, rows[1:]):
+        d = _wrap180(y1 - y0)
+        if abs(d) > 1e-6:
+            net += d
+            total += abs(d)
+            if clusters and travel_since is not None and travel_since < merge_m:
+                clusters[-1]['net_deg'] += d
+            else:
+                clusters.append({'net_deg': d, 'start_step': s0})
+            travel_since = 0.0
+        elif travel_since is not None and None not in (x0, z0, x1, z1):
+            travel_since += math.hypot(x1 - x0, z1 - z0)
+    events = [c for c in clusters if abs(c['net_deg']) >= min_event - 1e-6]
+    return net, total, events
+
+
+def _heading_rows(episode: dict, start_step: int, end_step: int) -> list[tuple[int, float, Optional[float], Optional[float]]]:
+    """``(step, yaw, x, z)`` for every step with a pose in ``start..end``."""
+    rows = []
+    for step in episode.get('steps') or []:
+        si = int(step['step'])
+        if si < int(start_step) or si > int(end_step):
+            continue
+        yaw = _yaw_at(episode, si)
+        if yaw is None:
+            continue
+        pos, _rot = agent_pose_at_step(episode, si)
+        x = z = None
+        if pos is not None:
+            x, z = (float(pos['x']), float(pos['z'])) if isinstance(pos, dict) else (float(pos[0]), float(pos[2]))
+        rows.append((si, yaw, x, z))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+_HEADING_MIRROR = {'left': 'right', 'right': 'left'}
+
+
+def heading_distractors(gold: str, rows, events: list[dict]) -> list[tuple[str, str]]:
+    """``(tag, label)`` distractors for a heading-change item, one tag each.
+
+    ``partial_sum``: the net heading just before the last turn event starts (later
+    turns forgotten); ``mirrored``: left/right flipped; ``last_turn_only``: the
+    last event alone; any free slot gets a ``remaining_label``.
+    """
+    out: list[tuple[str, str]] = []
+    used = {gold}
+
+    def add(tag: str, label: Optional[str]) -> None:
+        if label and label not in used:
+            out.append((tag, label))
+            used.add(label)
+
+    if events:
+        cut = events[-1]['start_step']
+        partial, _t, _e = heading_turn_events([r for r in rows if r[0] <= cut])
+        add('partial_sum', heading_label(partial))
+    add('mirrored', _HEADING_MIRROR.get(gold))
+    if events:
+        add('last_turn_only', heading_label(events[-1]['net_deg']))
+    for label, _deg in _HEADING_TARGETS:
+        add('remaining_label', label)
+    return out
+
+
+def _plan_heading_change(
+    episode: dict,
+    max_items: int,
+    *,
+    min_delay: int = 2,
+    max_delay: Optional[int] = None,
+) -> list[PlannedFact]:
+    """SWM heading change: "Compared with frame i, which way are you facing in frame n?"
+
+    Gold is the net yaw change from frame i to frame n over every step (corrections
+    and glances included), labelled by ``heading_label``. The span needs at least
+    ``spatial_working_memory.heading_min_turn_events`` separate turn events, so one
+    visible turn is never enough, and every non-repeated frame from i to n is shown
+    (it must fit the largest ``frames.budgets``). For each last frame, the shortest
+    span per answer label is a candidate; candidates are drawn round-robin over
+    (label, number of turn events), rarest group first, each frame used once as i
+    and once as n.
+    """
+    if max_items <= 0:
+        return []
+    swm = _cfg().spatial_working_memory
+    fov = [
+        int(st['step'])
+        for st in episode.get('steps') or []
+        if st.get('image_path') and is_fov_step(episode, st['step'])
+    ]
+    fov.sort()
+    cands: list[PlannedFact] = []
+    for qi, n in enumerate(fov):
+        best: dict[str, PlannedFact] = {}
+        for i in reversed(fov[:qi]):
+            k = n - i
+            if max_delay is not None and k > max_delay:
+                break
+            if not _fits_whole(episode, i, n):
+                break
+            if k < min_delay:
+                continue
+            rows = _heading_rows(episode, i, n)
+            net, total, events = heading_turn_events(rows)
+            if len(events) < int(swm.heading_min_turn_events):
+                continue
+            gold = heading_label(net)
+            if gold is None or gold in best:
+                continue
+            dists = heading_distractors(gold, rows, events)
+            pool = [HEADING_OPTIONS[gold]] + [HEADING_OPTIONS[lab] for _t, lab in dists]
+            seeds = [_mode_seed(tag, HEADING_OPTIONS[lab]) for tag, lab in dists]
+            best[gold] = PlannedFact(
+                construct='spatial_working_memory',
+                status='ok',
+                query_step=n,
+                encoding_step=i,
+                queried_object_id=None,
+                answer_label=HEADING_OPTIONS[gold],
+                answer_source=[f'agent_trajectory[{i}..{n}].rotation.y (net yaw change)'],
+                image_paths=_images_between(episode, i, n),
+                options_pool=pool,
+                distractor_seeds=seeds,
+                extra={
+                    'template_mode': 'heading_change',
+                    'frame_of_reference': 'egocentric',
+                    'k': k,
+                    'net_yaw_deg': round(_wrap180(net), 1),
+                    'total_rotation_deg': round(total, 1),
+                    'n_turn_events': len(events),
+                    'turn_events_deg': [round(e['net_deg'], 1) for e in events],
+                },
+            )
+        cands.extend(best.values())
+    groups: dict[tuple, list[PlannedFact]] = {}
+    for f in cands:
+        key = (f.answer_label, min(int(f.extra['n_turn_events']), 4))
+        groups.setdefault(key, []).append(f)
+    out: list[PlannedFact] = []
+    used_i: set[int] = set()
+    used_n: set[int] = set()
+    while len(out) < max_items and any(groups.values()):
+        for key in sorted(groups, key=lambda g: (len(groups[g]), g)):
+            if len(out) >= max_items:
+                break
+            bucket = groups[key]
+            while bucket:
+                f = bucket.pop(0)
+                if f.encoding_step in used_i or f.query_step in used_n:
+                    continue
+                out.append(f)
+                used_i.add(int(f.encoding_step))
+                used_n.add(int(f.query_step))
+                break
+    return out
+
+
+def _plan_ee_in_sequence(
     episode: dict,
     max_items: int = 3,
     *,
     min_delay: int = 2,
     max_delay: Optional[int] = None,
 ) -> list[PlannedFact]:
-    """Recall past relation under delay k; optional count/load mode.
+    """Egocentric encoding, condition ``in_sequence``: "where was X in frame i?".
 
+    The former SWM relation variant, unchanged except for its construct label:
+    every frame from the encoding frame to the last is shown, but the answer can
+    be read from frame i alone, so it tests encoding, not memory (user decision
+    2026-11-25). Delays come from ``spatial_working_memory.min_delay/max_delay``.
     Encoding step is the latest *distinguishable* prior sighting (metrics + ego
     edge), not ``last_seen_step`` alone (which may be a weak FOV scrape).
     """
-    validate_delay_window('SWM', min_delay, max_delay)
+    validate_delay_window('EE in_sequence', min_delay, max_delay)
     max_delay = _span_limited_delay(max_delay)
-
     displaced = _displaced_ids(episode)
     out: list[PlannedFact] = []
-    # Taxonomy lists both relation and count. Relation used to fill ``max_items``
-    # and return early, so recall_count never ran. Reserve count slots when
-    # the budget allows more than one item.
-    final_n = min(max_items, _cfg().budget.max_per_construct)
-    count_budget = (
-        0
-        if final_n < 2
-        else max(1, final_n // _cfg().spatial_working_memory.count_divisor)
-    )
     pool_cap = max(max_items, _cfg().budget.candidate_pool)
 
     for step in episode.get('steps') or []:
@@ -1497,7 +1798,7 @@ def plan_spatial_working_memory(
                 obj_id,
                 obj_pos=enc_vis.get('position'),
                 ahead_half_width=_cfg().directions.ahead_half_width_fov_deg,
-                count_straddle_drop='spatial_working_memory',
+                count_straddle_drop='egocentric_encoding',
             )
             if not label or label not in EGO_DIRECTION_OPTIONS:
                 continue
@@ -1533,7 +1834,7 @@ def plan_spatial_working_memory(
 
             out.append(
                 PlannedFact(
-                    construct='spatial_working_memory',
+                    construct='egocentric_encoding',
                     status='ok',
                     query_step=step_idx,
                     encoding_step=enc_idx,
@@ -1551,15 +1852,40 @@ def plan_spatial_working_memory(
                         'angle_relation': edge.get('angle_relation'),
                         'k': k,
                         'template_mode': 'recall_relation',
+                        'condition': 'in_sequence',
                         'frame_of_reference': 'egocentric',
                         'disambiguator': disambiguator,
                     },
                 )
             )
 
-    relations = _spread_by_delay(out, _cfg().spatial_working_memory.delay_steps)
-    # Count / load mode (taxonomy: "How many {objects} have you seen so far?").
-    # A few count facts stay in the pool so the final cut can still include one.
+    return _spread_by_delay(out, _cfg().spatial_working_memory.delay_steps)[:max_items]
+
+
+def plan_spatial_working_memory(
+    episode: dict,
+    max_items: int = 3,
+    *,
+    min_delay: int = 2,
+    max_delay: Optional[int] = None,
+) -> list[PlannedFact]:
+    """Integration across frames, not retention over a delay: count and heading change.
+
+    With every frame given at once, an item tests memory only if no single frame
+    holds the answer. Count items need an instance that leaves view and comes
+    back (re-identification, after VSI-Bench object counting); heading-change
+    items need two or more separate turns summed (after OST-Bench "Agent State").
+    The former relation variant ("where was X in frame i?") is egocentric
+    encoding, condition ``in_sequence`` (``_plan_ee_in_sequence``).
+    """
+    validate_delay_window('SWM', min_delay, max_delay)
+    max_delay = _span_limited_delay(max_delay)
+    final_n = min(max_items, _cfg().budget.max_per_construct)
+    count_budget = (
+        0
+        if final_n < 2
+        else max(1, final_n // _cfg().spatial_working_memory.count_divisor)
+    )
     counts: list[PlannedFact] = []
     if count_budget:
         seen_cats: set[str] = set()
@@ -1584,14 +1910,6 @@ def plan_spatial_working_memory(
                     break
                 if n < _cfg().spatial_working_memory.count_min_instances or cat in seen_cats:
                     continue
-                # n >= 2, so the four counts are distinct and non-negative.
-                answer, off1, off2 = str(n), str(n - 1), str(n + 1)
-                pool = [answer, off1, off2, str(n + 2)]
-                seeds = [
-                    'off_by_one_count',
-                    _mode_seed('off_by_one_count', off1),
-                    _mode_seed('off_by_one_count', off2),
-                ]
                 enc_idx = _first_step_with_category(episode, cat)
                 k = step_idx - enc_idx
                 if not _delay_is_allowed(k, min_delay, max_delay):
@@ -1604,6 +1922,14 @@ def plan_spatial_working_memory(
                 # the answer hinges on a visibility threshold the viewer cannot see.
                 if _count_category_on_screen(episode, cat, enc_idx, step_idx) != n:
                     continue
+                # Re-identification: some counted instance leaves view and returns,
+                # so no single frame holds the answer (user decision 2026-11-25).
+                runs = _count_sighting_runs(episode, cat, enc_idx, step_idx)
+                n_reseen = sum(1 for r in runs.values() if r >= 2)
+                if n_reseen < _cfg().spatial_working_memory.count_min_reseen_instances:
+                    continue
+                pool, seeds = _count_options(n, sum(runs.values()))
+                answer = str(n)
                 counts.append(
                     PlannedFact(
                         construct='spatial_working_memory',
@@ -1625,13 +1951,18 @@ def plan_spatial_working_memory(
                             'template_mode': 'recall_count',
                             'frame_of_reference': 'allocentric',
                             'load_n_objects': n,
+                            'n_reseen_instances': n_reseen,
+                            'double_counted': sum(runs.values()),
                         },
                     )
                 )
                 seen_cats.add(cat)
                 break  # one count item per query step
-    spread = _spread_by_delay(relations, _cfg().spatial_working_memory.delay_steps)
-    return (counts[:count_budget] + spread)[:max_items]
+    headings = _plan_heading_change(
+        episode, max(0, max_items - len(counts[:count_budget])),
+        min_delay=min_delay, max_delay=max_delay,
+    )
+    return (counts[:count_budget] + headings)[:max_items]
 
 
 # SPOC ALL_PICKUP_TYPES_THOR. The objects CSV has no pickupable column.

@@ -42,25 +42,44 @@ MIRRORED_LR = {
     'to your right': 'to your left',
 }
 
+# Heading-change answers (SWM): net yaw change from frame i to the last frame.
+HEADING_OPTIONS = {
+    'same': 'the same way',
+    'left': 'turned to your left',
+    'right': 'turned to your right',
+    'around': 'turned around (facing the opposite way)',
+}
+
 # Template banks keyed by construct; modes selected via fact.extra['template_mode'].
 # {disambiguator} is '' when the category is unique, else a leading-space phrase
 # like " close to the Bread" (taxonomy referring-expression exception).
 CONSTRUCT_TEMPLATES = {
-    'egocentric_encoding': [
-        'Where is the {object_type}{disambiguator} relative to you right now?',
-    ],
-    'allocentric_encoding': [
-        'Where is the {object_type} in relation to the {reference_object}?',
-    ],
-    # Sequence questions name their reference frames by number ("frame i of n"
-    # labels): {enc_frame} is the encoding frame, {last_frame} the last shown frame.
-    'spatial_working_memory': {
+    # Egocentric encoding has two conditions: ``single_frame`` (one frame) and
+    # ``in_sequence`` (mode ``recall_relation``: every frame from frame i to the
+    # last is shown, but the answer is in frame i; formerly an SWM variant).
+    'egocentric_encoding': {
+        'single_frame': [
+            'Where is the {object_type}{disambiguator} relative to you right now?',
+        ],
         # Delay k is a difficulty axis — must be stated in the question (not implicit).
         'recall_relation': [
             (
                 'Where was the {object_type}{disambiguator} relative to you in frame '
                 '{enc_frame} ({k} {frames} before the last frame)?'
             )
+        ],
+    },
+    'allocentric_encoding': [
+        'Where is the {object_type} in relation to the {reference_object}?',
+    ],
+    # Sequence questions name their reference frames by number ("frame i of n"
+    # labels): {enc_frame} is the encoding frame, {last_frame} the last shown frame.
+    # SWM = integration across frames: no single shown frame holds the answer.
+    'spatial_working_memory': {
+        # Invariant 4: names the two frames only, never a move or a direction.
+        'heading_change': [
+            'Compared with frame {enc_frame}, which way are you facing in the last '
+            'frame (frame {last_frame})?',
         ],
         'recall_count': [
             'Across frames {enc_frame} to {last_frame}, how many different '

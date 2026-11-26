@@ -349,7 +349,7 @@ def build_verbose_preamble(episode: dict, fact: PlannedFact) -> str:
         parts.append(f'You are looking around a space identified as {room}.')
 
     queried = fact.queried_object_id
-    allow_scene_detail = fact.construct in _VERBOSE_SCENE_DETAIL_CONSTRUCTS
+    allow_scene_detail = fact.construct in _VERBOSE_SCENE_DETAIL_CONSTRUCTS or _in_sequence(fact)
 
     # Naming without relating: type names only — never edges_egocentric / bearings.
     # Union encode + query (and any shown intermediate) so multi-frame items still
@@ -569,6 +569,12 @@ def _slide_context(fact: PlannedFact) -> dict:
         'a_footprint_m',
         'axis_offset_deg',
         'rotation_since_last_seen',
+        'n_reseen_instances',
+        'double_counted',
+        'net_yaw_deg',
+        'total_rotation_deg',
+        'n_turn_events',
+        'turn_events_deg',
         'abc_co_visible',
         'abc_pair_together',
         'route_steps',
@@ -579,6 +585,9 @@ def _slide_context(fact: PlannedFact) -> dict:
         'consensus_heuristic_agrees',
     )
     ctx = {k: extra[k] for k in keys if extra.get(k) is not None and extra.get(k) != ''}
+    if fact.image_paths:
+        # Sequence length the model sees, for accuracy by number of frames.
+        ctx['n_frames_shown'] = len(fact.image_paths)
     return ctx
 
 
@@ -632,7 +641,15 @@ def infer_image_roles(fact: PlannedFact) -> list[str]:
         while len(roles) < n:
             roles.append(f'view {len(roles)}')
         return roles
-    if c == 'egocentric_encoding':
+    if c == 'spatial_working_memory' and extra.get('template_mode') == 'heading_change':
+        if n == 1:
+            return ['reference/query · facing']
+        return (
+            ['reference · facing to compare']
+            + [f'navigation · frame {i}' for i in range(1, n - 1)]
+            + ['query · now']
+        )
+    if c == 'egocentric_encoding' and not _in_sequence(fact):
         return [f'current view · find {ot}']
     if c == 'allocentric_encoding':
         ref = extra.get('reference_object') or extra.get('B') or 'reference'
@@ -641,7 +658,7 @@ def infer_image_roles(fact: PlannedFact) -> list[str]:
         'spatial_working_memory',
         'spatial_updating',
         'invisible_displacement',
-    ):
+    ) or _in_sequence(fact):
         if n == 1:
             return [f'encode/query · {ot}']
         roles = [f'encode · last clear view of {ot}']
@@ -659,11 +676,16 @@ def class4_slide_panel(*args, **kwargs):
     return _panel(*args, **kwargs)
 
 
+def _in_sequence(fact: PlannedFact) -> bool:
+    """Egocentric encoding over a frame sequence (the former SWM relation variant)."""
+    return (fact.extra or {}).get('condition') == 'in_sequence'
+
+
 def _attach_schema_hooks(episode: dict, fact: PlannedFact, item: CandidateItem) -> None:
     """Copy per-frame poses, window actions and displacement events onto the item."""
-    if fact.construct in _TRAJECTORY_HOOKS:
+    if fact.construct in _TRAJECTORY_HOOKS or _in_sequence(fact):
         item.agent_trajectory = _frame_poses(episode, fact) or None
-    if fact.construct in _ACTIONS_HOOKS:
+    if fact.construct in _ACTIONS_HOOKS or _in_sequence(fact):
         item.agent_actions = _window_actions(episode, fact) or None
     if fact.construct == 'invisible_displacement' and fact.displacement_event:
         item.displacement_event = dict(fact.displacement_event)

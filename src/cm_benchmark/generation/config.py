@@ -146,6 +146,9 @@ class SpatialWorkingMemoryConfig:
     delay_steps: tuple[int, ...]
     count_divisor: int
     count_min_instances: int
+    count_min_reseen_instances: int
+    heading_event_min_deg: float
+    heading_min_turn_events: int
 
 
 @dataclass(frozen=True)
@@ -486,6 +489,9 @@ def generation_config_from_mapping(
             delay_steps=tuple(int(k) for k in raw['spatial_working_memory']['delay_steps']),
             count_divisor=int(raw['spatial_working_memory']['count_divisor']),
             count_min_instances=int(raw['spatial_working_memory']['count_min_instances']),
+            count_min_reseen_instances=int(raw['spatial_working_memory']['count_min_reseen_instances']),
+            heading_event_min_deg=float(raw['spatial_working_memory']['heading_event_min_deg']),
+            heading_min_turn_events=int(raw['spatial_working_memory']['heading_min_turn_events']),
         ),
         spatial_updating=SpatialUpdatingConfig(
             min_delay=int(raw['spatial_updating']['min_delay']),

@@ -97,6 +97,20 @@ spatial_working_memory:
   delay_steps: [2, 5, 10, 20]  # none found; sample k from this set when the episode has it
   count_divisor: 3  # none found (5c7eb3c; max(1, max_items // divisor))
   count_min_instances: 2  # derived: n=1 has no memory load
+  # SWM = integration across frames, not retention over a delay (user decision
+  # 2026-11-25): with all frames shown at once, an item tests memory only if no
+  # single frame holds the answer. min_delay / max_delay / delay_steps above also
+  # set the span of egocentric-encoding in_sequence items (the former SWM
+  # relation variant) and of heading-change items.
+  # Count: at least this many counted instances must leave view (no pixels) and
+  # come back within the shown frames (re-identification; VSI-Bench counting).
+  count_min_reseen_instances: 1  # derived: answer not contained in a single frame
+  # Heading change (OST-Bench "Agent State"): rotations closer than
+  # class4.mc.turn_merge_m of travel are one cluster; a cluster is a turn event
+  # when its net turn is at least this (90/135/180; 45 = correction, not an event).
+  heading_event_min_deg: 55.0  # derived: between SPOC's 45 and 90 deg steps (user decision 2026-11-25)
+  # Separate turn events required in the span, so one visible turn never answers it.
+  heading_min_turn_events: 2  # derived: answer not contained in a single turn
 
 spatial_updating:
   min_delay: 2  # none found

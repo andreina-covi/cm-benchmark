@@ -169,9 +169,17 @@ then a whole-item re-resolve across every shown frame
 co-visible landmark, else a numbered mark. Landmark-relative
 directions are never used.
 
-### egocentric_encoding (class 1) — "Where is the X relative to you right now?"
+### egocentric_encoding (class 1) — "Where is the X relative to you right now?" / "Where was the X relative to you in frame 1 (k frames before the last frame)?"
 
-1. `plan_egocentric_encoding` walks steps in order; for each visible object:
+`plan_egocentric_encoding` runs two conditions, each capped at `max_per_construct`
+and stored as `context.condition`; the global balancer also caps them
+separately (units keyed by construct and condition), so neither crowds out the
+other. Every item stores `n_frames_shown`, so accuracy can be reported against
+sequence length.
+
+Condition `single_frame` (`_plan_ee_single_frame`), one frame:
+
+1. walks steps in order; for each visible object:
 2. `_distinguishable_encoding_sighting` — visibility model or QUERY pixel floors, not a border scrape, has an ego edge;
 3. `find_ego_edge`;
 4. `_ego_label_at` → `ego_label_from_world_pose` with the 20° FOV wedge (`AHEAD_HALF_WIDTH_FOV`) at the AABB centre; refused when the 2D bbox edges straddle a sector;
@@ -179,32 +187,53 @@ directions are never used.
 6. `_ego_pool_with_diagnostics` — answer + opposite + orthogonal, padded to four;
 7. stops after `max_per_construct` facts (first ones in walk order).
 
+Condition `in_sequence` (`_plan_ee_in_sequence`, template mode `recall_relation`),
+the former spatial-working-memory relation variant with its rules unchanged.
+Every frame from frame i to the last is shown, but the answer can be read from
+frame i alone, so it measures encoding, not memory:
+
+1. walks query steps; candidates are `non_visible_objects` that were never displaced;
+2. `_last_distinguishable_sighting` picks the encoding step (latest clear sighting, not the last weak scrape);
+3. `_delay_is_allowed` (`spatial_working_memory.min_delay` / `max_delay`, CLI `--swm_min_delay` / `--swm_max_delay`), with max delay capped at `max_frame_span_steps()` = `(max(frames.budgets) - 1) * frames.max_gap_steps` (a longer span fits no budget). Step 2 searches backwards only that far;
+4. `_has_real_move_between` — the delay must contain a floor-plane move;
+5. `_ego_label_at` at the encoding pose (20° wedge);
+6. a "current view" distractor: the label of another object visible now;
+7. `_ego_pool_with_diagnostics`, then `_referring_disambiguator` at the encoding step;
+8. frames = `_images_between(encode, query)` — every FOV frame from the sighting through the query, in time order, including turns in place. `_fits_whole` skips a span whose non-repeated frames exceed the largest budget; frames are never sampled (`_CONTIGUOUS_SEQUENCE` or `condition == in_sequence`), and frames repeating the previous pose are dropped (`_drop_repeated_poses`).
+
 ### allocentric_encoding (class 1)
 
 `plan_allocentric_encoding` always returns `unsupported`: the data has no
 trusted object facing, so object-to-object frames would be invented.
 
-### spatial_working_memory (class 2) — "Where was the X relative to you in frame 1 (k frames before the last frame)?"
+### spatial_working_memory (class 2) — "Across frames i to n, how many different Xs have you seen?" / "Compared with frame i, which way are you facing in the last frame (frame n)?"
 
-Relation mode (most of the budget):
+Spatial working memory here means integration across frames, not retention
+over a delay. Every frame is given to the model at once, so an item tests
+memory only if no single frame holds the answer. The old relation variant
+("where was X in frame i?") can be read from frame i, so it moved to egocentric
+encoding (`in_sequence`). A count needs integration only if one object is seen
+in several frames; a heading change needs several turns added up.
+`plan_spatial_working_memory` reserves `max(1, max_items // count_divisor)`
+slots for counts and fills the rest with heading changes. Both show every
+non-repeated frame of the window (`_swm_shown_steps`, at most the largest
+`frames.budgets`, never sampled).
 
-1. `plan_spatial_working_memory` walks query steps; candidates are `non_visible_objects` that were never displaced;
-2. `_last_distinguishable_sighting` picks the encoding step (latest clear sighting, not the last weak scrape);
-3. `_delay_is_allowed` (`--swm_min_delay` / `--swm_max_delay`), with max delay capped at `max_frame_span_steps()` = `(max(frames.budgets) - 1) * frames.max_gap_steps` (a longer span fits no budget). Step 2 searches backwards only that far;
-4. `_has_real_move_between` — the delay must contain a floor-plane move;
-5. `_ego_label_at` at the encoding pose (20° wedge);
-6. a "current view" distractor: the label of another object visible now;
-7. `_ego_pool_with_diagnostics`, then `_referring_disambiguator` at the encoding step;
-8. frames = `_images_between(encode, query)` — every FOV frame from the sighting through the query, in time order, including turns in place. `_fits_whole` skips a span whose non-repeated frames exceed the largest budget; frames are never sampled (`_CONTIGUOUS_SEQUENCE`), and frames repeating the previous pose are dropped (`_drop_repeated_poses`).
+Count mode (after VSI-Bench object counting, extended with re-identification):
 
-Count mode (reserved `max(1, max_items // 3)` slots): for each step,
-`_count_category_seen` counts distinct, distinguishable instances per
-category; categories with ≥ 2 instances become "how many different Xs have you
-seen (count each one once)?" items with off-by-one distractors, encoded at
-`_first_step_with_category`. `_count_category_on_screen` then counts every
-same-name instance with any pixels on the shown frames (`present_objects`, before
-any visibility filter); the item is dropped unless both counts agree, so the
-answer never depends on a threshold the viewer cannot see.
+1. for each step, `_count_category_seen` counts distinct, distinguishable instances per category; categories with ≥ `count_min_instances` instances are candidates, encoded at `_first_step_with_category`;
+2. `_count_category_on_screen` counts every same-name instance with any pixels on the shown frames (`present_objects`, before any visibility filter); the item is dropped unless both counts agree, so the answer never depends on a threshold the viewer cannot see;
+3. `_count_sighting_runs` — per counted instance, the runs of clear sightings over the shown frames; a run starts at the first frame or after a frame with no pixels of it at all (a few pixels neither start nor end a run). At least `count_min_reseen_instances` instances must have two or more runs (it left view and came back); stored as `n_reseen_instances`;
+4. `_count_options` — distractors `double_counted` (the sum of runs: every return counted as a new object, stored as `double_counted`, skipped if it equals the answer), then `off_by_one_count` (n − 1, n + 1), then `off_by_two_count` (n + 2). Every distractor has one tag.
+
+Heading-change mode (`_plan_heading_change`, after OST-Bench "Agent State"):
+
+1. every pair of FOV frames i < n within the SWM delay window whose non-repeated frames fit the largest budget (`_fits_whole`);
+2. `heading_turn_events` over every step from i to n (glance and done-override steps included): each step's rotation is its wrapped yaw change (right positive); rotations less than `class4.mc.turn_merge_m` of travel apart are one cluster, as for route items; a cluster whose net turn is at least `heading_event_min_deg` (55°) is a turn event, so a 45° correction or a glance that returns to net 0 is not. At least `heading_min_turn_events` (2) events are required, so one visible turn never answers the item;
+3. gold = net yaw change from frame i to frame n, wrapped to (−180°, 180°] (corrections and glances included), labelled by `heading_label`: same 0°, right +90°, left −90°, around 180°, each within `directions.near_cardinal_max_deg` (±20°); anything outside the cones (45°, 135°) is rejected;
+4. `heading_distractors`, one tag each: `partial_sum` (net heading just before the last event starts: later turns forgotten), `mirrored` (left/right flipped), `last_turn_only` (the last event alone), then `remaining_label` for any free slot. All four answers are always offered (`HEADING_OPTIONS`);
+5. per last frame n, the shortest span per answer label is a candidate; candidates are drawn round-robin over (answer, number of events), rarest group first, each frame used at most once as i and once as n;
+6. stored: `net_yaw_deg`, `total_rotation_deg` (sum of |rotations|), `n_turn_events`, `turn_events_deg`, `n_frames_shown`. The question names the two frames only (invariant 4).
 
 ### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Where is the X relative to you in the last frame (frame n)?"
 

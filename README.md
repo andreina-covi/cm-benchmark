@@ -180,8 +180,8 @@ loaded file when present: `--max_per_construct`, `--frame_budgets`,
 `frames.budgets` (default `[16, 24, 32]`; `--frame_budgets 16 24 32` overrides
 it) are the image limits of the VLMs to evaluate. Every multi-frame item gets
 one frame list per budget it fits, after frames that repeat the previous pose
-are dropped: a span that fits is shown whole. Spatial working memory and
-spatial updating are never sampled. A longer class-4 span is sampled keeping
+are dropped: a span that fits is shown whole. Spatial working memory,
+spatial updating and in-sequence egocentric encoding are never sampled. A longer class-4 span is sampled keeping
 the required frames (the frames before and after each turn; for survey and the
 free-action pairs also source/goal sightings and survey path covers) with at
 most `frames.max_gap_steps` pool frames between shown frames. A route answer
@@ -195,8 +195,8 @@ and regenerate. Human review class-4 load is capped
 separately (`review.class4_per_reviewer` / `--class4-per-reviewer`; see
 [`docs/generation.md`](docs/generation.md)).
 
-Spatial updating and spatial working memory show every field-of-view frame
-from the sighting through the query, in time order, including a turn in
+Spatial updating, spatial working memory and in-sequence egocentric encoding
+show every field-of-view frame from the first frame the question names through the query, in time order, including a turn in
 place. Perspective taking uses the one frame in which all three named
 objects are visible. An invisible-displacement destination must be clearly
 visible in a frame before the query.

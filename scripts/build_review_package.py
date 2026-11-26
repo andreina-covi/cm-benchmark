@@ -396,7 +396,8 @@ def _frame_labels_for_review(item: dict, n_frames: int) -> list[str]:
     labels: list[str] = []
     for i in range(n_frames):
         label = f'frame {i + 1} of {n_frames}'
-        if item.get('construct') in _FRAMES_AGO_CONSTRUCTS:
+        in_sequence = (item.get('context') or {}).get('condition') == 'in_sequence'
+        if item.get('construct') in _FRAMES_AGO_CONSTRUCTS or in_sequence:
             back = n_frames - 1 - i
             ago = 'last frame' if back == 0 else f"{back} frame{'' if back == 1 else 's'} before the last"
             label = f'{label} · {ago}'
@@ -615,6 +616,7 @@ function instructionsHtml() {
     + '<div class="card"><p>You will see first-person frames and one question per item. Frames are in time order, one at a time, labeled "frame i of n". Questions name the frames they refer to by these numbers; "the last frame" is frame n. Where a question counts frames back, the label also says how far back each frame is.</p>'
     + '<p>The question is shown next to the frames. Read it, then look through the frames it refers to. When an item has more than one frame, move with Previous and Next, the left and right arrow keys, the slider, or the thumbnail strip. Which distinct frames you open is recorded. On a narrow screen the question sits under the frames.</p>'
     + '<p>For multiple choice, pick the option that matches the frames, or <strong>Can\'t tell</strong>.</p>'
+    + '<p>Some questions compare two frames: which way you face in the last frame compared with an earlier one ("the same way", "turned to your left", "turned to your right", "turned around"). Look at every frame in between; one turn alone may not give the answer. Count questions ask how many different objects of a kind you saw: an object that leaves the view and comes back is still one object.</p>'
     + '<p>Route questions ask which route takes you from your position in frame i to your position in frame j. Each option lists the turns in order and the landmark where each turn happens; "walk ahead" means that turn has no landmark. "Turn sharply" is a 135° turn, "turn around" 180°. The options differ in a turn\'s direction or in where a landmark comes.</p>'
     + '<p>Also tick any problem that applies:</p><ul>'
     + '<li>ambiguous reference</li><li>unclear question</li>'

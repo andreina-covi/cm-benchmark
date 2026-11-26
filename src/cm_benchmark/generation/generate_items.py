@@ -151,7 +151,7 @@ def balance_scene_items(
     """Pick a whole-set sample, then cap answer labels.
 
     Each scene contributes at most ``max_per_scene`` concise facts per
-    construct. Those lists are shuffled with ``seed`` and drawn round-robin
+    construct (per construct and ``context.condition`` when an item has one). Those lists are shuffled with ``seed`` and drawn round-robin
     up to ``max_per_construct`` times the number of scenes. The label cap
     runs after that draw, after the perspective-taking control-bin cap
     (``max_control_share``). Verbose partners of a kept concise item are kept.
@@ -174,15 +174,19 @@ def balance_scene_items(
         scene_ids = {item.get('item_id') for item in items}
         for item in items:
             construct = item.get('construct') or ''
-            if construct not in units:
-                units[construct] = []
-                order.append(construct)
+            # Each condition (egocentric encoding: single_frame / in_sequence) gets
+            # its own cap, so one condition never crowds out the other.
+            condition = (item.get('context') or {}).get('condition')
+            unit = f'{construct}::{condition}' if condition else construct
+            if unit not in units:
+                units[unit] = []
+                order.append(unit)
             if item.get('status') != 'ok':
                 unsupported.setdefault((name, construct), item)
                 continue
             had_ok.add((name, construct))
             if _is_selection_unit(item, scene_ids):
-                units[construct].append((name, item))
+                units[unit].append((name, item))
 
     rng = random.Random(seed)
     keep: dict[str, set[str]] = {name: set() for name, _items in scenes}

@@ -44,5 +44,5 @@ def test_visible_planners_skip_behind_label():
 
     from cm_benchmark.generation import planner
 
-    for fn in (planner.plan_egocentric_encoding, planner.plan_spatial_working_memory):
+    for fn in (planner._plan_ee_single_frame, planner._plan_ee_in_sequence):
         assert "if label == 'behind you':" in inspect.getsource(fn)
