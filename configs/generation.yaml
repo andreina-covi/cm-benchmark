@@ -105,12 +105,19 @@ spatial_working_memory:
   # Count: at least this many counted instances must leave view (no pixels) and
   # come back within the shown frames (re-identification; VSI-Bench counting).
   count_min_reseen_instances: 1  # derived: answer not contained in a single frame
-  # Heading change (OST-Bench "Agent State"): rotations closer than
+  # Heading change (inspired by OST-Bench "Agent State", which asks a two-way
+  # clockwise / counterclockwise question; here four labels): rotations closer than
   # class4.mc.turn_merge_m of travel are one cluster; a cluster is a turn event
   # when its net turn is at least this (90/135/180; 45 = correction, not an event).
   heading_event_min_deg: 55.0  # derived: between SPOC's 45 and 90 deg steps (user decision 2026-11-25)
   # Separate turn events required in the span, so one visible turn never answers it.
   heading_min_turn_events: 2  # derived: answer not contained in a single turn
+  # Frames i and n must share no clearly seen object (else the answer comes from
+  # matching the two views); not a number, so no key. Heading items kept per house
+  # (one episode per house): stops a few houses filling the construct. Inert under
+  # the default budget (max_per_scene 2); generation_max sets null, and
+  # ablations/heading_cap.yaml is generation_max plus this cap.
+  heading_max_per_house: 15  # none found (user decision 2026-11-26)
 
 spatial_updating:
   min_delay: 2  # none found

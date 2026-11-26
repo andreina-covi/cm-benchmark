@@ -149,6 +149,7 @@ class SpatialWorkingMemoryConfig:
     count_min_reseen_instances: int
     heading_event_min_deg: float
     heading_min_turn_events: int
+    heading_max_per_house: int
 
 
 @dataclass(frozen=True)
@@ -492,6 +493,7 @@ def generation_config_from_mapping(
             count_min_reseen_instances=int(raw['spatial_working_memory']['count_min_reseen_instances']),
             heading_event_min_deg=float(raw['spatial_working_memory']['heading_event_min_deg']),
             heading_min_turn_events=int(raw['spatial_working_memory']['heading_min_turn_events']),
+            heading_max_per_house=_cap(raw['spatial_working_memory'].get('heading_max_per_house')),
         ),
         spatial_updating=SpatialUpdatingConfig(
             min_delay=int(raw['spatial_updating']['min_delay']),

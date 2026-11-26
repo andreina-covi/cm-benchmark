@@ -215,7 +215,10 @@ memory only if no single frame holds the answer. The old relation variant
 encoding (`in_sequence`). A count needs integration only if one object is seen
 in several frames; a heading change needs several turns added up.
 `plan_spatial_working_memory` reserves `max(1, max_items // count_divisor)`
-slots for counts and fills the rest with heading changes. Both show every
+slots for counts and fills the rest with heading changes; heading change is the
+main template, count a small secondary one (on Round 2, 82% of count items
+answer 2, so scores are reported next to the always-majority baseline,
+`evaluation.score.swm_metrics`). Both show every
 non-repeated frame of the window (`_swm_shown_steps`, at most the largest
 `frames.budgets`, never sampled).
 
@@ -226,14 +229,16 @@ Count mode (after VSI-Bench object counting, extended with re-identification):
 3. `_count_sighting_runs` — per counted instance, the runs of clear sightings over the shown frames; a run starts at the first frame or after a frame with no pixels of it at all (a few pixels neither start nor end a run). At least `count_min_reseen_instances` instances must have two or more runs (it left view and came back); stored as `n_reseen_instances`;
 4. `_count_options` — distractors `double_counted` (the sum of runs: every return counted as a new object, stored as `double_counted`, skipped if it equals the answer), then `off_by_one_count` (n − 1, n + 1), then `off_by_two_count` (n + 2). Every distractor has one tag.
 
-Heading-change mode (`_plan_heading_change`, after OST-Bench "Agent State"):
+Heading-change mode (`_plan_heading_change`, inspired by OST-Bench "Agent State",
+which asks a two-way clockwise / counterclockwise question; here four labels):
 
 1. every pair of FOV frames i < n within the SWM delay window whose non-repeated frames fit the largest budget (`_fits_whole`);
 2. `heading_turn_events` over every step from i to n (glance and done-override steps included): each step's rotation is its wrapped yaw change (right positive); rotations less than `class4.mc.turn_merge_m` of travel apart are one cluster, as for route items; a cluster whose net turn is at least `heading_event_min_deg` (55°) is a turn event, so a 45° correction or a glance that returns to net 0 is not. At least `heading_min_turn_events` (2) events are required, so one visible turn never answers the item;
+2b. frames i and n share no clearly seen object (`visible_objects`): with the same view in both, a model could answer "same way" by matching the two images without adding up turns. Stored: `displacement_m` (straight-line distance between the poses of frames i and n);
 3. gold = net yaw change from frame i to frame n, wrapped to (−180°, 180°] (corrections and glances included), labelled by `heading_label`: same 0°, right +90°, left −90°, around 180°, each within `directions.near_cardinal_max_deg` (±20°); anything outside the cones (45°, 135°) is rejected;
 4. `heading_distractors`, one tag each: `partial_sum` (net heading just before the last event starts: later turns forgotten), `mirrored` (left/right flipped), `last_turn_only` (the last event alone), then `remaining_label` for any free slot. All four answers are always offered (`HEADING_OPTIONS`);
-5. per last frame n, the shortest span per answer label is a candidate; candidates are drawn round-robin over (answer, number of events), rarest group first, each frame used at most once as i and once as n;
-6. stored: `net_yaw_deg`, `total_rotation_deg` (sum of |rotations|), `n_turn_events`, `turn_events_deg`, `n_frames_shown`. The question names the two frames only (invariant 4).
+5. per last frame n, the shortest span per (answer label, turn-event group 2 / 3 / 4+) is a candidate, so longer spans are kept beside the minimal one without a quota; candidates are drawn round-robin over those groups, rarest group first, each frame used at most once as i and once as n, up to `heading_max_per_house` items per house (15 in `generation.yaml`, inert under its `max_per_scene` 2; null in `generation_max.yaml`; `configs/ablations/heading_cap.yaml` = no caps plus this one);
+6. stored: `net_yaw_deg`, `total_rotation_deg` (sum of |rotations|), `n_turn_events`, `turn_events_deg`, `displacement_m`, `n_frames_shown`. `swm_metrics` reports accuracy by turn-event group and by `total_rotation_deg` group. The question names the two frames only (invariant 4).
 
 ### invisible_displacement (class 2) — "While the X was out of your view, someone moved it onto the Y. Where is the X relative to you in the last frame (frame n)?"
 

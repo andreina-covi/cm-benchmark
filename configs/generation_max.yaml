@@ -10,3 +10,6 @@ budget:
 
 options:
   max_label_share: 1.0  # no label trim
+
+spatial_working_memory:
+  heading_max_per_house: null  # no cap (configs/ablations/heading_cap.yaml adds it back)

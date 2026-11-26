@@ -344,6 +344,73 @@ def rotation_metrics(
     return out
 
 
+HEADING_ROTATION_BIN_EDGES_DEG = (360.0, 540.0)
+
+
+def _turn_event_group(n: Any) -> Optional[str]:
+    """``2`` / ``3`` / ``4+`` for a heading item's ``n_turn_events``."""
+    if n is None:
+        return None
+    return '4+' if int(n) >= 4 else str(int(n))
+
+
+def swm_metrics(
+    items: list[dict[str, Any]],
+    choices: dict[str, Optional[str]],
+    rotation_edges=HEADING_ROTATION_BIN_EDGES_DEG,
+) -> dict:
+    """Spatial working memory accuracy, per template.
+
+    ``heading_change`` (the main template): accuracy overall, by turn-event group
+    (``n_turn_events``: 2 / 3 / 4+) and by ``total_rotation_deg`` group.
+    ``recall_count`` (secondary): accuracy next to ``majority_baseline``, the
+    accuracy of always answering the most common gold count (about 0.8 for
+    "2" on Round 2), so a model at that level has not shown it counts.
+    """
+    out: dict[str, dict] = {}
+    for mode in ('heading_change', 'recall_count'):
+        rows = [
+            it for it in items
+            if it.get('construct') == 'spatial_working_memory'
+            and _item_extra(it).get('template_mode') == mode
+            and it.get('item_id') in choices
+        ]
+        if not rows:
+            continue
+        correct = {it['item_id']: score_mcq(it, choices[it['item_id']])['correct'] for it in rows}
+        k = sum(correct.values())
+        entry: dict[str, Any] = _acc_row(k, len(rows))
+        if mode == 'heading_change':
+            by_events: dict[str, list[int]] = {}
+            by_rot: dict[str, list[int]] = {}
+            for it in rows:
+                ctx = _item_extra(it)
+                for table, key in (
+                    (by_events, _turn_event_group(ctx.get('n_turn_events'))),
+                    (by_rot, rotation_bin(ctx.get('total_rotation_deg'), rotation_edges)),
+                ):
+                    if key is None:
+                        continue
+                    cell = table.setdefault(key, [0, 0])
+                    cell[0] += int(correct[it['item_id']])
+                    cell[1] += 1
+            rot_order = [rotation_bin(e - 1.0, rotation_edges) for e in rotation_edges] + [
+                rotation_bin(rotation_edges[-1] + 1.0, rotation_edges)
+            ]
+            entry['by_n_turn_events'] = {g: _acc_row(*by_events[g]) for g in ('2', '3', '4+') if g in by_events}
+            entry['by_total_rotation_deg'] = {g: _acc_row(*by_rot[g]) for g in rot_order if g in by_rot}
+        else:
+            golds: dict[str, int] = {}
+            for it in rows:
+                gold = (it.get('options') or {}).get(it.get('answer'))
+                golds[str(gold)] = golds.get(str(gold), 0) + 1
+            top, top_n = max(golds.items(), key=lambda kv: (kv[1], kv[0]))
+            entry['majority_answer'] = top
+            entry['majority_baseline'] = top_n / len(rows)
+        out[mode] = entry
+    return out
+
+
 def free_action_descriptives(
     items: list[dict[str, Any]], scores: dict[str, dict[str, Any]]
 ) -> dict:

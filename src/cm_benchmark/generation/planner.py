@@ -1613,6 +1613,13 @@ def _heading_rows(episode: dict, start_step: int, end_step: int) -> list[tuple[i
     return rows
 
 
+def _displacement_m(rows) -> Optional[float]:
+    """Straight-line distance (m) between the first and last ``(step, yaw, x, z)`` rows."""
+    if not rows or None in (rows[0][2], rows[0][3], rows[-1][2], rows[-1][3]):
+        return None
+    return round(math.hypot(rows[-1][2] - rows[0][2], rows[-1][3] - rows[0][3]), 2)
+
+
 _HEADING_MIRROR = {'left': 'right', 'right': 'left'}
 
 
@@ -1656,14 +1663,18 @@ def _plan_heading_change(
     and glances included), labelled by ``heading_label``. The span needs at least
     ``spatial_working_memory.heading_min_turn_events`` separate turn events, so one
     visible turn is never enough, and every non-repeated frame from i to n is shown
-    (it must fit the largest ``frames.budgets``). For each last frame, the shortest
-    span per answer label is a candidate; candidates are drawn round-robin over
-    (label, number of turn events), rarest group first, each frame used once as i
-    and once as n.
+    (it must fit the largest ``frames.budgets``). Frames i and n share no clearly
+    seen object, so the answer cannot come from matching the two views. For each
+    last frame, the shortest span per (answer label, turn-event group 2 / 3 / 4+)
+    is a candidate; candidates are drawn round-robin over those groups, rarest
+    first, each frame used once as i and once as n, up to
+    ``spatial_working_memory.heading_max_per_house`` items per house.
     """
+    swm = _cfg().spatial_working_memory
+    if swm.heading_max_per_house is not None:
+        max_items = min(max_items, int(swm.heading_max_per_house))
     if max_items <= 0:
         return []
-    swm = _cfg().spatial_working_memory
     fov = [
         int(st['step'])
         for st in episode.get('steps') or []
@@ -1672,7 +1683,9 @@ def _plan_heading_change(
     fov.sort()
     cands: list[PlannedFact] = []
     for qi, n in enumerate(fov):
-        best: dict[str, PlannedFact] = {}
+        best: dict[tuple, PlannedFact] = {}
+        step_n = step_by_index(episode, n) or {}
+        seen_n = set(step_n.get('visible_objects') or {})
         for i in reversed(fov[:qi]):
             k = n - i
             if max_delay is not None and k > max_delay:
@@ -1686,12 +1699,17 @@ def _plan_heading_change(
             if len(events) < int(swm.heading_min_turn_events):
                 continue
             gold = heading_label(net)
-            if gold is None or gold in best:
+            group = min(len(events), 4)
+            if gold is None or (gold, group) in best:
+                continue
+            # Same view in frames i and n: answerable by matching the two images.
+            step_i = step_by_index(episode, i) or {}
+            if seen_n & set(step_i.get('visible_objects') or {}):
                 continue
             dists = heading_distractors(gold, rows, events)
             pool = [HEADING_OPTIONS[gold]] + [HEADING_OPTIONS[lab] for _t, lab in dists]
             seeds = [_mode_seed(tag, HEADING_OPTIONS[lab]) for tag, lab in dists]
-            best[gold] = PlannedFact(
+            best[(gold, group)] = PlannedFact(
                 construct='spatial_working_memory',
                 status='ok',
                 query_step=n,
@@ -1710,6 +1728,7 @@ def _plan_heading_change(
                     'total_rotation_deg': round(total, 1),
                     'n_turn_events': len(events),
                     'turn_events_deg': [round(e['net_deg'], 1) for e in events],
+                    'displacement_m': _displacement_m(rows),
                 },
             )
         cands.extend(best.values())
@@ -1874,7 +1893,7 @@ def plan_spatial_working_memory(
     With every frame given at once, an item tests memory only if no single frame
     holds the answer. Count items need an instance that leaves view and comes
     back (re-identification, after VSI-Bench object counting); heading-change
-    items need two or more separate turns summed (after OST-Bench "Agent State").
+    items need two or more separate turns summed (inspired by OST-Bench "Agent State").
     The former relation variant ("where was X in frame i?") is egocentric
     encoding, condition ``in_sequence`` (``_plan_ee_in_sequence``).
     """

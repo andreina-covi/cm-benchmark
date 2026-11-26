@@ -140,8 +140,9 @@ class_2:
         one of which leaves view (no pixels) and returns (after VSI-Bench object
         counting, with re-identification). Heading change: net yaw change from frame
         i to the last frame over every step, wrapped to (-180, 180] and labelled
-        within directions.near_cardinal_max_deg of 0 / -90 / +90 / 180 (after
-        OST-Bench "Agent State"); at least two separate turn events in the span.
+        within directions.near_cardinal_max_deg of 0 / -90 / +90 / 180 (inspired by
+        OST-Bench "Agent State", which asks clockwise / counterclockwise); at least two
+        separate turn events in the span, and frames i and n share no clearly seen object.
       distractor_pattern: [double_counted, off_by_one_count, off_by_two_count, partial_sum, mirrored, last_turn_only, remaining_label]
       discriminators:
         - no single shown frame holds the answer

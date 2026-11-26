@@ -575,6 +575,7 @@ def _slide_context(fact: PlannedFact) -> dict:
         'total_rotation_deg',
         'n_turn_events',
         'turn_events_deg',
+        'displacement_m',
         'abc_co_visible',
         'abc_pair_together',
         'route_steps',

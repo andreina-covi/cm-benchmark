@@ -102,9 +102,9 @@ def test_count_options_double_counted_tag():
     assert seeds[-1] == 'off_by_two_count::5'
 
 
-def _heading_episode():
-    """Walk: right 90, 1.5 m, right 90, 1.5 m, left 90, 1.5 m (45 deg / 0.5 m steps)."""
-    rows = _rows('RR' + 'MMM' + 'RR' + 'MMM' + 'LL' + 'MMM')
+def _heading_episode(spec='RR' + 'MMM' + 'RR' + 'MMM' + 'LL' + 'MMM'):
+    """Walk from ``spec``; default: right 90, 1.5 m, right 90, 1.5 m, left 90, 1.5 m."""
+    rows = _rows(spec)
     steps, traj, acts = [], [], []
     prev = None
     for si, yaw, x, z in rows:
@@ -173,3 +173,70 @@ def test_heading_change_items_with_default_config():
         assert it['options'][it['answer']] == HEADING_OPTIONS[heading_label(net)]
     golds = {it['options'][it['answer']] for it in heading}
     assert len(golds) >= 2, golds
+
+
+def _heading_facts(episode, max_items=20):
+    from cm_benchmark.generation.planner import _plan_heading_change
+
+    return _plan_heading_change(episode, max_items)
+
+
+@pytest.mark.near_cardinal
+def test_heading_rejects_shared_view_and_stores_displacement():
+    ep = _heading_episode()
+    facts = _heading_facts(ep)
+    assert facts
+    for f in facts:
+        assert f.extra['displacement_m'] is not None and f.extra['displacement_m'] >= 0
+    # One object clearly seen in every frame: frames i and n always share it.
+    for st in ep['steps']:
+        st['visible_objects'] = {'Sofa|1': {}}
+    assert _heading_facts(ep) == []
+    # Seen only in the first and last frames: spans from step 0 to the end are dropped.
+    last = ep['steps'][-1]['step']
+    for st in ep['steps']:
+        st['visible_objects'] = {'Sofa|1': {}} if st['step'] in (0, last) else {}
+    assert all(not (f.encoding_step == 0 and f.query_step == last) for f in _heading_facts(ep))
+
+
+@pytest.mark.near_cardinal
+def test_heading_picks_spread_over_event_groups_and_house_cap():
+    from cm_benchmark.generation.config import get_generation_config, use_generation_config
+    from dataclasses import replace
+
+    # Four right turns then a left: spans with 2, 3 and 4 events all get picked.
+    facts = _heading_facts(_heading_episode('RRMMM' * 4 + 'LLMMM'))
+    assert {f.extra['n_turn_events'] for f in facts} == {2, 3, 4}
+    cfg = get_generation_config()
+    capped = replace(cfg, spatial_working_memory=replace(cfg.spatial_working_memory, heading_max_per_house=1))
+    with use_generation_config(capped):
+        assert len(_heading_facts(_heading_episode())) == 1
+
+
+def test_swm_metrics_groups_and_count_baseline():
+    from cm_benchmark.evaluation.score import swm_metrics
+
+    def heading(iid, n_events, total, ok):
+        return {
+            'item_id': iid, 'construct': 'spatial_working_memory', 'answer': 'A',
+            'options': {'A': 'x', 'B': 'y'},
+            'context': {'template_mode': 'heading_change', 'n_turn_events': n_events, 'total_rotation_deg': total},
+        }, ('A' if ok else 'B')
+
+    def count(iid, gold):
+        return {
+            'item_id': iid, 'construct': 'spatial_working_memory', 'answer': 'A',
+            'options': {'A': gold, 'B': '9'}, 'context': {'template_mode': 'recall_count'},
+        }, 'A'
+
+    pairs = [heading('h1', 2, 270, True), heading('h2', 3, 450, False), heading('h3', 5, 720, True),
+             count('c1', '2'), count('c2', '2'), count('c3', '3'), count('c4', '2')]
+    items = [p[0] for p in pairs]
+    choices = {p[0]['item_id']: p[1] for p in pairs}
+    out = swm_metrics(items, choices)
+    h = out['heading_change']
+    assert h['n'] == 3 and h['n_correct'] == 2
+    assert {g: r['n_correct'] for g, r in h['by_n_turn_events'].items()} == {'2': 1, '3': 0, '4+': 1}
+    assert list(h['by_total_rotation_deg']) == ['<360', '360-540', '>540']
+    c = out['recall_count']
+    assert c['majority_answer'] == '2' and c['majority_baseline'] == 0.75 and c['accuracy'] == 1.0

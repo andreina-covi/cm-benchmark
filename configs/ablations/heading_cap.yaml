@@ -1,0 +1,14 @@
+# Overlay — generation_max (no caps) plus the per-house heading-change cap, so a
+# large run is not dominated by the few houses with many turns.
+name: heading_cap
+
+budget:
+  max_per_construct: null
+  max_per_scene: null
+  candidate_pool: null
+
+options:
+  max_label_share: 1.0
+
+spatial_working_memory:
+  heading_max_per_house: 15
