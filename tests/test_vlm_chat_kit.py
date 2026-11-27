@@ -240,3 +240,53 @@ def test_review_package_item_list_reuse(tmp_path: Path):
         if meta['role'] == 'review'
     }
     assert set(manifest['item_ids']) <= study
+
+
+def test_kit_adds_model_only_count_and_reports_per_model(tmp_path: Path):
+    build_review = _load('build_review_package.py')
+    build_kit = _load('build_vlm_chat_kit.py')
+    analyze = _load('analyze_review.py')
+    frame = tmp_path / 'img_0.png'
+    frame.write_bytes(b'x')
+    items = _pool()
+    for item in items:
+        item['image_paths'] = [str(frame)]
+    counts = []
+    for n, gold in enumerate(['2', '2', '3']):
+        it = {
+            **items[0], 'item_id': f'count_{n}', 'construct': 'spatial_working_memory',
+            'options': {'A': gold, 'B': '9', 'C': '8', 'D': '7'}, 'answer': 'A',
+            'image_paths': [str(frame)] * 12, 'context': {'template_mode': 'recall_count'},
+        }
+        counts.append(it)
+    items_path = tmp_path / 'items.json'
+    items_path.write_text(json.dumps({'items': items + counts}))
+    review_out = tmp_path / 'review'
+    build_review.build_package(items_path, review_out, per_construct=3, n_reviewers=2, reviews=1, seed=1)
+    human_ids = set(json.loads((review_out / 'manifest.json').read_text())['items'])
+    assert not human_ids & {c['item_id'] for c in counts}
+    kit_out = tmp_path / 'kit'
+    manifest = build_kit.build_kit(items_path, kit_out, review_package=review_out, items_per_construct=100)
+    assert manifest['model_only_item_ids'] == ['count_0', 'count_1', 'count_2']
+    answers = {r['item_id']: r for r in csv.DictReader((kit_out / 'answers.csv').open())}
+    assert answers['count_0']['role'] == 'model_only' and answers['count_0']['n_frames'] == '12'
+    results = list(csv.DictReader((kit_out / 'results_template.csv').open()))
+    filled = kit_out / 'results.csv'
+    with filled.open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(results[0]))
+        writer.writeheader()
+        for model, right in (('m1', True), ('m2', False)):
+            for row in results:
+                if row['condition'] != 'vision':
+                    continue
+                gold = answers[row['item_id']]['gold']
+                writer.writerow({**row, 'model': model, 'raw_reply': gold if right else ('B' if gold != 'B' else 'C')})
+    data = analyze.collect_vlm_analysis(kit_out, results_path=filled)
+    accs = {(r['model'], r['construct']): r['accuracy'] for r in data['results']}
+    assert accs[('m1', 'spatial_working_memory')] == 1.0 and accs[('m2', 'spatial_working_memory')] == 0.0
+    swm = next(g for g in data['by_group'] if g['model'] == 'm1' and g['construct'] == 'spatial_working_memory')
+    assert swm['groups']['n_frames']['9-16'] == {'n_correct': 3, 'n': 3}
+    assert data['baselines']['recall_count']['majority_answer'] == '2'
+    assert abs(data['baselines']['recall_count']['accuracy'] - 2 / 3) < 1e-9
+    text = analyze.format_vlm_analysis(data)
+    assert 'baseline recall_count' in text and 'm2' in text

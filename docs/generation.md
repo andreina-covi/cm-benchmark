@@ -337,14 +337,22 @@ Process and checklist: [`Evaluation_process_manual.md`](../Evaluation_process_ma
 
 ---
 
-## VLM chat kit (manual pilot)
+## VLM kit (chat apps or API runs)
 
 Same study items as the human review package (same `--seed` /
 `--per-construct` / `--class4-per-reviewer`, or `--review-package` to reuse
 that manifest). Default `--items-per-construct 2` so each construct has two
 chat examples (`construct_batches/<construct>.txt` lists their vision
 folders). Prefer `--review-package` when a human package already exists so
-class-4 caps and sampling stay aligned.
+class-4 caps and sampling stay aligned. For a full model run pass a large
+`--items-per-construct` (e.g. 1000) so every study item is kept.
+
+The kit also adds every item of a `review.model_only_templates` template (SWM
+count), which reviewers never see (`role` `model_only` in `answers.csv`; turn
+off with `--no-model-only`). `answers.csv` stores `n_frames`, the number of
+images attached (1–32), so accuracy is reported by frame count. For an API
+run, send each item's frames in name order plus the text of `prompt.txt`, and
+write one results row per model, item and condition.
 
 Each item has `vision/` (ordered `frame_01.png` … + `prompt.txt`) and
 `blind/` (prompt only). `prompt.txt` holds the task instruction, question,
@@ -403,9 +411,12 @@ python scripts/analyze_review.py \
   --human-package /path/to/review_package
 ```
 
-Reports per construct × vision/blind accuracy, Can't tell rate, MC chance
-(0.25), human accuracy on the same items, and flags when blind is well above
-chance or vision is near ceiling.
+Reports per model × construct × vision/blind accuracy, Can't tell rate, MC
+chance (0.25), human accuracy on the same items, and flags when blind is well
+above chance or vision is near ceiling; per model and condition, accuracy by
+subgroup (`n_frames` 1–8 / 9–16 / 17–24 / 25+, template, condition, turn
+events, total rotation); and the always-majority baseline for SWM count.
+`plot_review_report.py` draws one vision/blind chart per model.
 
 ---
 

@@ -181,6 +181,19 @@ def plot_human(section: dict, out: Path, plt) -> list[Path]:
 
 
 def plot_vlm(section: dict, out: Path, plt) -> list[Path]:
+    """One vision/blind bar chart per model (``vlm_accuracy[_<model>].png``)."""
+    rows = section.get('results') or []
+    models = sorted({str(row.get('model') or '') for row in rows})
+    if len(models) > 1:
+        written: list[Path] = []
+        for model in models:
+            sub = {**section, 'results': [r for r in rows if str(r.get('model') or '') == model]}
+            written.extend(_plot_vlm_one(sub, out, plt, model))
+        return written
+    return _plot_vlm_one(section, out, plt, models[0] if models else '')
+
+
+def _plot_vlm_one(section: dict, out: Path, plt, model: str) -> list[Path]:
     rows = section.get('results') or []
     if not rows:
         return []
@@ -218,13 +231,14 @@ def plot_vlm(section: dict, out: Path, plt) -> list[Path]:
         series.append(('chance', chance))
     if any(v is not None for v in human):
         series.append(('human', human))
-    path = out / 'vlm_accuracy.png'
+    safe = ''.join(ch if ch.isalnum() or ch in '-_.' else '_' for ch in model)
+    path = out / (f'vlm_accuracy_{safe}.png' if safe else 'vlm_accuracy.png')
     _bar(
         plt,
         labels=[_short(c) for c in constructs],
         series=series,
         ylabel='accuracy',
-        title='VLM chat kit: vision vs blind',
+        title=f'VLM: vision vs blind{" (" + model + ")" if model else ""}',
         path=path,
     )
     return [path]

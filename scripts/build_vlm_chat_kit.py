@@ -19,6 +19,12 @@ Selection matches ``build_review_package.py`` when ``--seed`` and
 ``--per-construct`` match. Default ``--items-per-construct 2`` so each
 construct has at least two chat examples. Pass ``--review-package`` to reuse
 an existing human study list. ``--max-items`` caps the whole kit (smoke test).
+
+Templates in ``review.model_only_templates`` (SWM count) are never shown to
+reviewers; the kit adds every such item on top of the study list (role
+``model_only`` in ``answers.csv``) unless ``--no-model-only`` is given.
+``answers.csv`` also stores ``n_frames`` (images attached), so accuracy can be
+reported by frame count.
 """
 
 from __future__ import annotations
@@ -201,6 +207,19 @@ def study_items_from_review_package(
     return ordered
 
 
+def model_only_items(all_items: list[dict], exclude: set[str]) -> list[dict]:
+    """Concise ok MC items of a ``review.model_only_templates`` template, not in ``exclude``."""
+    templates = _load_review()._model_only_templates()
+    return [
+        item for item in all_items
+        if item.get('question_style') != 'verbose'
+        and item.get('status') == 'ok'
+        and item.get('options')
+        and (item.get('context') or {}).get('template_mode') in templates
+        and item.get('item_id') not in exclude
+    ]
+
+
 def write_item_folders(
     item: dict,
     kit_root: Path,
@@ -235,6 +254,7 @@ def build_kit(
     max_items: int | None = None,
     review_package: Path | None = None,
     class4_per_reviewer: int | None = None,
+    add_model_only: bool = True,
 ) -> dict:
     """Write the chat kit. Return the kit manifest dict."""
     review = _load_review()
@@ -262,6 +282,11 @@ def build_kit(
         )
     if not selected:
         raise ValueError('no study items selected for the VLM kit')
+    extra: list[dict] = []
+    if add_model_only and max_items is None:
+        extra = model_only_items(all_items, {str(it['item_id']) for it in selected})
+    model_only_ids = {str(it['item_id']) for it in extra}
+    selected = list(selected) + extra
 
     if output.exists():
         shutil.rmtree(output)
@@ -307,6 +332,8 @@ def build_kit(
                 'construct': construct,
                 'kind': kind,
                 'gold': gold_for_answers(item),
+                'role': 'model_only' if item_id in model_only_ids else 'study',
+                'n_frames': len(item.get('image_paths') or []),
             }
         )
 
@@ -337,7 +364,7 @@ def build_kit(
     with answers_path.open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=['item_id', 'construct', 'kind', 'gold'],
+            fieldnames=['item_id', 'construct', 'kind', 'gold', 'role', 'n_frames'],
         )
         writer.writeheader()
         writer.writerows(answer_rows)
@@ -351,6 +378,7 @@ def build_kit(
         'items_root': str(items_root),
         'n_items': len(item_ids),
         'item_ids': item_ids,
+        'model_only_item_ids': sorted(model_only_ids),
         'results_template': 'results_template.csv',
         'answers': 'answers.csv',
         'chat_allows_cant_tell': True,
@@ -366,7 +394,14 @@ def build_kit(
     (output / 'README.txt').write_text(
         '\n'.join(
             [
-                'VLM chat kit (manual pilot).',
+                'VLM kit: chat apps (manual) or API runs.',
+                '',
+                'For an API run, send per item the frames of items/<item_id>/vision/',
+                'in name order (frame_01 first) plus the text of prompt.txt, and',
+                'write the reply into results_template.csv (one row per model,',
+                'item and condition; copy rows for each extra model).',
+                'Items with role model_only in answers.csv (SWM count) are not in',
+                'the human review; answers.csv n_frames is the number of images.',
                 '',
                 'Each construct has at least two items (see construct_batches/).',
                 'In one chat, run both vision folders for that construct, then',
@@ -454,6 +489,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help='Existing human review package; reuse its study item ids',
     )
+    parser.add_argument(
+        '--no-model-only',
+        action='store_true',
+        help='Do not add review.model_only_templates items (SWM count) to the kit',
+    )
     args = parser.parse_args(argv)
     try:
         build_kit(
@@ -465,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             review_package=args.review_package,
             class4_per_reviewer=args.class4_per_reviewer,
+            add_model_only=not args.no_model_only,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)

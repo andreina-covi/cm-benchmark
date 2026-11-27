@@ -37,6 +37,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from cm_benchmark.evaluation.score import (
+    frames_shown_bin,
     review_groups,
     rotation_bin,
     score_route_knowledge,
@@ -573,10 +574,13 @@ def load_answers_csv(path: Path) -> dict[str, dict]:
             item_id = (raw.get('item_id') or '').strip()
             if not item_id:
                 continue
+            n_frames = (raw.get('n_frames') or '').strip()
             out[item_id] = {
                 'construct': (raw.get('construct') or '').strip(),
                 'kind': (raw.get('kind') or '').strip(),
                 'gold': (raw.get('gold') or '').strip(),
+                'role': (raw.get('role') or 'study').strip(),
+                'n_frames': int(n_frames) if n_frames.isdigit() else None,
             }
     return out
 
@@ -702,9 +706,12 @@ def collect_vlm_analysis(
     if not rows:
         raise ValueError(f'no VLM result rows in {results_file}')
 
-    # (construct, condition) → answered outcomes
-    tallies: dict[tuple[str, str], list[bool]] = defaultdict(list)
-    cant_tell: dict[tuple[str, str], int] = defaultdict(int)
+    # (model, construct, condition) → answered outcomes
+    tallies: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
+    cant_tell: dict[tuple[str, str, str], int] = defaultdict(int)
+    # (model, condition, construct) → dimension → group → [n_correct, n]
+    groups: dict[tuple[str, str, str], dict[str, dict[str, list[int]]]] = defaultdict(dict)
+    contexts: dict[str, dict] = {}
     item_ids: set[str] = set()
     for row in rows:
         item_id = row['item_id']
@@ -723,10 +730,27 @@ def collect_vlm_analysis(
             gold=meta['gold'],
             raw_reply=row['raw_reply'],
         )
-        key = (construct, row['condition'])
+        model = row['model'] or 'unnamed'
+        key = (model, construct, row['condition'])
         tallies[key].append(ok)
         if abstain:
             cant_tell[key] += 1
+        if item_id not in contexts:
+            private = _load_private_item(kit, item_id) or {}
+            contexts[item_id] = dict(private.get('context') or {})
+            contexts[item_id]['_gold_text'] = (private.get('options') or {}).get(meta['gold'])
+            if meta.get('n_frames') is None:
+                meta['n_frames'] = len(private.get('image_paths') or []) or None
+        dims = {
+            'n_frames': frames_shown_bin(meta.get('n_frames')),
+            **{d: v for d, v in review_groups(contexts[item_id]).items() if d != 'n_frames_shown'},
+        }
+        for dim, value in dims.items():
+            if value is None:
+                continue
+            cell = groups[(model, row['condition'], construct)].setdefault(dim, {}).setdefault(value, [0, 0])
+            cell[0] += int(ok)
+            cell[1] += 1
 
     # Constructs answered as free action sequences in this kit (older kits).
     nav_kinds = {meta['construct'] for meta in answers.values() if meta.get('kind') == 'nav'}
@@ -738,16 +762,18 @@ def collect_vlm_analysis(
 
     results: list[dict] = []
     flags: list[str] = []
-    for construct in CONSTRUCTS:
+    models = sorted({key[0] for key in tallies})
+    for model, construct in ((m, c) for m in models for c in CONSTRUCTS):
         for condition in ('vision', 'blind'):
-            group = tallies.get((construct, condition)) or []
+            group = tallies.get((model, construct, condition)) or []
             if not group:
                 continue
             n_ok = sum(1 for hit in group if hit)
             rate = n_ok / len(group)
-            n_ct = cant_tell.get((construct, condition), 0)
+            n_ct = cant_tell.get((model, construct, condition), 0)
             results.append(
                 {
+                    'model': model,
                     'construct': construct,
                     'condition': condition,
                     'n': len(group),
@@ -762,7 +788,7 @@ def collect_vlm_analysis(
         blind = None
         vision = None
         for row in results:
-            if row['construct'] != construct:
+            if row['construct'] != construct or row['model'] != model:
                 continue
             if row['condition'] == 'blind':
                 blind = row['accuracy']
@@ -774,18 +800,43 @@ def collect_vlm_analysis(
             and blind >= BLIND_ABOVE_CHANCE
         ):
             flags.append(
-                f'{construct}: blind accuracy {blind:.3f} is well above chance '
+                f'{model} {construct}: blind accuracy {blind:.3f} is well above chance '
                 f'({MC_CHANCE:.2f}) — question may be solvable without images'
             )
         if vision is not None and vision >= VISION_NEAR_CEILING:
             flags.append(
-                f'{construct}: vision accuracy {vision:.3f} is near ceiling — '
+                f'{model} {construct}: vision accuracy {vision:.3f} is near ceiling — '
                 'items may be too easy'
             )
 
+    # Always-majority baseline per template whose answers repeat (SWM count).
+    baselines: dict[str, dict] = {}
+    golds: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for item_id, ctx in contexts.items():
+        mode = ctx.get('template_mode')
+        if mode == 'recall_count' and ctx.get('_gold_text') is not None:
+            golds[mode][str(ctx['_gold_text'])] += 1
+    for mode, counts in golds.items():
+        top, top_n = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+        baselines[mode] = {'majority_answer': top, 'accuracy': top_n / sum(counts.values()), 'n': sum(counts.values())}
+
+    by_group = [
+        {
+            'model': model,
+            'condition': condition,
+            'construct': construct,
+            'groups': {
+                dim: {v: {'n_correct': c, 'n': n} for v, (c, n) in sorted(cells.items(), key=_group_order)}
+                for dim, cells in dims.items()
+            },
+        }
+        for (model, condition, construct), dims in sorted(groups.items())
+    ]
     return {
         'kind': 'vlm',
         'results': results,
+        'by_group': by_group,
+        'baselines': baselines,
         'flags': flags,
         'mc_chance': MC_CHANCE,
     }
@@ -794,7 +845,7 @@ def collect_vlm_analysis(
 def format_vlm_analysis(data: dict) -> str:
     """Text table for a ``collect_vlm_analysis`` payload."""
     lines = [
-        f'{"construct":<32} {"cond":>6} {"n":>4} {"accuracy":>16} '
+        f'{"model":<20} {"construct":<32} {"cond":>6} {"n":>4} {"accuracy":>16} '
         f'{"cant_tell":>10} {"chance":>8} {"human":>8}',
     ]
     for row in data.get('results') or []:
@@ -807,8 +858,23 @@ def format_vlm_analysis(data: dict) -> str:
         human_s = 'n/a' if human is None else f'{float(human):.3f}'
         acc = f'{n_ok / n:.3f} ({n_ok}/{n})'
         lines.append(
-            f'{row["construct"]:<32} {row["condition"]:>6} {n:>4} {acc:>16} '
+            f'{str(row.get("model") or ""):<20} {row["construct"]:<32} {row["condition"]:>6} {n:>4} {acc:>16} '
             f'{ct:>10} {chance:>8} {human_s:>8}'
+        )
+    if data.get('by_group'):
+        lines.append('')
+        lines.append('accuracy by subgroup (n_frames = images attached; template, condition, turn events, rotation)')
+    for entry in data.get('by_group') or []:
+        for dim, cells in entry['groups'].items():
+            lines.append(
+                f'  {entry["model"]:<18} {entry["condition"]:<6} {entry["construct"]:<30} {dim:<20} '
+                + '  '.join(f'{v}: {c["n_correct"]}/{c["n"]}' for v, c in cells.items())
+            )
+    for mode, base in (data.get('baselines') or {}).items():
+        lines.append('')
+        lines.append(
+            f'baseline {mode}: always "{base["majority_answer"]}" scores '
+            f'{base["accuracy"]:.3f} on {base["n"]} items'
         )
     lines.append('')
     lines.append('flags')
