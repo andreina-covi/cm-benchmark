@@ -4,7 +4,7 @@
 Reads concise ``status=ok`` multiple-choice items from an items folder
 (every construct, class 4 included). The class-4 free-action diagnostic
 subset has no options and is evaluated on models only, so it is never
-sampled. Samples up to ``--per-construct`` items per construct, stratified
+sampled; nor are templates in ``review.model_only_templates`` (SWM count). Samples up to ``--per-construct`` items per construct, stratified
 across scenes. Class-4 (route / survey) study items are further capped so
 each reviewer sees at most ``review.class4_per_reviewer`` of them (default 5;
 CLI override): they carry up to 32 frames each.
@@ -78,8 +78,28 @@ def load_items(root: Path) -> list[dict]:
     return items
 
 
+def _model_only_templates() -> frozenset[str]:
+    """``review.model_only_templates``: templates never shown to reviewers."""
+    from cm_benchmark.generation.config import get_generation_config
+
+    return frozenset(get_generation_config().review.model_only_templates)
+
+
+# Item context copied into the manifest so analyze_review can split results.
+MANIFEST_CONTEXT_FIELDS = (
+    'rotation_since_last_seen',
+    'template_mode',
+    'condition',
+    'n_frames_shown',
+    'n_turn_events',
+    'total_rotation_deg',
+    'displacement_m',
+)
+
+
 def concise_ok(items: list[dict]) -> list[dict]:
-    """Concise items the generator accepted."""
+    """Concise items the generator accepted, minus model-only templates."""
+    model_only = _model_only_templates()
     out = []
     for item in items:
         if item.get('question_style') == 'verbose':
@@ -90,6 +110,9 @@ def concise_ok(items: list[dict]) -> list[dict]:
             continue
         if not item.get('options'):
             # Class-4 free-action diagnostic subset: models only.
+            continue
+        if (item.get('context') or {}).get('template_mode') in model_only:
+            # e.g. SWM count: scored on models only (review.model_only_templates).
             continue
         out.append(item)
     return out
@@ -978,9 +1001,7 @@ def build_package(
             'kind': 'mc',
             'gold': review_gold(item),
             'stored_answer': None if item.get('answer') is None else str(item.get('answer')),
-            'rotation_since_last_seen': (item.get('context') or {}).get(
-                'rotation_since_last_seen'
-            ),
+            **{f: (item.get('context') or {}).get(f) for f in MANIFEST_CONTEXT_FIELDS},
         }
 
     for item in sampled['practice']:

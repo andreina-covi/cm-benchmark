@@ -345,9 +345,43 @@ def rotation_metrics(
 
 
 HEADING_ROTATION_BIN_EDGES_DEG = (360.0, 540.0)
+FRAMES_SHOWN_BIN_EDGES = (8, 16, 24)
 
 
-def _turn_event_group(n: Any) -> Optional[str]:
+def frames_shown_bin(n: Any, edges=FRAMES_SHOWN_BIN_EDGES) -> Optional[str]:
+    """Group label for ``n_frames_shown``: ``1-8``, ``9-16``, ``17-24``, ``25+``."""
+    if n is None:
+        return None
+    lo = 1
+    for hi in edges:
+        if int(n) <= hi:
+            return f'{lo}-{hi}'
+        lo = hi + 1
+    return f'{lo}+'
+
+
+def review_groups(ctx: dict) -> dict[str, Optional[str]]:
+    """Subgroups an item's results are split by (model scores and human review).
+
+    ``template_mode`` (SWM heading change / count) and ``condition`` (EE
+    single_frame / in_sequence) separate tasks that share a construct; heading
+    items add ``n_turn_events`` and ``total_rotation_deg`` groups, and sequence
+    items an ``n_frames_shown`` group.
+    """
+    heading = ctx.get('template_mode') == 'heading_change'
+    seq = heading or ctx.get('condition') == 'in_sequence'
+    return {
+        'template_mode': ctx.get('template_mode'),
+        'condition': ctx.get('condition'),
+        'n_turn_events': turn_event_group(ctx.get('n_turn_events')) if heading else None,
+        'total_rotation_deg': (
+            rotation_bin(ctx.get('total_rotation_deg'), HEADING_ROTATION_BIN_EDGES_DEG) if heading else None
+        ),
+        'n_frames_shown': frames_shown_bin(ctx.get('n_frames_shown')) if seq else None,
+    }
+
+
+def turn_event_group(n: Any) -> Optional[str]:
     """``2`` / ``3`` / ``4+`` for a heading item's ``n_turn_events``."""
     if n is None:
         return None
@@ -386,7 +420,7 @@ def swm_metrics(
             for it in rows:
                 ctx = _item_extra(it)
                 for table, key in (
-                    (by_events, _turn_event_group(ctx.get('n_turn_events'))),
+                    (by_events, turn_event_group(ctx.get('n_turn_events'))),
                     (by_rot, rotation_bin(ctx.get('total_rotation_deg'), rotation_edges)),
                 ):
                     if key is None:

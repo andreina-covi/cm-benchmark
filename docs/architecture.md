@@ -218,7 +218,8 @@ in several frames; a heading change needs several turns added up.
 slots for counts and fills the rest with heading changes; heading change is the
 main template, count a small secondary one (on Round 2, 82% of count items
 answer 2, so scores are reported next to the always-majority baseline,
-`evaluation.score.swm_metrics`). Both show every
+`evaluation.score.swm_metrics`, and count is model-only: never sampled for
+human review, `review.model_only_templates`). Both show every
 non-repeated frame of the window (`_swm_shown_steps`, at most the largest
 `frames.budgets`, never sampled).
 

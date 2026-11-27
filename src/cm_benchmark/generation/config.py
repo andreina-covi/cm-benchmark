@@ -305,6 +305,7 @@ class ReviewConfig:
     """Human review package sampling and route-builder display."""
 
     class4_per_reviewer: int
+    model_only_templates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -607,6 +608,7 @@ def generation_config_from_mapping(
         ),
         review=ReviewConfig(
             class4_per_reviewer=int(rev.get('class4_per_reviewer', 5)),
+            model_only_templates=tuple(str(t) for t in rev.get('model_only_templates') or ()),
         ),
         episode_gt=EpisodeGtConfig(
             frame_w=int(egt['frame_w']),

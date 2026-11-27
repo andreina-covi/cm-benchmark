@@ -371,6 +371,10 @@ class4:
 review:
   # Override per run with: python scripts/build_review_package.py --class4-per-reviewer N
   class4_per_reviewer: 5  # none found; max route+survey study items each reviewer sees (up to 32 frames each)
+  # Templates scored on models only, never sampled for human review. SWM count:
+  # 14 of 17 Round-2 items answer 2 (always-2 baseline 82%), too few and too
+  # uniform for a human result (user decision 2026-11-27).
+  model_only_templates: [recall_count]
 
 # Episode-GT hyperparameters. Camera / agent fields are overridden by episode_meta.
 episode_gt:

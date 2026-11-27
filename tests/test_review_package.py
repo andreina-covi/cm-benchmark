@@ -458,3 +458,43 @@ def test_page_has_item_navigator(tmp_path):
     html = _load('build_review_package.py')._PAGE
     for needle in ('id="item-nav"', 'data-goto', 'goto-n', 'answered', 'id="instructions"', 'Continue from item'):
         assert needle in html
+
+
+def test_count_items_are_model_only_and_manifest_carries_groups(tmp_path: Path):
+    build = _load('build_review_package.py')
+    count = {**_item('spatial_working_memory', 's0', 99), 'context': {'template_mode': 'recall_count'}}
+    heading = {
+        **_item('spatial_working_memory', 's0', 98),
+        'context': {'template_mode': 'heading_change', 'n_turn_events': 3, 'total_rotation_deg': 450.0,
+                    'n_frames_shown': 20, 'displacement_m': 2.1},
+    }
+    kept = build.concise_ok([count, heading])
+    assert [it['item_id'] for it in kept] == [heading['item_id']]
+    assert {'template_mode', 'condition', 'n_turn_events', 'total_rotation_deg',
+            'n_frames_shown', 'displacement_m'} <= set(build.MANIFEST_CONTEXT_FIELDS)
+
+
+def test_analyze_splits_by_template_and_condition(tmp_path: Path):
+    analyze = _load('analyze_review.py')
+    meta = {'role': 'review', 'kind': 'mc', 'gold': 'A'}
+    manifest = {'check_item_ids': [], 'items': {
+        'h2': {**meta, 'construct': 'spatial_working_memory', 'template_mode': 'heading_change',
+               'n_turn_events': 2, 'total_rotation_deg': 270.0, 'n_frames_shown': 12},
+        'h3': {**meta, 'construct': 'spatial_working_memory', 'template_mode': 'heading_change',
+               'n_turn_events': 3, 'total_rotation_deg': 450.0, 'n_frames_shown': 30},
+        'e1': {**meta, 'construct': 'egocentric_encoding', 'condition': 'single_frame', 'n_frames_shown': 1},
+        'e2': {**meta, 'construct': 'egocentric_encoding', 'condition': 'in_sequence', 'n_frames_shown': 20},
+    }}
+    rows = [
+        {'reviewer_id': 'r1', 'item_id': iid, 'answer': ans, 'answerable': '', 'flags': [], 'role': 'review'}
+        for iid, ans in (('h2', 'A'), ('h3', 'B'), ('e1', 'A'), ('e2', 'B'))
+    ]
+    data = analyze.collect_human_analysis(manifest, rows, package=tmp_path)
+    swm = next(c for c in data['constructs'] if c['construct'] == 'spatial_working_memory')
+    assert swm['by_group']['n_turn_events'] == {'2': {'n_correct': 1, 'n': 1}, '3': {'n_correct': 0, 'n': 1}}
+    assert list(swm['by_group']['total_rotation_deg']) == ['<360', '360-540']
+    assert list(swm['by_group']['n_frames_shown']) == ['9-16', '25+']
+    ego = next(c for c in data['constructs'] if c['construct'] == 'egocentric_encoding')
+    assert ego['by_group']['condition'] == {'in_sequence': {'n_correct': 0, 'n': 1}, 'single_frame': {'n_correct': 1, 'n': 1}}
+    assert 'n_frames_shown' in ego['by_group'] and list(ego['by_group']['n_frames_shown']) == ['17-24']
+    assert 'accuracy by subgroup' in analyze.format_human_analysis(data)

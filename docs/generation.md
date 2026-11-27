@@ -284,6 +284,13 @@ the frames in each item’s `image_paths`, with the question beside them, and
 pick an option or Can't tell; the CSV `answer` column stores the letter.
 Class 4 is reviewed like every other construct: each option is a route. The
 class-4 free-action diagnostic subset has no options and is never sampled.
+Templates listed in `review.model_only_templates` (default: SWM count,
+`recall_count`) are scored on models only and never sampled either; the VLM
+chat kit, which mirrors the human sample, skips them too.
+The manifest carries each item's `template_mode`, `condition`,
+`n_frames_shown`, `n_turn_events`, `total_rotation_deg` and `displacement_m`,
+so `analyze_review.py` reports accuracy by subgroup (heading change vs count,
+single_frame vs in_sequence, turn events, rotation, frames shown).
 Class-4 study load is capped at `review.class4_per_reviewer` in
 `configs/generation.yaml` (default 5; those items carry up to 32 frames), and
 can be overridden per run with `--class4-per-reviewer N`.

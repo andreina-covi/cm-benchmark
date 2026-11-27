@@ -37,6 +37,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from cm_benchmark.evaluation.score import (
+    review_groups,
     rotation_bin,
     score_route_knowledge,
     score_survey_based_route_planning,
@@ -224,6 +225,14 @@ def _row_correct(
     return _correct_mc(meta, row.get('answer') or '')
 
 
+def _group_order(kv) -> tuple:
+    """Numeric groups in order (``<360`` before ``360-540``, ``9-16`` before ``17-24``), names after."""
+    m = re.match(r'(<?)(\d+)', str(kv[0]))
+    if not m:
+        return (1, 0, 0, str(kv[0]))
+    return (0, int(m.group(2)), 0 if m.group(1) else 1, str(kv[0]))
+
+
 def collect_human_analysis(
     manifest: dict,
     rows: list[dict],
@@ -263,6 +272,7 @@ def collect_human_analysis(
         n_correct = 0
         alpha_labels: dict[str, list[str]] = defaultdict(list)
         by_rotation: dict[str, list[int]] = {}
+        by_group: dict[str, dict[str, list[int]]] = {}
         for row in answered:
             meta = items[row['item_id']]
             if is_nav:
@@ -287,6 +297,12 @@ def collect_human_analysis(
                     cell = by_rotation.setdefault(rot_group, [0, 0])
                     cell[0] += int(ok)
                     cell[1] += 1
+                for dim, value in review_groups(meta).items():
+                    if value is None:
+                        continue
+                    cell = by_group.setdefault(dim, {}).setdefault(value, [0, 0])
+                    cell[0] += int(ok)
+                    cell[1] += 1
         n_scored = len(scored_rows) if is_nav else len(answered)
         alpha = krippendorff_alpha(list(alpha_labels.values()))
         flagged = sum(1 for row in group if row['flags'])
@@ -305,6 +321,11 @@ def collect_human_analysis(
             'mean_sdtw': None,
             # Total turning since the tracked cue was last seen (ID / SU items).
             'by_rotation': {g: {'n_correct': c, 'n': n} for g, (c, n) in by_rotation.items()},
+            # Template / condition / turn-event / rotation / sequence-length groups.
+            'by_group': {
+                dim: {v: {'n_correct': c, 'n': n} for v, (c, n) in sorted(cells.items(), key=_group_order)}
+                for dim, cells in by_group.items()
+            },
         }
         if is_nav and scored_rows:
             entry['mean_spl'] = sum(
@@ -434,6 +455,17 @@ def format_human_analysis(data: dict) -> str:
             f'  {entry["construct"]:<30} '
             + '  '.join(f'{g}: {c["n_correct"]}/{c["n"]}' for g, c in cells)
         )
+
+    group_rows = [e for e in data.get('constructs') or [] if e.get('by_group')]
+    if group_rows:
+        lines.append('')
+        lines.append('accuracy by subgroup (template, condition, turn events, rotation, frames shown)')
+    for entry in group_rows:
+        for dim, cells in entry['by_group'].items():
+            lines.append(
+                f'  {entry["construct"]:<30} {dim:<20} '
+                + '  '.join(f'{v}: {c["n_correct"]}/{c["n"]}' for v, c in cells.items())
+            )
 
     if data.get('answerable'):
         lines.append('')
